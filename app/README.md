@@ -42,8 +42,9 @@ first (`core/src/aws/`):
   started, here or on another device. A machine with a change running
   (seen through its Terraform state lock) shows as busy and offers no
   actions until it's done; the app rechecks it every 15 seconds. Two
-  devices that launch within the same few seconds can still both get
-  through, since nothing in S3 serialises them yet.
+  devices that launch at about the same time, before either one's Terraform
+  has taken its state lock, can still both get through, since nothing in S3
+  serialises them yet.
 - If the app quits mid-change, Terraform keeps going outside the Flatpak
   and finishes. A run that was killed leaves its state lock behind; the next
   change to that machine removes it when this computer took it and the run

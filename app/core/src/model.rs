@@ -80,6 +80,9 @@ pub struct Machine {
     /// A change to it is running, on this device or another one. The UI
     /// leaves it alone until that ends.
     pub busy: bool,
+    /// That change is bringing it up, though its instance may still read
+    /// stopped. ReGa brings up one machine at a time, so no other starts.
+    pub starting: bool,
 }
 
 /// What the user asked for when launching a machine.

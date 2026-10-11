@@ -58,6 +58,7 @@ const stockholmMachine = MachineSummary(
   spot: false,
   status: MachineStatus.stopped,
   busy: false,
+  starting: false,
   switchType: 't3.medium',
 );
 
@@ -88,6 +89,9 @@ class FakeBackend implements RegaBackend {
 
   /// When set, machine actions and launches throw it.
   Object? actionError;
+
+  /// `listMachines` throws this when set.
+  Object? listMachinesError;
 
   /// Machine actions wait for this before finishing, when set.
   Future<void>? actionGate;
@@ -180,8 +184,10 @@ class FakeBackend implements RegaBackend {
   }
 
   @override
-  Future<List<MachineSummary>> listMachines(String providerId) async =>
-      List.of(machines);
+  Future<List<MachineSummary>> listMachines(String providerId) async {
+    if (listMachinesError case final e?) throw e;
+    return List.of(machines);
+  }
 
   Future<MachineSummary> _change(
     String what,
@@ -217,6 +223,7 @@ class FakeBackend implements RegaBackend {
       spot: spot,
       status: MachineStatus.running,
       busy: false,
+      starting: false,
       switchType: spot ? null : 't3.medium',
     );
     machines.add(m);
@@ -280,5 +287,6 @@ MachineSummary _with(
   spot: m.spot,
   status: status,
   busy: m.busy,
+  starting: m.starting,
   switchType: m.switchType,
 );

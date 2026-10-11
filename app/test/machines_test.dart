@@ -144,6 +144,7 @@ void main() {
           spot: true,
           status: MachineStatus.running,
           busy: false,
+          starting: false,
         ),
       ],
     );
@@ -185,6 +186,7 @@ void main() {
       spot: false,
       status: MachineStatus.running,
       busy: busy,
+      starting: busy,
     );
     final backend = FakeBackend(machines: [gaming(busy: true)]);
     // The spinner never settles.
@@ -221,6 +223,7 @@ void main() {
           spot: false,
           status: MachineStatus.stopped,
           busy: false,
+          starting: false,
           switchType: 'g4dn.xlarge',
         ),
       ],
@@ -272,5 +275,68 @@ void main() {
     expect(await quit, AppExitResponse.exit);
     gate.complete();
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('a machine stopping elsewhere blocks no other start', (
+    tester,
+  ) async {
+    final backend = FakeBackend(
+      machines: [
+        stockholmMachine,
+        MachineSummary(
+          id: 'den-1',
+          name: 'Den',
+          regionId: 'eu-north-1',
+          regionName: 'Europe (Stockholm)',
+          offer: cpuOffer,
+          spot: false,
+          status: MachineStatus.stopped,
+          busy: true,
+          starting: false,
+        ),
+      ],
+    );
+    await tester.pumpWidget(RegaApp(backend: backend));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Working…'), findsOneWidget);
+    expect(
+      tester
+          .widget<ButtonStyleButton>(
+            find.byKey(const ValueKey('start-gaming-1')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+  });
+
+  testWidgets('machines that can\'t be listed leave the rest of the page', (
+    tester,
+  ) async {
+    final backend = FakeBackend()
+      ..listMachinesError =
+          'bucket rega-tfstate-1 doesn\'t block public access';
+    await open(tester, backend);
+    expect(find.byKey(const ValueKey('offer-g4dn.xlarge')), findsOneWidget);
+    expect(find.byKey(const ValueKey('machines-error')), findsOneWidget);
+    expect(find.text('No machines yet'), findsNothing);
+    expect(
+      tester
+          .widget<ButtonStyleButton>(find.byKey(const ValueKey('launch')))
+          .onPressed,
+      isNull,
+    );
+
+    backend.listMachinesError = null;
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('machines-error')),
+        matching: find.text('Retry'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('machines-error')), findsNothing);
+    expect(find.text('No machines yet'), findsOneWidget);
   });
 }

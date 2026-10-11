@@ -263,6 +263,7 @@ impl CloudProvider for MockProvider {
             spot: request.spot,
             state: MachineState::Running,
             busy: false,
+            starting: false,
         };
         *next_id += 1;
         self.machines.lock().unwrap().push(machine.clone());

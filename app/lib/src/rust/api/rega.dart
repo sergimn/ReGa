@@ -180,6 +180,9 @@ class MachineSummary {
   /// actions wait until that ends.
   final bool busy;
 
+  /// That change is bringing it up, so no other machine can start.
+  final bool starting;
+
   /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
   /// machines, which can't change type.
   final String? switchType;
@@ -193,6 +196,7 @@ class MachineSummary {
     required this.spot,
     required this.status,
     required this.busy,
+    required this.starting,
     this.switchType,
   });
 
@@ -206,6 +210,7 @@ class MachineSummary {
       spot.hashCode ^
       status.hashCode ^
       busy.hashCode ^
+      starting.hashCode ^
       switchType.hashCode;
 
   @override
@@ -221,6 +226,7 @@ class MachineSummary {
           spot == other.spot &&
           status == other.status &&
           busy == other.busy &&
+          starting == other.starting &&
           switchType == other.switchType;
 }
 

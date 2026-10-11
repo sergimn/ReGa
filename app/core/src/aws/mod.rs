@@ -358,7 +358,7 @@ impl AwsProvider {
     /// is being started here or on another device. Hold [`Self::boot`]
     /// from this check until the machine is up.
     async fn check_none_running(&self, except: Option<&str>) -> ProviderResult<()> {
-        for (record, m) in self.machines().await? {
+        for m in self.list_machines().await? {
             if Some(m.id.as_str()) == except {
                 continue;
             }
@@ -366,9 +366,7 @@ impl AwsProvider {
                 m.state,
                 MachineState::Pending | MachineState::Running | MachineState::Stopping
             );
-            // Its instance may still read stopped while the change starts it.
-            let starting = m.busy && record.vars.instance_state == InstanceState::Running;
-            if up || starting {
+            if up || m.starting {
                 return Err(ProviderError::InvalidState(format!(
                     "{} is {}. ReGa runs one machine at a time, so {}.",
                     m.name,
@@ -382,32 +380,6 @@ impl AwsProvider {
             }
         }
         Ok(())
-    }
-
-    /// Every machine, with the record it comes from.
-    async fn machines(&self) -> ProviderResult<Vec<(MachineRecord, Machine)>> {
-        let Snapshot {
-            mut records,
-            owned,
-            busy,
-        } = self.snapshot().await?;
-        records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
-        let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
-        let instances: Vec<Instance> =
-            try_join_all(regions.iter().map(|r| self.api.tagged_instances(r)))
-                .await?
-                .into_iter()
-                .flatten()
-                .collect();
-        Ok(records
-            .into_iter()
-            .map(|r| {
-                let busy = busy.contains(r.id());
-                let instance = pick_instance(&instances, r.id(), owned.get(r.id()), busy);
-                let machine = self.machine_from(&r, instance.as_ref(), busy);
-                (r, machine)
-            })
-            .collect())
     }
 
     /// Claims the right to bring a machine up; fails while another launch,
@@ -718,6 +690,7 @@ impl AwsProvider {
             spot: record.vars.spot,
             state,
             busy,
+            starting: busy && record.vars.instance_state == InstanceState::Running,
         }
     }
 
@@ -1085,7 +1058,27 @@ impl CloudProvider for AwsProvider {
     }
 
     async fn list_machines(&self) -> ProviderResult<Vec<Machine>> {
-        Ok(self.machines().await?.into_iter().map(|(_, m)| m).collect())
+        let Snapshot {
+            mut records,
+            owned,
+            busy,
+        } = self.snapshot().await?;
+        records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
+        let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
+        let instances: Vec<Instance> =
+            try_join_all(regions.iter().map(|r| self.api.tagged_instances(r)))
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
+        Ok(records
+            .iter()
+            .map(|r| {
+                let busy = busy.contains(r.id());
+                let instance = pick_instance(&instances, r.id(), owned.get(r.id()), busy);
+                self.machine_from(r, instance.as_ref(), busy)
+            })
+            .collect())
     }
 
     async fn launch(&self, request: &LaunchRequest) -> ProviderResult<Machine> {

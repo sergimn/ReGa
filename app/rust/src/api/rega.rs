@@ -97,6 +97,8 @@ pub struct MachineSummary {
     /// A change to it is running, on this device or another one; its
     /// actions wait until that ends.
     pub busy: bool,
+    /// That change is bringing it up, so no other machine can start.
+    pub starting: bool,
     /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
     /// machines, which can't change type.
     pub switch_type: Option<String>,
@@ -410,6 +412,7 @@ fn summary(
         },
         region_name: region_name(&m.region_id),
         busy: m.busy,
+        starting: m.starting,
         id: m.id,
         name: m.name,
         region_id: m.region_id,
@@ -491,6 +494,7 @@ mod tests {
             spot,
             state: MachineState::Running,
             busy: false,
+            starting: false,
         }
     }
 

@@ -51,6 +51,10 @@ class _ProviderPageState extends State<ProviderPage> {
   RegionChoices? _choices;
   List<MachineOffer> _offers = const [];
   List<MachineSummary> _machines = const [];
+
+  /// Why machines couldn't be listed (say, the state bucket can't be made);
+  /// regions and prices still show.
+  Object? _machinesError;
   Object? _error;
   bool _loading = true;
 
@@ -60,14 +64,15 @@ class _ProviderPageState extends State<ProviderPage> {
   /// Machines with an action in progress, and what it is.
   final Map<String, String> _busy = {};
 
-  /// Something is changing a machine, here or on another device. ReGa
-  /// brings up one machine at a time, so Start, Switch and Launch wait.
+  /// This app is changing a machine, or one is starting on another device.
+  /// ReGa brings up one machine at a time, so Start, Switch and Launch wait.
   bool get _changing =>
-      _launching || _busy.isNotEmpty || _machines.any((m) => m.busy);
+      _launching || _busy.isNotEmpty || _machines.any((m) => m.starting);
 
   /// Rechecks machines that another device (or an earlier run of the app)
   /// is changing, since nothing else says when that's done.
   Timer? _poll;
+  bool _rechecking = false;
 
   /// The last failed launch or machine action.
   Object? _actionError;
@@ -125,21 +130,23 @@ class _ProviderPageState extends State<ProviderPage> {
 
   Future<void> _recheck() async {
     // This app's own changes reload when they finish.
-    if (_launching || _busy.isNotEmpty) return;
-    final generation = _generation;
-    final List<MachineSummary> machines;
+    if (_rechecking || _launching || _busy.isNotEmpty) return;
+    _rechecking = true;
     try {
-      machines = await _backend.listMachines(_id);
-    } catch (_) {
-      return; // Try again on the next tick.
-    }
-    if (!mounted || generation != _generation) return;
-    if (machines.any((m) => m.busy)) {
+      final generation = _generation;
+      final machines = await _backend.listMachines(_id);
+      if (!mounted || generation != _generation) return;
       setState(() => _machines = machines);
-    } else {
-      // Done: quotas and leftovers may have changed with it.
-      await _reload();
-      await _loadOrphans();
+      _pollWhileBusy();
+      if (!machines.any((m) => m.busy)) {
+        // Done: quotas and leftovers may have changed with it.
+        await _reload();
+        await _loadOrphans();
+      }
+    } catch (_) {
+      // Try again on the next tick.
+    } finally {
+      _rechecking = false;
     }
   }
 
@@ -307,7 +314,13 @@ class _ProviderPageState extends State<ProviderPage> {
       final offers = regionId == null
           ? const <MachineOffer>[]
           : await _backend.machineOffers(_id, regionId: regionId, spot: spot);
-      final machines = await _backend.listMachines(_id);
+      List<MachineSummary>? machines;
+      Object? machinesError;
+      try {
+        machines = await _backend.listMachines(_id);
+      } catch (e) {
+        machinesError = e;
+      }
       if (stale()) return;
       setState(() {
         _choices = choices;
@@ -315,7 +328,8 @@ class _ProviderPageState extends State<ProviderPage> {
         if (_probeDone && fetchRegions) _measuring = false;
         _regionId = regionId;
         _offers = offers;
-        _machines = machines;
+        if (machines != null) _machines = machines;
+        _machinesError = machinesError;
         if (!offers.any((o) => o.typeName == _typeName)) {
           final gpu = offers.where((o) => o.isGpu);
           _typeName = gpu.isNotEmpty ? gpu.first.typeName : null;
@@ -463,7 +477,20 @@ class _ProviderPageState extends State<ProviderPage> {
                 onPressed: () => setState(() => _actionError = null),
               ),
             ),
-          if (_machines.isEmpty)
+          if (_machinesError != null)
+            ListTile(
+              key: const ValueKey('machines-error'),
+              leading: Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.error,
+              ),
+              title: Text('$_machinesError'),
+              trailing: TextButton(
+                onPressed: _reload,
+                child: const Text('Retry'),
+              ),
+            )
+          else if (_machines.isEmpty)
             const ListTile(
               leading: Icon(Icons.computer),
               title: Text('No machines yet'),
@@ -503,7 +530,9 @@ class _ProviderPageState extends State<ProviderPage> {
     final region = _choices?.all
         .where((r) => r.regionId == _regionId)
         .firstOrNull;
-    final ready = offer != null && region != null && !_loading;
+    // Without the machine list, the one-machine check can't run either.
+    final ready =
+        offer != null && region != null && !_loading && _machinesError == null;
     return Padding(
       padding: const EdgeInsets.only(top: 24),
       child: Column(

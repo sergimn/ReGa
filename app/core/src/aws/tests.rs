@@ -754,6 +754,10 @@ async fn a_machine_starting_anywhere_blocks_starting_another() {
         record::lock_key(den),
         lock("sergi@laptop", terraform::unix_now()),
     );
+    let listed = f.provider.list_machines().await.unwrap();
+    assert!(listed
+        .iter()
+        .any(|m| m.name == "Den" && m.busy && !m.starting));
     f.provider.start(gaming).await.unwrap();
     f.provider.stop(gaming).await.unwrap();
 
@@ -761,6 +765,8 @@ async fn a_machine_starting_anywhere_blocks_starting_another() {
     let mut record = f.record(den);
     record.vars.instance_state = InstanceState::Running;
     f.put(record::record_key(den), record.to_json().into_bytes());
+    let listed = f.provider.list_machines().await.unwrap();
+    assert!(listed.iter().any(|m| m.name == "Den" && m.starting));
     let err = f.provider.start(gaming).await.unwrap_err();
     assert!(err.to_string().contains("Den is starting"), "{err}");
     let err = f.provider.resize(gaming, "g4dn.xlarge").await.unwrap_err();
