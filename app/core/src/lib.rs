@@ -13,6 +13,7 @@ pub mod model;
 pub mod provider;
 pub mod region;
 pub mod setup;
+pub mod stream;
 pub mod terraform;
 
 pub use model::*;
