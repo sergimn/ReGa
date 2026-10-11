@@ -53,6 +53,15 @@
     state: present
     enabled: true
 
+# Windows stores the logon trigger's user as COMPUTER\user; passing it in
+# that form keeps the task from changing on every run.
+- name: Read the computer name
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $env:COMPUTERNAME
+  register: rega_computer_name
+
 - name: Start Steam at logon once the library is restored
   community.windows.win_scheduled_task:
     name: ReGa-SteamLaunch
@@ -62,7 +71,7 @@
         arguments: "-WindowStyle Hidden {{ rega_agent_command }} -Action LaunchSteam"
     triggers:
       - type: logon
-        user_id: "{{ rega_desktop_user }}"
+        user_id: "{{ rega_computer_name.output[0] }}\\{{ rega_desktop_user }}"
     username: "{{ rega_desktop_user }}"
     logon_type: interactive_token
     run_level: limited

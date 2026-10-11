@@ -115,7 +115,7 @@ jobs:
       - name: Install Ansible in WSL
         shell: wsl-bash {0}
         run: |
-          set -eu
+          set -euo pipefail
           cp -r infra/ansible ~/ansible
           python3 -m venv ~/venv
           ~/venv/bin/pip install --quiet -r ~/ansible/requirements.txt
@@ -132,7 +132,7 @@ jobs:
       - name: Run the playbook
         shell: wsl-bash {0}
         run: |
-          set -eu
+          set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false
@@ -140,12 +140,12 @@ jobs:
       - name: Run it again; nothing should change
         shell: wsl-bash {0}
         run: |
-          set -eu
+          set -euo pipefail
           workspace=$PWD
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false | tee second-run.log
-          grep -Eq 'ci +: ok=[0-9]+ +changed=0 ' second-run.log
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false --diff | tee second-run.log
+          grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
 
