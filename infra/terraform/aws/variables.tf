@@ -104,7 +104,7 @@ variable "instance_profile_name" {
 }
 
 variable "root_volume_size" {
-  description = "Size of C: in GB. Kept between sessions."
+  description = "Size of C: in GB, set when the machine is created. Kept between sessions. Later changes are ignored: resizing a volume needs ec2:ModifyVolume, which the IAM policy denies."
   type        = number
   default     = 60
 
@@ -121,7 +121,7 @@ variable "library_volume_enabled" {
 }
 
 variable "library_volume_size" {
-  description = "Size of the D: game library volume in GB."
+  description = "Size of the D: game library volume in GB. A change takes effect when D: is recreated at the next start."
   type        = number
   default     = 100
 
@@ -172,7 +172,7 @@ variable "idle_alarm_enabled" {
 }
 
 variable "idle_alarm_minutes" {
-  description = "Minutes of near-zero CPU and network before the backstop alarm stops the machine. Multiple of 5."
+  description = "Minutes of near-zero CPU before the backstop alarm stops the machine. Multiple of 5."
   type        = number
   default     = 120
 
@@ -183,13 +183,8 @@ variable "idle_alarm_minutes" {
 }
 
 variable "idle_cpu_percent" {
-  description = "Average CPU below this counts as idle."
+  description = "CPU percent below which a 5-minute period counts as idle."
   type        = number
   default     = 5
 }
 
-variable "idle_network_bytes" {
-  description = "Network in plus out below this many bytes per 5 minutes counts as idle. The default (50 MB) is far below a stream or a download."
-  type        = number
-  default     = 50000000
-}

@@ -73,8 +73,8 @@ run "defaults_are_an_on_demand_cpu_machine" {
   }
 
   assert {
-    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching
-    error_message = "On-demand machines must stop before D: is detached."
+    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching && !aws_volume_attachment.library[0].force_detach
+    error_message = "On-demand machines must stop before D: is detached, without forcing."
   }
 
   assert {
@@ -95,6 +95,11 @@ run "defaults_are_an_on_demand_cpu_machine" {
   assert {
     condition     = aws_cloudwatch_metric_alarm.idle_stop[0].alarm_actions == toset(["arn:aws:automate:eu-central-1:ec2:stop"])
     error_message = "The idle backstop should stop the instance."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.idle_stop[0].metric_name == "CPUUtilization" && length(aws_cloudwatch_metric_alarm.idle_stop[0].metric_query) == 0
+    error_message = "EC2 actions need a single-metric alarm, not metric math."
   }
 }
 
@@ -175,8 +180,8 @@ run "spot_gpu_uses_market_options" {
   }
 
   assert {
-    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching == false
-    error_message = "Spot instances can't be stopped, so detaching must not try to."
+    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching == false && aws_volume_attachment.library[0].force_detach == true
+    error_message = "Spot instances can't be stopped, so D: must be force-detached on destroy instead."
   }
 
   assert {

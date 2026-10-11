@@ -29,6 +29,10 @@ terraform init \
 | WireGuard off | `wireguard_enabled = false`, `client_cidrs = ["<ip>/32"]` |
 | Ansible run | `admin_cidrs = ["<ip>/32"]` opens WinRM HTTPS (5986) |
 
+C: keeps the size it was created with (resizing a volume needs
+`ec2:ModifyVolume`, which the policy denies). A new `library_volume_size`
+applies when D: is recreated at the next start.
+
 Change `instance_type` only together with a start. The provider always
 starts the instance after a resize, so resizing a stopped machine boots it
 briefly before `instance_state` stops it again.
@@ -50,7 +54,8 @@ The idle alarm terminates it instead of stopping it.
 On destroy, the AWS provider cancels the spot request before terminating the
 instance, and that needs `ec2:CancelSpotInstanceRequests`, which the
 `rega-claude` policy doesn't grant yet. Until it does, end a spot session by
-calling `TerminateInstances` first and then running `terraform destroy`: the
+calling `TerminateInstances` first, waiting until the instance is `terminated`
+(not just `shutting-down`), and then running `terraform destroy`: the
 refresh drops the terminated instance and the destroy cleans up the rest.
 
 Constraints from the `rega-claude` IAM policy: types t3.micro/medium/large and
@@ -61,8 +66,9 @@ a bad request fails at plan time, not halfway through an apply.
 
 ## Idle backstop alarm
 
-`aws_cloudwatch_metric_alarm.idle_stop` stops the instance when CPU and
-network both stay near zero for `idle_alarm_minutes` (120 by default). It terminates spot machines instead.
+`aws_cloudwatch_metric_alarm.idle_stop` stops the instance when CPU stays
+below `idle_cpu_percent` for `idle_alarm_minutes` (120 by default). EC2
+actions only run on single-metric alarms, so it can't combine CPU and network. It terminates spot machines instead.
 A stop by the alarm leaves D: attached until the app's next apply.
 CloudWatch needs the service-linked role `AWSServiceRoleForCloudWatchEvents`
 for EC2 stop actions, and `rega-claude` can't create it. Create it once per

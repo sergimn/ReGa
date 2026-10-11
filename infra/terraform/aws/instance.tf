@@ -52,8 +52,9 @@ resource "aws_instance" "machine" {
   }
 
   lifecycle {
-    # A newer Windows AMI must not replace an existing machine.
-    ignore_changes = [ami]
+    # A newer Windows AMI must not replace an existing machine, and resizing
+    # C: needs ec2:ModifyVolume, which the IAM policy denies.
+    ignore_changes = [ami, root_block_device[0].volume_size]
   }
 }
 
