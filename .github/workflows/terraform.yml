@@ -1,0 +1,70 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [master, main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  aws:
+    name: AWS module
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform/aws
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      - name: Format
+        run: terraform fmt -check -recursive -diff
+
+      - name: Init
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Lint
+        run: |
+          tflint --init
+          tflint --format compact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Policy guards
+        run: |
+          # PutBucketPublicAccessBlock is denied by the IAM policy on purpose.
+          if grep -rn 'aws_s3_bucket_public_access_block' --include='*.tf' .; then
+            echo "Don't declare aws_s3_bucket_public_access_block; the app only checks it." >&2
+            exit 1
+          fi
+          # Project=ReGa reaches every resource through the provider's default_tags.
+          if ! grep -Pzq 'default_tags\s*\{\s*tags\s*=\s*local\.tags' versions.tf; then
+            echo "provider \"aws\" must keep default_tags { tags = local.tags }." >&2
+            exit 1
+          fi
+          # Standalone spot requests need permissions the policy doesn't grant.
+          if grep -rn 'aws_spot_instance_request' --include='*.tf' .; then
+            echo "Use aws_instance with instance_market_options for spot." >&2
+            exit 1
+          fi
+
+      - name: Test (mocked AWS, no credentials)
+        run: terraform test
