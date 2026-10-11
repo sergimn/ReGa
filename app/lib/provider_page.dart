@@ -1,3 +1,5 @@
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 
 import 'backend.dart';
@@ -69,9 +71,12 @@ class _ProviderPageState extends State<ProviderPage> {
   RegaBackend get _backend => widget.backend;
   String get _id => widget.provider.id;
 
+  late final AppLifecycleListener _lifecycle;
+
   @override
   void initState() {
     super.initState();
+    _lifecycle = AppLifecycleListener(onExitRequested: _confirmExit);
     _reload();
     _probeLatency();
     _loadOrphans();
@@ -79,17 +84,23 @@ class _ProviderPageState extends State<ProviderPage> {
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _name.dispose();
     super.dispose();
   }
 
-  Future<void> _reloadMachines() async {
-    try {
-      final machines = await _backend.listMachines(_id);
-      if (mounted) setState(() => _machines = machines);
-    } catch (e) {
-      if (mounted) setState(() => _actionError = e);
+  /// Quitting in the middle of a change can stop it halfway, so ask first.
+  Future<AppExitResponse> _confirmExit() async {
+    if (!_launching && _busy.isEmpty && !_deletingOrphans) {
+      return AppExitResponse.exit;
     }
+    final quit = await _confirm(
+      'Quit while a change is running?',
+      'Quitting can stop it halfway. ReGa picks up from there the next time, '
+          'and anything left behind shows under Leftover resources.',
+      'Quit',
+    );
+    return quit ? AppExitResponse.exit : AppExitResponse.cancel;
   }
 
   /// Leftovers are looked for across every region, so only at start and
@@ -124,9 +135,11 @@ class _ProviderPageState extends State<ProviderPage> {
       if (mounted) setState(() => _actionError = e);
     }
     if (!mounted) return;
+    // A failed launch still shows up, so it can be cleaned up. The regions
+    // reload too: the machine now uses some of their GPU quota.
+    await _reload();
+    if (!mounted) return;
     setState(() => _launching = false);
-    // A failed launch still shows up, so it can be cleaned up.
-    await _reloadMachines();
     await _loadOrphans();
   }
 
@@ -146,8 +159,10 @@ class _ProviderPageState extends State<ProviderPage> {
       if (mounted) setState(() => _actionError = e);
     }
     if (!mounted) return;
-    setState(() => _busy.remove(m.id));
-    await _reloadMachines();
+    // Keep the machine busy until its new state is in, so its old buttons
+    // don't come back in between. Quotas change with it, so regions too.
+    await _reload();
+    if (mounted) setState(() => _busy.remove(m.id));
   }
 
   Future<bool> _confirm(String title, String body, String action) async {

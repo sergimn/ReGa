@@ -28,6 +28,8 @@ pub struct BucketInfo {
     pub public_access_blocked: bool,
     /// Carries `Project=ReGa`.
     pub tagged: bool,
+    /// Has lifecycle rules (ReGa's: old object versions expire).
+    pub lifecycle: bool,
 }
 
 #[async_trait]
@@ -37,6 +39,9 @@ pub trait AwsApi: Send + Sync {
 
     /// Which of `types` are sold in `region`.
     async fn offered_types(&self, region: &str, types: &[String]) -> ProviderResult<Vec<String>>;
+
+    /// The availability zones of `region` that sell `type_name`.
+    async fn offered_zones(&self, region: &str, type_name: &str) -> ProviderResult<Vec<String>>;
 
     /// The applied G and VT vCPU quota, spot or on-demand.
     async fn gpu_quota(&self, region: &str, spot: bool) -> ProviderResult<u32>;
@@ -84,6 +89,10 @@ pub trait AwsApi: Send + Sync {
 
     /// Adds `Project=ReGa`, keeping other tags.
     async fn tag_bucket(&self, name: &str) -> ProviderResult<()>;
+
+    /// Lifecycle rules that expire old object versions (a destroyed
+    /// machine's state and key) and abandoned uploads.
+    async fn expire_old_versions(&self, name: &str) -> ProviderResult<()>;
 
     /// Keys and sizes under `prefix`. A missing bucket lists nothing.
     async fn list_objects(&self, bucket: &str, prefix: &str) -> ProviderResult<Vec<(String, u64)>>;

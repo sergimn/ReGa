@@ -38,7 +38,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('Demo data'), findsOneWidget);
 
-    await tester.enterText(find.byKey(const ValueKey('machine-name')), 'E2E');
+    // A long sign-in error above the form can push it out of view.
+    final name = find.byKey(const ValueKey('machine-name'));
+    await tester.scrollUntilVisible(name, 200, scrollable: page);
+    await tester.enterText(name, 'E2E');
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('launch')),
       200,

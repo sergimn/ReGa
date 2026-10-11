@@ -71,6 +71,9 @@ jobs:
       - run: flutter build linux --release
       - name: End-to-end test against the Rust core
         run: xvfb-run -a flutter test integration_test -d linux
+        # Demo data, without even trying the AWS credential chain.
+        env:
+          REGA_DEMO: '1'
       # Artifacts drop file permissions, so ship the bundle as a tarball.
       - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle
       - uses: actions/upload-artifact@v7

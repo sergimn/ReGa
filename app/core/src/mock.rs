@@ -262,6 +262,7 @@ impl CloudProvider for MockProvider {
             disk_gib: request.disk_gib,
             spot: request.spot,
             state: MachineState::Running,
+            busy: false,
         };
         *next_id += 1;
         self.machines.lock().unwrap().push(machine.clone());

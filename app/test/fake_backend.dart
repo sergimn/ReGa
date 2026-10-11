@@ -57,6 +57,7 @@ const stockholmMachine = MachineSummary(
   offer: gpuOffer,
   spot: false,
   status: MachineStatus.stopped,
+  busy: false,
   switchType: 't3.medium',
 );
 
@@ -215,6 +216,7 @@ class FakeBackend implements RegaBackend {
       offer: typeName == gpuOffer.typeName ? gpuOffer : cpuOffer,
       spot: spot,
       status: MachineStatus.running,
+      busy: false,
       switchType: spot ? null : 't3.medium',
     );
     machines.add(m);
@@ -277,5 +279,6 @@ MachineSummary _with(
   offer: offer ?? m.offer,
   spot: m.spot,
   status: status,
+  busy: m.busy,
   switchType: m.switchType,
 );

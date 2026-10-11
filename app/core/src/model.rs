@@ -77,6 +77,9 @@ pub struct Machine {
     pub disk_gib: u32,
     pub spot: bool,
     pub state: MachineState,
+    /// A change to it is running, on this device or another one. The UI
+    /// leaves it alone until that ends.
+    pub busy: bool,
 }
 
 /// What the user asked for when launching a machine.

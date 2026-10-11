@@ -51,12 +51,19 @@ pub enum LibrarySync {
 
 #[async_trait]
 pub trait MachineSetup: Send + Sync {
+    /// Whether the hooks run at all. When they don't, the provider skips
+    /// fetching the machine's password for them.
+    fn enabled(&self) -> bool {
+        true
+    }
+
     /// Runs after a launch or a start, once the machine is running. WinRM
     /// (5986) is closed unless the provider was asked to open it, so the
     /// Ansible run needs the provider's admin access first.
     async fn after_start(&self, machine: &MachineAccess) -> ProviderResult<()>;
 
-    /// Runs before an on-demand machine stops.
+    /// Runs before an on-demand machine stops. An error doesn't block the
+    /// stop: the provider keeps D:, as for [`LibrarySync::NotSynced`].
     async fn before_stop(&self, machine: &MachineAccess) -> ProviderResult<LibrarySync>;
 }
 
@@ -65,6 +72,10 @@ pub struct NoSetup;
 
 #[async_trait]
 impl MachineSetup for NoSetup {
+    fn enabled(&self) -> bool {
+        false
+    }
+
     async fn after_start(&self, _machine: &MachineAccess) -> ProviderResult<()> {
         Ok(())
     }

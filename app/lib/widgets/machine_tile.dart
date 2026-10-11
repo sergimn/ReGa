@@ -17,8 +17,9 @@ class MachineTile extends StatelessWidget {
 
   final MachineSummary machine;
 
-  /// What is running on the machine right now, such as `Stopping…`; while
-  /// set, no other action is offered.
+  /// What this app is doing to the machine right now, such as `Stopping…`.
+  /// While set, or while the machine is busy with a change from elsewhere,
+  /// no action is offered.
   final String? busy;
   final VoidCallback onStart;
   final VoidCallback onStop;
@@ -29,6 +30,7 @@ class MachineTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final m = machine;
     final id = m.id;
+    final busy = this.busy ?? (m.busy ? 'Working…' : null);
     final actions = <Widget>[
       if (m.status == MachineStatus.running && !m.spot)
         TextButton(

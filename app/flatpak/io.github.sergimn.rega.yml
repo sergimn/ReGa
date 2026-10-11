@@ -11,8 +11,10 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
-  # AWS credentials and profiles, read by the app and by Terraform.
+  # AWS credentials and profiles, read by the app and by Terraform. The SSO
+  # token cache is writable so an SSO sign-in can refresh its token.
   - --filesystem=~/.aws:ro
+  - --filesystem=~/.aws/sso/cache:create
 modules:
   # The app runs Terraform to create, change and destroy machines. Keep the
   # version in step with .github/workflows/terraform.yml.

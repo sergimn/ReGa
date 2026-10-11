@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -142,6 +143,7 @@ void main() {
           offer: gpuOffer,
           spot: true,
           status: MachineStatus.running,
+          busy: false,
         ),
       ],
     );
@@ -169,5 +171,59 @@ void main() {
   testWidgets('no leftovers, no section', (tester) async {
     await open(tester, FakeBackend());
     expect(find.text('Leftover resources'), findsNothing);
+  });
+
+  testWidgets('a machine busy elsewhere offers no actions', (tester) async {
+    final backend = FakeBackend(
+      machines: const [
+        MachineSummary(
+          id: 'gaming-1',
+          name: 'Gaming',
+          regionId: 'eu-north-1',
+          regionName: 'Europe (Stockholm)',
+          offer: gpuOffer,
+          spot: false,
+          status: MachineStatus.running,
+          busy: true,
+        ),
+      ],
+    );
+    // The spinner never settles.
+    await tester.pumpWidget(RegaApp(backend: backend));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Working…'), findsOneWidget);
+    expect(find.byKey(const ValueKey('stop-gaming-1')), findsNothing);
+    expect(find.byKey(const ValueKey('destroy-gaming-1')), findsNothing);
+  });
+
+  testWidgets('quitting mid-change asks first', (tester) async {
+    final backend = FakeBackend(machines: const [stockholmMachine]);
+    final gate = Completer<void>();
+    backend.actionGate = gate.future;
+    await open(tester, backend);
+    // Nothing running: quit right away.
+    expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+
+    // A spinner runs from here on, so pump for the dialog's animation
+    // instead of waiting for things to settle.
+    Future<void> settle() => tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.byKey(const ValueKey('start-gaming-1')));
+    await tester.pump();
+    final keep = tester.binding.handleRequestAppExit();
+    await settle();
+    expect(find.text('Quit while a change is running?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await settle();
+    expect(await keep, AppExitResponse.cancel);
+
+    final quit = tester.binding.handleRequestAppExit();
+    await settle();
+    await tester.tap(find.byKey(const ValueKey('confirm')));
+    await settle();
+    expect(await quit, AppExitResponse.exit);
+    gate.complete();
+    await tester.pumpAndSettle();
   });
 }

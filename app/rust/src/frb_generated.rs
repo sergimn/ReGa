@@ -726,6 +726,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
         let mut var_offer = <crate::api::rega::MachineOffer>::sse_decode(deserializer);
         let mut var_spot = <bool>::sse_decode(deserializer);
         let mut var_status = <crate::api::rega::MachineStatus>::sse_decode(deserializer);
+        let mut var_busy = <bool>::sse_decode(deserializer);
         let mut var_switchType = <Option<String>>::sse_decode(deserializer);
         return crate::api::rega::MachineSummary {
             id: var_id,
@@ -735,6 +736,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
             offer: var_offer,
             spot: var_spot,
             status: var_status,
+            busy: var_busy,
             switch_type: var_switchType,
         };
     }
@@ -1003,6 +1005,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::MachineSummary {
             self.offer.into_into_dart().into_dart(),
             self.spot.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
+            self.busy.into_into_dart().into_dart(),
             self.switch_type.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -1298,6 +1301,7 @@ impl SseEncode for crate::api::rega::MachineSummary {
         <crate::api::rega::MachineOffer>::sse_encode(self.offer, serializer);
         <bool>::sse_encode(self.spot, serializer);
         <crate::api::rega::MachineStatus>::sse_encode(self.status, serializer);
+        <bool>::sse_encode(self.busy, serializer);
         <Option<String>>::sse_encode(self.switch_type, serializer);
     }
 }

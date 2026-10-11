@@ -13,9 +13,11 @@ use aws_sdk_ec2::types::{Filter, InstanceLifecycleType, InstanceStateName, Locat
 use aws_sdk_s3::error::{DisplayErrorContext, ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{
-    BucketLocationConstraint, BucketVersioningStatus, CreateBucketConfiguration,
-    ServerSideEncryption, ServerSideEncryptionByDefault, ServerSideEncryptionConfiguration,
-    ServerSideEncryptionRule, Tagging, VersioningConfiguration,
+    AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, BucketLocationConstraint,
+    BucketVersioningStatus, CreateBucketConfiguration, ExpirationStatus, LifecycleExpiration,
+    LifecycleRule, LifecycleRuleFilter, NoncurrentVersionExpiration, ServerSideEncryption,
+    ServerSideEncryptionByDefault, ServerSideEncryptionConfiguration, ServerSideEncryptionRule,
+    Tagging, VersioningConfiguration,
 };
 
 use super::api::{AwsApi, BucketInfo, Instance};
@@ -32,6 +34,10 @@ const PRICING_REGION: &str = "us-east-1";
 
 /// How long a terminated instance may take to be gone.
 const TERMINATE_WAIT: Duration = Duration::from_secs(600);
+
+/// How long the state bucket keeps old versions of an object, such as the
+/// state and key of a destroyed machine.
+const OLD_VERSION_DAYS: i32 = 30;
 
 const PROJECT_TAG: (&str, &str) = ("Project", "ReGa");
 const MACHINE_TAG: &str = "ReGaMachine";
@@ -273,11 +279,22 @@ impl SdkApi {
             .await?
             .iter()
             .any(|t| t.key() == PROJECT_TAG.0 && t.value() == PROJECT_TAG.1);
+        let lifecycle = match s3
+            .get_bucket_lifecycle_configuration()
+            .bucket(name)
+            .send()
+            .await
+        {
+            Ok(out) => !out.rules().is_empty(),
+            Err(e) if e.code() == Some("NoSuchLifecycleConfiguration") => false,
+            Err(e) => return Err(fail("reading bucket lifecycle", e)),
+        };
         Ok(BucketInfo {
             versioned,
             encrypted,
             public_access_blocked,
             tagged,
+            lifecycle,
         })
     }
 
@@ -333,6 +350,29 @@ impl AwsApi for SdkApi {
             .iter()
             .filter_map(|o| o.instance_type().map(|t| t.as_str().to_string()))
             .collect())
+    }
+
+    async fn offered_zones(&self, region: &str, type_name: &str) -> ProviderResult<Vec<String>> {
+        let out = self
+            .ec2(region)
+            .describe_instance_type_offerings()
+            .location_type(LocationType::AvailabilityZone)
+            .filters(
+                Filter::builder()
+                    .name("instance-type")
+                    .values(type_name)
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| fail("listing availability zones", e))?;
+        let mut zones: Vec<String> = out
+            .instance_type_offerings()
+            .iter()
+            .filter_map(|o| o.location().map(String::from))
+            .collect();
+        zones.sort();
+        Ok(zones)
     }
 
     async fn gpu_quota(&self, region: &str, spot: bool) -> ProviderResult<u32> {
@@ -699,6 +739,44 @@ impl AwsApi for SdkApi {
             .send()
             .await
             .map_err(|e| fail("tagging the bucket", e))?;
+        Ok(())
+    }
+
+    async fn expire_old_versions(&self, name: &str) -> ProviderResult<()> {
+        let rule = LifecycleRule::builder()
+            .id("rega-old-versions")
+            .status(ExpirationStatus::Enabled)
+            .filter(LifecycleRuleFilter::builder().prefix("").build())
+            .noncurrent_version_expiration(
+                NoncurrentVersionExpiration::builder()
+                    .noncurrent_days(OLD_VERSION_DAYS)
+                    .build(),
+            )
+            // Drops the delete markers left once every old version is gone.
+            .expiration(
+                LifecycleExpiration::builder()
+                    .expired_object_delete_marker(true)
+                    .build(),
+            )
+            .abort_incomplete_multipart_upload(
+                AbortIncompleteMultipartUpload::builder()
+                    .days_after_initiation(7)
+                    .build(),
+            )
+            .build()
+            .expect("status is set");
+        self.s3()
+            .put_bucket_lifecycle_configuration()
+            .bucket(name)
+            .lifecycle_configuration(
+                BucketLifecycleConfiguration::builder()
+                    .rules(rule)
+                    .build()
+                    .expect("rules are set"),
+            )
+            .send()
+            .await
+            .map_err(|e| fail("setting the bucket lifecycle", e))?;
         Ok(())
     }
 

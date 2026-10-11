@@ -703,8 +703,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MachineSummary dco_decode_machine_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return MachineSummary(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -713,7 +713,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       offer: dco_decode_machine_offer(arr[4]),
       spot: dco_decode_bool(arr[5]),
       status: dco_decode_machine_status(arr[6]),
-      switchType: dco_decode_opt_String(arr[7]),
+      busy: dco_decode_bool(arr[7]),
+      switchType: dco_decode_opt_String(arr[8]),
     );
   }
 
@@ -1012,6 +1013,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_offer = sse_decode_machine_offer(deserializer);
     var var_spot = sse_decode_bool(deserializer);
     var var_status = sse_decode_machine_status(deserializer);
+    var var_busy = sse_decode_bool(deserializer);
     var var_switchType = sse_decode_opt_String(deserializer);
     return MachineSummary(
       id: var_id,
@@ -1021,6 +1023,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       offer: var_offer,
       spot: var_spot,
       status: var_status,
+      busy: var_busy,
       switchType: var_switchType,
     );
   }
@@ -1335,6 +1338,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_machine_offer(self.offer, serializer);
     sse_encode_bool(self.spot, serializer);
     sse_encode_machine_status(self.status, serializer);
+    sse_encode_bool(self.busy, serializer);
     sse_encode_opt_String(self.switchType, serializer);
   }
 

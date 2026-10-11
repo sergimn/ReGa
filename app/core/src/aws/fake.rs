@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::api::{AwsApi, BucketInfo, Instance};
-use super::record::{InstanceState, MachineVars};
-use super::IpLookup;
+use super::record::{state_key, InstanceState, MachineVars};
+use super::{state_bucket, IpLookup};
 use crate::model::{MachineState, Orphan, ResourceKind};
 use crate::provider::{ProviderError, ProviderResult};
 use crate::terraform::{Terraform, VARS_FILE};
@@ -21,6 +21,8 @@ pub const MY_IP: &str = "203.0.113.7";
 pub struct Account {
     pub regions: Vec<String>,
     pub offered: HashMap<String, Vec<String>>,
+    /// Zones selling the GPU type, per region.
+    pub zones: HashMap<String, Vec<String>>,
     pub quotas: HashMap<(String, bool), u32>,
     pub in_use: HashMap<(String, bool), u32>,
     pub on_demand: HashMap<(String, String), f64>,
@@ -37,6 +39,10 @@ pub struct Account {
     pub calls: Vec<String>,
     /// Calls about this region fail.
     pub broken_region: Option<String>,
+    /// Deleting this resource fails.
+    pub undeletable: Option<String>,
+    /// A new bucket stays invisible for this many reads.
+    pub slow_new_buckets: u32,
     next_instance: u32,
 }
 
@@ -54,6 +60,8 @@ impl Account {
         };
         for r in ["eu-central-1", "eu-north-1"] {
             a.offered.insert(r.into(), all.clone());
+            a.zones
+                .insert(r.into(), vec![format!("{r}b"), format!("{r}a")]);
             a.on_demand.insert((r.into(), "g4dn.xlarge".into()), 0.84);
             a.on_demand.insert((r.into(), "t3.medium".into()), 0.06);
             a.spot.insert(
@@ -113,6 +121,15 @@ impl AwsApi for FakeAws {
                 .filter(|t| types.contains(t))
                 .cloned()
                 .collect())
+        })
+    }
+
+    async fn offered_zones(&self, region: &str, _type_name: &str) -> ProviderResult<Vec<String>> {
+        self.with(|a| {
+            a.check(region)?;
+            let mut zones = a.zones.get(region).cloned().unwrap_or_default();
+            zones.sort();
+            Ok(zones)
         })
     }
 
@@ -176,6 +193,7 @@ impl AwsApi for FakeAws {
         _region: &str,
         instance_id: &str,
     ) -> ProviderResult<Option<String>> {
+        self.call(format!("password_data {instance_id}"));
         Ok(self.with(|a| a.password_data.get(instance_id).cloned()))
     }
 
@@ -205,6 +223,9 @@ impl AwsApi for FakeAws {
     async fn delete_resource(&self, resource: &Orphan) -> ProviderResult<()> {
         self.call(format!("delete {:?} {}", resource.kind, resource.id));
         self.with(|a| {
+            if a.undeletable.as_deref() == Some(resource.id.as_str()) {
+                return Err(ProviderError::Cloud("DependencyViolation".into()));
+            }
             match resource.kind {
                 ResourceKind::Instance => {
                     for i in a.instances.iter_mut().filter(|i| i.id == resource.id) {
@@ -219,7 +240,17 @@ impl AwsApi for FakeAws {
 
     async fn bucket(&self, name: &str) -> ProviderResult<Option<BucketInfo>> {
         self.call(format!("bucket {name}"));
-        Ok(self.with(|a| a.buckets.get(name).copied()))
+        Ok(self.with(|a| {
+            let info = a.buckets.get(name).copied();
+            if info.is_some()
+                && a.slow_new_buckets > 0
+                && a.calls.iter().any(|c| c.starts_with("create_bucket"))
+            {
+                a.slow_new_buckets -= 1;
+                return None;
+            }
+            info
+        }))
     }
 
     async fn create_bucket(&self, name: &str, region: &str) -> ProviderResult<()> {
@@ -246,6 +277,12 @@ impl AwsApi for FakeAws {
     async fn tag_bucket(&self, name: &str) -> ProviderResult<()> {
         self.call(format!("tag_bucket {name}"));
         self.with(|a| a.buckets.get_mut(name).unwrap().tagged = true);
+        Ok(())
+    }
+
+    async fn expire_old_versions(&self, name: &str) -> ProviderResult<()> {
+        self.call(format!("expire_old_versions {name}"));
+        self.with(|a| a.buckets.get_mut(name).unwrap().lifecycle = true);
         Ok(())
     }
 
@@ -280,11 +317,14 @@ impl AwsApi for FakeAws {
     }
 }
 
-/// Applies the variables it finds to the fake account, like the module would.
+/// Applies the variables it finds to the fake account, like the module would,
+/// and keeps a state in the bucket naming what it made.
 pub struct FakeTerraform {
     pub aws: FakeAws,
     /// `apply` fails with this message when set.
     pub fail_apply: Mutex<Option<String>>,
+    /// Per machine: the instance, root volume and security group in its state.
+    owned: Mutex<HashMap<String, (String, String, String)>>,
 }
 
 impl FakeTerraform {
@@ -292,7 +332,27 @@ impl FakeTerraform {
         Self {
             aws,
             fail_apply: Mutex::new(None),
+            owned: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn save_state(&self, machine_id: &str) {
+        let owned = self.owned.lock().unwrap().get(machine_id).cloned();
+        let resources = match owned {
+            Some((instance, volume, group)) => format!(
+                r#"[{{"mode": "managed", "type": "aws_instance", "instances": [{{"attributes":
+                    {{"id": "{instance}", "root_block_device": [{{"volume_id": "{volume}"}}]}}}}]}},
+                   {{"mode": "managed", "type": "aws_security_group", "instances": [{{"attributes":
+                    {{"id": "{group}"}}}}]}}]"#
+            ),
+            None => "[]".into(),
+        };
+        self.aws.with(|a| {
+            a.objects.insert(
+                (state_bucket(ACCOUNT), state_key(machine_id)),
+                format!(r#"{{"version": 4, "resources": {resources}}}"#).into_bytes(),
+            )
+        });
     }
 }
 
@@ -310,74 +370,83 @@ impl Terraform for FakeTerraform {
     ) -> ProviderResult<String> {
         assert!(env.iter().any(|(k, _)| k == "AWS_ACCESS_KEY_ID"));
         let vars = read_vars(dir);
+        let id = vars.machine_id.clone();
         let verb = args.first().cloned().unwrap_or_default();
-        self.aws
-            .call(format!("terraform {verb} {}", vars.machine_id));
+        self.aws.call(format!("terraform {verb} {id}"));
         match verb.as_str() {
             "apply" => {
                 if let Some(e) = self.fail_apply.lock().unwrap().clone() {
                     return Err(ProviderError::Cloud(e));
                 }
-                self.aws.with(|a| {
+                let owned = self.owned.lock().unwrap().get(&id).cloned();
+                let made = self.aws.with(|a| {
                     let state = match vars.instance_state {
                         InstanceState::Running => MachineState::Running,
                         InstanceState::Stopped => MachineState::Stopped,
                     };
-                    let live = a.instances.iter_mut().find(|i| {
-                        i.machine_id.as_deref() == Some(vars.machine_id.as_str())
-                            && i.state != MachineState::Terminated
+                    let live = owned.as_ref().and_then(|(instance, _, _)| {
+                        a.instances
+                            .iter_mut()
+                            .find(|i| &i.id == instance && i.state != MachineState::Terminated)
                     });
-                    match live {
-                        Some(i) => {
-                            i.type_name = vars.instance_type.clone();
-                            i.state = state;
-                        }
-                        None => {
-                            a.next_instance += 1;
-                            a.instances.push(Instance {
-                                id: format!("i-{}", a.next_instance),
-                                region_id: vars.region.clone(),
-                                machine_id: Some(vars.machine_id.clone()),
-                                type_name: vars.instance_type.clone(),
-                                state,
-                                spot: vars.spot,
-                                public_ip: Some("198.51.100.1".into()),
-                            });
-                            a.resources.push(Orphan {
-                                kind: ResourceKind::SecurityGroup,
-                                id: format!("sg-{}", a.next_instance),
-                                region_id: vars.region.clone(),
-                                machine_id: Some(vars.machine_id.clone()),
-                                name: None,
-                            });
-                        }
+                    if let Some(i) = live {
+                        i.type_name = vars.instance_type.clone();
+                        i.state = state;
+                        return owned;
                     }
+                    a.next_instance += 1;
+                    let n = a.next_instance;
+                    a.instances.push(Instance {
+                        id: format!("i-{n}"),
+                        region_id: vars.region.clone(),
+                        machine_id: Some(id.clone()),
+                        type_name: vars.instance_type.clone(),
+                        state,
+                        spot: vars.spot,
+                        public_ip: Some("198.51.100.1".into()),
+                    });
+                    for (kind, rid) in [
+                        (ResourceKind::Volume, format!("vol-{n}")),
+                        (ResourceKind::SecurityGroup, format!("sg-{n}")),
+                    ] {
+                        a.resources.push(Orphan {
+                            kind,
+                            id: rid,
+                            region_id: vars.region.clone(),
+                            machine_id: Some(id.clone()),
+                            name: None,
+                        });
+                    }
+                    Some((format!("i-{n}"), format!("vol-{n}"), format!("sg-{n}")))
                 });
+                self.owned.lock().unwrap().insert(id.clone(), made.unwrap());
+                self.save_state(&id);
                 Ok(String::new())
             }
             "destroy" => {
-                self.aws.with(|a| {
-                    let mine = |m: &Option<String>| m.as_deref() == Some(vars.machine_id.as_str());
-                    if a.instances.iter().any(|i| {
-                        mine(&i.machine_id) && i.spot && i.state != MachineState::Terminated
-                    }) {
-                        // What the real AWS provider would do: cancel the
-                        // spot request, which the IAM policy denies.
-                        return Err(ProviderError::Cloud(
-                            "CancelSpotInstanceRequests denied".into(),
-                        ));
-                    }
-                    for i in a.instances.iter_mut().filter(|i| mine(&i.machine_id)) {
-                        i.state = MachineState::Terminated;
-                    }
-                    a.resources.retain(|r| !mine(&r.machine_id));
-                    Ok(String::new())
-                })
+                let owned = self.owned.lock().unwrap().get(&id).cloned();
+                if let Some((instance, volume, group)) = owned {
+                    self.aws.with(|a| {
+                        if a.instances.iter().any(|i| {
+                            i.id == instance && i.spot && i.state != MachineState::Terminated
+                        }) {
+                            // What the real AWS provider would do: cancel the
+                            // spot request, which the IAM policy denies.
+                            return Err(ProviderError::Cloud(
+                                "CancelSpotInstanceRequests denied".into(),
+                            ));
+                        }
+                        for i in a.instances.iter_mut().filter(|i| i.id == instance) {
+                            i.state = MachineState::Terminated;
+                        }
+                        a.resources.retain(|r| r.id != volume && r.id != group);
+                        Ok(())
+                    })?;
+                }
+                self.owned.lock().unwrap().remove(&id);
+                self.save_state(&id);
+                Ok(String::new())
             }
-            "output" => Ok(format!(
-                r#"{{"availability_zone": {{"value": "{}a"}}}}"#,
-                vars.region
-            )),
             _ => Ok("{}".into()),
         }
     }

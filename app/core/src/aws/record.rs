@@ -9,7 +9,10 @@
 //! machines/<id>.key.pem   the machine's RSA key, for its Windows password
 //! ```
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::provider::{ProviderError, ProviderResult};
 
@@ -28,11 +31,16 @@ pub fn key_key(machine_id: &str) -> String {
     format!("{PREFIX}{machine_id}.key.pem")
 }
 
+/// Terraform's lock on the state (S3 backend with `use_lockfile`).
+pub fn lock_key(machine_id: &str) -> String {
+    format!("{}.tflock", state_key(machine_id))
+}
+
 /// Every object the bucket may hold for a machine, for clean-up.
 pub fn all_keys(machine_id: &str) -> Vec<String> {
     vec![
         state_key(machine_id),
-        format!("{}.tflock", state_key(machine_id)),
+        lock_key(machine_id),
         record_key(machine_id),
         key_key(machine_id),
     ]
@@ -117,6 +125,55 @@ impl MachineRecord {
     }
 }
 
+/// Every resource id a Terraform state names: each managed resource's `id`
+/// (for key pairs and alarms that is their name) and any volume it holds,
+/// such as an instance's root volume, which has no resource of its own.
+pub fn state_resource_ids(state: &[u8]) -> ProviderResult<HashSet<String>> {
+    #[derive(Deserialize)]
+    struct State {
+        #[serde(default)]
+        resources: Vec<Resource>,
+    }
+    #[derive(Deserialize)]
+    struct Resource {
+        mode: String,
+        #[serde(default)]
+        instances: Vec<ResourceInstance>,
+    }
+    #[derive(Deserialize)]
+    struct ResourceInstance {
+        #[serde(default)]
+        attributes: Value,
+    }
+    fn volume_ids(value: &Value, ids: &mut HashSet<String>) {
+        match value {
+            Value::Object(fields) => {
+                for (name, value) in fields {
+                    if let (true, Some(id)) = (name.ends_with("volume_id"), value.as_str()) {
+                        ids.insert(id.to_string());
+                    }
+                    volume_ids(value, ids);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| volume_ids(v, ids)),
+            _ => {}
+        }
+    }
+
+    let state: State = serde_json::from_slice(state)
+        .map_err(|e| ProviderError::Cloud(format!("unreadable Terraform state: {e}")))?;
+    let mut ids = HashSet::new();
+    for resource in state.resources.iter().filter(|r| r.mode == "managed") {
+        for instance in &resource.instances {
+            if let Some(id) = instance.attributes["id"].as_str() {
+                ids.insert(id.to_string());
+            }
+            volume_ids(&instance.attributes, &mut ids);
+        }
+    }
+    Ok(ids)
+}
+
 /// Matches the module's `machine_id` validation: 1-32 lowercase letters,
 /// digits or dashes, not starting with a dash.
 pub fn is_machine_id(id: &str) -> bool {
@@ -197,6 +254,31 @@ mod tests {
         }
         assert_eq!(machine_id_of("machines/x.txt"), None);
         assert_eq!(machine_id_of("other/x.json"), None);
+    }
+
+    #[test]
+    fn state_names_its_resources_and_their_volumes() {
+        let state = br#"{
+            "version": 4,
+            "resources": [
+                {"mode": "data", "type": "aws_vpc", "name": "default",
+                 "instances": [{"attributes": {"id": "vpc-1"}}]},
+                {"mode": "managed", "type": "aws_instance", "name": "machine",
+                 "instances": [{"attributes": {"id": "i-1",
+                     "root_block_device": [{"volume_id": "vol-root", "tags": {"Name": "x"}}]}}]},
+                {"mode": "managed", "type": "aws_key_pair", "name": "machine",
+                 "instances": [{"attributes": {"id": "rega-m", "key_pair_id": "key-1"}}]},
+                {"mode": "managed", "type": "aws_volume_attachment", "name": "library",
+                 "instances": [{"attributes": {"id": "vai-1", "volume_id": "vol-lib"}}]}
+            ]
+        }"#;
+        let ids = state_resource_ids(state).unwrap();
+        for id in ["i-1", "vol-root", "rega-m", "vai-1", "vol-lib"] {
+            assert!(ids.contains(id), "{id}");
+        }
+        assert!(!ids.contains("vpc-1"));
+        assert!(state_resource_ids(b"{}").unwrap().is_empty());
+        assert!(state_resource_ids(b"{").is_err());
     }
 
     #[test]

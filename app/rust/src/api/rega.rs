@@ -94,6 +94,9 @@ pub struct MachineSummary {
     pub offer: MachineOffer,
     pub spot: bool,
     pub status: MachineStatus,
+    /// A change to it is running, on this device or another one; its
+    /// actions wait until that ends.
+    pub busy: bool,
     /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
     /// machines, which can't change type.
     pub switch_type: Option<String>,
@@ -210,7 +213,9 @@ fn choices_view(candidates: region::Candidates) -> RegionChoices {
 pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary>> {
     let entry = registry::entry(&provider_id)?;
     let provider = entry.provider();
-    let (machines, regions) = futures::try_join!(provider.list_machines(), provider.regions())?;
+    let (machines, regions) = futures::join!(provider.list_machines(), provider.regions());
+    // Region names are only for display; ids do when they can't be read.
+    let (machines, regions) = (machines?, regions.unwrap_or_default());
     let types = provider.machine_types();
     Ok(machines
         .into_iter()
@@ -225,9 +230,11 @@ fn region_name(regions: &[Region], id: &str) -> String {
         .map_or_else(|| id.to_string(), |r| r.display_name.clone())
 }
 
-/// One machine as the UI shows it, after an action changed it.
+/// One machine as the UI shows it, after an action changed it. The action
+/// already happened, so a region list that can't be read only costs the
+/// region's display name.
 async fn view(provider: &dyn CloudProvider, m: Machine) -> RegaResult<MachineSummary> {
-    let regions = provider.regions().await?;
+    let regions = provider.regions().await.unwrap_or_default();
     Ok(summary(m, &provider.machine_types(), |id| {
         region_name(&regions, id)
     }))
@@ -296,7 +303,8 @@ pub async fn destroy_machine(provider_id: String, machine_id: String) -> RegaRes
 pub async fn list_orphans(provider_id: String) -> RegaResult<Vec<OrphanSummary>> {
     let entry = registry::entry(&provider_id)?;
     let provider = entry.provider();
-    let (orphans, regions) = futures::try_join!(provider.orphans(), provider.regions())?;
+    let (orphans, regions) = futures::join!(provider.orphans(), provider.regions());
+    let (orphans, regions) = (orphans?, regions.unwrap_or_default());
     Ok(orphans
         .into_iter()
         .map(|o| orphan_view(o, &regions))
@@ -401,6 +409,7 @@ fn summary(
             MachineState::Terminated => MachineStatus::Terminated,
         },
         region_name: region_name(&m.region_id),
+        busy: m.busy,
         id: m.id,
         name: m.name,
         region_id: m.region_id,
@@ -481,6 +490,7 @@ mod tests {
             disk_gib: 128,
             spot,
             state: MachineState::Running,
+            busy: false,
         }
     }
 

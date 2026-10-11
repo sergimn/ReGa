@@ -14,9 +14,9 @@ mod pricing;
 pub mod record;
 pub mod sdk;
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,8 +28,8 @@ use crate::model::{
 };
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 use crate::setup::{LibrarySync, MachineAccess, MachineSetup, NoSetup};
-use crate::terraform::{self, io_error, Backend, Terraform};
-use api::{AwsApi, Instance};
+use crate::terraform::{self, io_error, Backend, LockInfo, RunMarker, Terraform};
+use api::{AwsApi, BucketInfo, Instance};
 use cache::TtlCache;
 use keys::MachineKey;
 use record::{InstanceState, MachineRecord, MachineVars};
@@ -43,6 +43,14 @@ pub const MAX_DISK_GIB: u32 = 256;
 
 /// What copying the game library out of [`HOME_REGION`] costs, per GB.
 pub const LIBRARY_COPY_USD_PER_GB: f64 = 0.02;
+
+/// How long an action waits for an earlier Terraform run on the same machine
+/// to end, such as a launch that kept going after the app was closed.
+const EARLIER_RUN_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// A state lock this old was left by a run that died: no run of the module
+/// takes this long.
+const STALE_LOCK_SECS: u64 = 2 * 60 * 60;
 
 /// Machine types the IAM policy allows the app to use.
 pub fn catalog() -> Vec<MachineType> {
@@ -218,6 +226,16 @@ impl Caches {
     }
 }
 
+/// What the state bucket says about the machines, read in one go.
+struct Snapshot {
+    /// Readable records; one this app can't read is left out.
+    records: Vec<MachineRecord>,
+    /// The resource ids each machine's Terraform state names.
+    owned: HashMap<String, HashSet<String>>,
+    /// Machines with a change running, here or on another device.
+    busy: HashSet<String>,
+}
+
 pub struct AwsProvider {
     api: Arc<dyn AwsApi>,
     account_id: String,
@@ -231,6 +249,9 @@ pub struct AwsProvider {
     /// Terraform runs one at a time: they share the plugin cache, and the
     /// account's GPU quota only fits one machine anyway.
     terraform_lock: tokio::sync::Mutex<()>,
+    /// One action per machine at a time, so a stop can't land in the middle
+    /// of a launch.
+    actions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AwsProvider {
@@ -250,6 +271,7 @@ impl AwsProvider {
             caches: Caches::new(),
             storage: tokio::sync::Mutex::new(None),
             terraform_lock: tokio::sync::Mutex::new(()),
+            actions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -328,26 +350,115 @@ impl AwsProvider {
         Ok(())
     }
 
+    /// ReGa runs one machine at a time: refuses while another one is up.
+    async fn check_none_running(&self, except: Option<&str>) -> ProviderResult<()> {
+        let machines = self.list_machines().await?;
+        let running = machines.iter().find(|m| {
+            Some(m.id.as_str()) != except
+                && matches!(
+                    m.state,
+                    MachineState::Pending | MachineState::Running | MachineState::Stopping
+                )
+        });
+        match running {
+            Some(m) => Err(ProviderError::InvalidState(format!(
+                "{} is still running. ReGa runs one machine at a time, so stop or destroy it first.",
+                m.name
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Claims `machine_id` for one action; fails while another one runs.
+    fn begin(&self, machine_id: &str) -> ProviderResult<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = self
+            .actions
+            .lock()
+            .unwrap()
+            .entry(machine_id.into())
+            .or_default()
+            .clone();
+        lock.try_lock_owned().map_err(|_| {
+            ProviderError::InvalidState(
+                "another change to this machine is still running; try again when it's done".into(),
+            )
+        })
+    }
+
+    /// Whether this app is in the middle of an action on `machine_id`.
+    fn acting_on(&self, machine_id: &str) -> bool {
+        self.actions
+            .lock()
+            .unwrap()
+            .get(machine_id)
+            .is_some_and(|m| m.try_lock().is_err())
+    }
+
     fn machine_dir(&self, machine_id: &str) -> PathBuf {
         self.machines_dir.join(machine_id)
     }
 
-    /// Every machine record in the state bucket.
-    async fn records(&self) -> ProviderResult<Vec<MachineRecord>> {
+    /// Reads every record, state and lock in the state bucket.
+    async fn snapshot(&self) -> ProviderResult<Snapshot> {
         let bucket = self.state_bucket();
         let objects = self.api.list_objects(&bucket, record::PREFIX).await?;
-        let keys: Vec<String> = objects
-            .iter()
-            .filter(|(key, _)| key.ends_with(".json"))
-            .filter_map(|(key, _)| record::machine_id_of(key))
-            .map(record::record_key)
-            .collect();
-        let bodies = try_join_all(keys.iter().map(|key| self.api.get_object(&bucket, key))).await?;
-        bodies
+        let ids_with = |suffix: &str| -> Vec<String> {
+            objects
+                .iter()
+                .filter(|(key, _)| key.ends_with(suffix))
+                .filter_map(|(key, _)| record::machine_id_of(key))
+                .map(String::from)
+                .collect()
+        };
+        let (record_ids, state_ids, lock_ids) =
+            (ids_with(".json"), ids_with(".tfstate"), ids_with(".tflock"));
+
+        let get = |key: String| {
+            let bucket = &bucket;
+            async move { self.api.get_object(bucket, &key).await }
+        };
+        let (bodies, states, locks) = futures::try_join!(
+            try_join_all(record_ids.iter().map(|id| get(record::record_key(id)))),
+            try_join_all(state_ids.iter().map(|id| get(record::state_key(id)))),
+            try_join_all(lock_ids.iter().map(|id| get(record::lock_key(id)))),
+        )?;
+        // A record this app can't read (garbled, or saved by a newer
+        // version) is left out rather than hiding every other machine. Its
+        // resources stay owned by its state, so none show as leftovers.
+        let records = bodies
             .into_iter()
             .flatten()
-            .map(|body| MachineRecord::from_json(&body))
-            .collect()
+            .filter_map(|body| MachineRecord::from_json(&body).ok())
+            .collect();
+        let mut owned = HashMap::new();
+        for (id, state) in state_ids.into_iter().zip(states) {
+            if let Some(state) = state {
+                owned.insert(id, record::state_resource_ids(&state)?);
+            }
+        }
+        let mut busy = HashSet::new();
+        for id in &record_ids {
+            let marker = terraform::run_marker(&self.machine_dir(id)).await;
+            if self.acting_on(id) || marker.as_ref().is_some_and(RunMarker::is_running) {
+                busy.insert(id.clone());
+            }
+        }
+        for (id, lock) in lock_ids.into_iter().zip(locks) {
+            let Some(lock) = lock.as_deref().and_then(LockInfo::parse) else {
+                continue;
+            };
+            let dead_run = terraform::run_marker(&self.machine_dir(&id))
+                .await
+                .filter(|m| !m.is_running());
+            if !lock_is_stale(&lock, dead_run.as_ref()) {
+                busy.insert(id);
+            }
+        }
+        Ok(Snapshot {
+            records,
+            owned,
+            busy,
+        })
     }
 
     async fn record(&self, machine_id: &str) -> ProviderResult<MachineRecord> {
@@ -364,6 +475,16 @@ impl AwsProvider {
             )));
         }
         Ok(record)
+    }
+
+    /// The resource ids the machine's Terraform state names, `None` when it
+    /// has no state yet.
+    async fn owned_ids(&self, machine_id: &str) -> ProviderResult<Option<HashSet<String>>> {
+        self.api
+            .get_object(&self.state_bucket(), &record::state_key(machine_id))
+            .await?
+            .map(|state| record::state_resource_ids(&state))
+            .transpose()
     }
 
     async fn save_record(&self, record: &MachineRecord) -> ProviderResult<()> {
@@ -449,12 +570,20 @@ impl AwsProvider {
         let backend = self.backend(record.id()).await?;
         let _one_at_a_time = self.terraform_lock.lock().await;
         let dir = self.machine_dir(record.id());
+        // A run that outlived the app may still be finishing; one that was
+        // killed may have left its lock on the state.
+        let dead_run = terraform::wait_for_earlier_run(&dir, EARLIER_RUN_WAIT).await?;
+        self.clear_stale_lock(record.id(), dead_run.as_ref())
+            .await?;
         terraform::prepare_workdir(&dir, &record.tfvars_json()).await?;
         let env = self.terraform_env().await?;
         self.terraform
             .run(&dir, &terraform::init_args(&backend), &env)
             .await?;
-        self.terraform.run(&dir, &command, &env).await?;
+        self.terraform
+            .run(&dir, &command, &env)
+            .await
+            .map_err(explain)?;
         // The local copy of the state is a cache; the bucket stays the
         // source of truth, so failing to refresh it doesn't fail the run.
         if let Ok(state) = self
@@ -467,30 +596,45 @@ impl AwsProvider {
         Ok(())
     }
 
-    /// Reads the module outputs after a run (the zone it picked).
-    async fn outputs(
+    /// Removes the machine's state lock when the run that took it is dead.
+    async fn clear_stale_lock(
+        &self,
+        machine_id: &str,
+        dead_run: Option<&RunMarker>,
+    ) -> ProviderResult<()> {
+        let bucket = self.state_bucket();
+        let key = record::lock_key(machine_id);
+        let lock = self.api.get_object(&bucket, &key).await?;
+        if lock
+            .as_deref()
+            .and_then(LockInfo::parse)
+            .is_some_and(|lock| lock_is_stale(&lock, dead_run))
+        {
+            self.api.delete_object(&bucket, &key).await?;
+        }
+        Ok(())
+    }
+
+    /// The machine's instance, as its Terraform state names it.
+    async fn instance_of(&self, record: &MachineRecord) -> ProviderResult<Option<Instance>> {
+        let (instances, owned) = futures::try_join!(
+            self.api.tagged_instances(&record.vars.region),
+            self.owned_ids(record.id()),
+        )?;
+        Ok(pick_instance(
+            &instances,
+            record.id(),
+            owned.as_ref(),
+            false,
+        ))
+    }
+
+    fn machine_from(
         &self,
         record: &MachineRecord,
-    ) -> ProviderResult<std::collections::HashMap<String, String>> {
-        let _one_at_a_time = self.terraform_lock.lock().await;
-        let env = self.terraform_env().await?;
-        let out = self
-            .terraform
-            .run(
-                &self.machine_dir(record.id()),
-                &terraform::output_args(),
-                &env,
-            )
-            .await?;
-        terraform::parse_outputs(&out)
-    }
-
-    async fn instance_of(&self, record: &MachineRecord) -> ProviderResult<Option<Instance>> {
-        let instances = self.api.tagged_instances(&record.vars.region).await?;
-        Ok(pick_instance(instances, record.id()))
-    }
-
-    fn machine_from(&self, record: &MachineRecord, instance: Option<&Instance>) -> Machine {
+        instance: Option<&Instance>,
+        busy: bool,
+    ) -> Machine {
         let type_name = instance.map_or(&record.vars.instance_type, |i| &i.type_name);
         let machine_type = self
             .machine_type(type_name)
@@ -502,6 +646,14 @@ impl AwsProvider {
                     gpu: None,
                 },
             });
+        let state = match (instance, busy) {
+            (Some(i), _) => i.state,
+            // Being created.
+            (None, true) => MachineState::Pending,
+            // Terminated (a reclaimed spot machine) or never created (a
+            // failed launch); destroy cleans up either.
+            (None, false) => MachineState::Terminated,
+        };
         Machine {
             id: record.id().into(),
             name: record.name.clone(),
@@ -509,9 +661,8 @@ impl AwsProvider {
             machine_type,
             disk_gib: record.vars.root_volume_size,
             spot: record.vars.spot,
-            // No instance means it was terminated (a reclaimed spot machine)
-            // or never created (a failed launch); destroy cleans up either.
-            state: instance.map_or(MachineState::Terminated, |i| i.state),
+            state,
+            busy,
         }
     }
 
@@ -548,17 +699,35 @@ impl AwsProvider {
         Ok(vec![format!("{}/32", self.ip.public_ip().await?)])
     }
 
-    /// The zone with the cheapest spot price right now.
-    async fn cheapest_spot_zone(
-        &self,
-        region_id: &str,
-        type_name: &str,
-    ) -> ProviderResult<Option<String>> {
-        let prices = self.spot_prices(region_id, type_name).await?;
-        Ok(prices
+    /// The zone a new machine goes in: for spot the one with the cheapest
+    /// price right now, otherwise the module's choice (the first zone that
+    /// sells the GPU type, so a later switch to GPU fits). Pinned before the
+    /// first apply, so a run that dies halfway can't move the machine.
+    async fn launch_zone(&self, request: &LaunchRequest) -> ProviderResult<String> {
+        let gpu_type = catalog()
             .into_iter()
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(zone, _)| zone))
+            .find(MachineType::is_gpu)
+            .expect("the catalog has a GPU type")
+            .type_name;
+        let zone = if request.spot {
+            self.spot_prices(&request.region_id, &request.type_name)
+                .await?
+                .into_iter()
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(zone, _)| zone)
+        } else {
+            self.api
+                .offered_zones(&request.region_id, &gpu_type)
+                .await?
+                .into_iter()
+                .min()
+        };
+        zone.ok_or_else(|| {
+            ProviderError::Cloud(format!(
+                "no zone in {} sells {gpu_type}",
+                region_name(&request.region_id)
+            ))
+        })
     }
 
     async fn spot_prices(
@@ -581,21 +750,135 @@ impl AwsProvider {
         let instance = self.instance_of(record).await?;
         if let Some(i) = instance
             .as_ref()
-            .filter(|i| i.state == MachineState::Running)
+            .filter(|i| self.setup.enabled() && i.state == MachineState::Running)
         {
             let access = self.access(record, i).await?;
             self.setup.after_start(&access).await?;
         }
-        Ok(self.machine_from(record, instance.as_ref()))
+        Ok(self.machine_from(record, instance.as_ref(), false))
+    }
+
+    /// Runs the setup hook before a stop. Nothing here blocks the stop: if
+    /// the hook can't run, D: is kept.
+    async fn before_stop(
+        &self,
+        record: &MachineRecord,
+        instance: Option<&Instance>,
+    ) -> LibrarySync {
+        let Some(i) = instance.filter(|i| self.setup.enabled() && i.state == MachineState::Running)
+        else {
+            return LibrarySync::NotSynced;
+        };
+        match self.access(record, i).await {
+            Ok(access) => self
+                .setup
+                .before_stop(&access)
+                .await
+                .unwrap_or(LibrarySync::NotSynced),
+            Err(_) => LibrarySync::NotSynced,
+        }
+    }
+
+    /// Makes a new bucket's settings readable: S3 can take a moment to show
+    /// a bucket it just created.
+    async fn new_bucket(&self, bucket: &str) -> ProviderResult<BucketInfo> {
+        for attempt in 0..5 {
+            if let Some(info) = self.api.bucket(bucket).await? {
+                return Ok(info);
+            }
+            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+        }
+        Err(ProviderError::Cloud(format!(
+            "bucket {bucket} was created but can't be read yet; try again in a minute"
+        )))
     }
 }
 
-/// The instance carrying `machine_id`'s tag, live ones first.
-fn pick_instance(instances: Vec<Instance>, machine_id: &str) -> Option<Instance> {
-    instances
-        .into_iter()
-        .filter(|i| i.machine_id.as_deref() == Some(machine_id))
-        .min_by_key(|i| i.state == MachineState::Terminated)
+/// The machine's instance among `instances`: the one its Terraform state
+/// names. While a run is creating it (`busy`) and the state names none yet,
+/// whichever live instance carries its tag.
+fn pick_instance(
+    instances: &[Instance],
+    machine_id: &str,
+    owned: Option<&HashSet<String>>,
+    busy: bool,
+) -> Option<Instance> {
+    let mut mine = instances
+        .iter()
+        .filter(|i| i.machine_id.as_deref() == Some(machine_id));
+    let named = mine
+        .clone()
+        .find(|i| owned.is_some_and(|ids| ids.contains(&i.id)));
+    let names_one = owned.is_some_and(|ids| ids.iter().any(|id| id.starts_with("i-")));
+    match named {
+        Some(i) => Some(i.clone()),
+        None if busy && !names_one => mine.find(|i| i.state != MachineState::Terminated).cloned(),
+        None => None,
+    }
+}
+
+/// Whether a state lock was left by a Terraform run that died: one this
+/// computer started and that is gone (`dead_run`), or one older than any
+/// run takes.
+fn lock_is_stale(lock: &LockInfo, dead_run: Option<&RunMarker>) -> bool {
+    stale_at(
+        lock,
+        dead_run,
+        terraform::host_name().as_deref(),
+        terraform::unix_now(),
+    )
+}
+
+fn stale_at(lock: &LockInfo, dead_run: Option<&RunMarker>, host: Option<&str>, now: u64) -> bool {
+    let Some(created) = unix_secs(&lock.created) else {
+        return false;
+    };
+    if now.saturating_sub(created) > STALE_LOCK_SECS {
+        return true;
+    }
+    // Terraform takes the lock right after it starts, or up to its lock
+    // timeout later while another device holds it.
+    dead_run.zip(host).is_some_and(|(run, host)| {
+        lock.host() == Some(host)
+            && (run.started.saturating_sub(60)..=run.started + 10 * 60).contains(&created)
+    })
+}
+
+fn unix_secs(rfc3339: &str) -> Option<u64> {
+    use aws_sdk_s3::primitives::{DateTime, DateTimeFormat};
+    DateTime::from_str(rfc3339, DateTimeFormat::DateTime)
+        .ok()
+        .and_then(|t| u64::try_from(t.secs()).ok())
+}
+
+/// Adds what to do about errors only an AWS admin can fix: a service-linked
+/// role the `rega-claude` policy can't create.
+fn explain(err: ProviderError) -> ProviderError {
+    let ProviderError::Cloud(message) = err else {
+        return err;
+    };
+    let lower = message.to_lowercase();
+    if ![
+        "servicelinkedrole",
+        "service-linked role",
+        "service linked role",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
+    {
+        return ProviderError::Cloud(message);
+    }
+    let service = if lower.contains("alarm") || lower.contains("cloudwatch") {
+        "events.amazonaws.com"
+    } else if lower.contains("spot") {
+        "spot.amazonaws.com"
+    } else {
+        "events.amazonaws.com"
+    };
+    ProviderError::Cloud(format!(
+        "{message}. An AWS admin has to create a service-linked role once for this account: \
+         aws iam create-service-linked-role --aws-service-name {service}"
+    ))
 }
 
 #[async_trait]
@@ -618,7 +901,7 @@ impl CloudProvider for AwsProvider {
             library_bucket: library_bucket(&self.account_id),
             region_id: HOME_REGION.into(),
         };
-        for (bucket, versioned) in [
+        for (bucket, is_state) in [
             (&location.state_bucket, true),
             (&location.library_bucket, false),
         ] {
@@ -626,11 +909,16 @@ impl CloudProvider for AwsProvider {
                 Some(info) => info,
                 None => {
                     self.api.create_bucket(bucket, HOME_REGION).await?;
-                    self.api.bucket(bucket).await?.unwrap_or_default()
+                    self.new_bucket(bucket).await?
                 }
             };
-            if versioned && !info.versioned {
+            if is_state && !info.versioned {
                 self.api.enable_versioning(bucket).await?;
+            }
+            // Versions of a destroyed machine's state and key would
+            // otherwise stay forever.
+            if is_state && !info.lifecycle {
+                self.api.expire_old_versions(bucket).await?;
             }
             if !info.encrypted {
                 self.api.enable_encryption(bucket).await?;
@@ -742,7 +1030,11 @@ impl CloudProvider for AwsProvider {
     }
 
     async fn list_machines(&self) -> ProviderResult<Vec<Machine>> {
-        let mut records = self.records().await?;
+        let Snapshot {
+            mut records,
+            owned,
+            busy,
+        } = self.snapshot().await?;
         records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
         let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
         let instances: Vec<Instance> =
@@ -754,15 +1046,9 @@ impl CloudProvider for AwsProvider {
         Ok(records
             .iter()
             .map(|r| {
-                let instance = pick_instance(
-                    instances
-                        .iter()
-                        .filter(|i| i.region_id == r.vars.region)
-                        .cloned()
-                        .collect(),
-                    r.id(),
-                );
-                self.machine_from(r, instance.as_ref())
+                let busy = busy.contains(r.id());
+                let instance = pick_instance(&instances, r.id(), owned.get(r.id()), busy);
+                self.machine_from(r, instance.as_ref(), busy)
             })
             .collect())
     }
@@ -788,16 +1074,12 @@ impl CloudProvider for AwsProvider {
         }
         self.check_gpu_quota(&request.region_id, &machine_type, request.spot)
             .await?;
+        self.check_none_running(None).await?;
 
         let machine_id = record::new_machine_id(&request.name);
+        let _acting = self.begin(&machine_id)?;
         let key = MachineKey::generate()?;
-        let availability_zone = if request.spot {
-            self.cheapest_spot_zone(&request.region_id, &request.type_name)
-                .await?
-        } else {
-            None
-        };
-        let mut record = MachineRecord::new(
+        let record = MachineRecord::new(
             request.name.clone(),
             MachineVars {
                 region: request.region_id.clone(),
@@ -805,7 +1087,7 @@ impl CloudProvider for AwsProvider {
                 instance_type: request.type_name.clone(),
                 spot: request.spot,
                 instance_state: InstanceState::Running,
-                availability_zone,
+                availability_zone: Some(self.launch_zone(request).await?),
                 public_key: key.openssh_public(&format!("rega-{machine_id}")),
                 root_volume_size: request.disk_gib,
                 library_volume_enabled: true,
@@ -831,17 +1113,12 @@ impl CloudProvider for AwsProvider {
         self.save_record(&record).await?;
 
         self.apply(&record).await?;
-        if record.vars.availability_zone.is_none() {
-            if let Some(zone) = self.outputs(&record).await?.remove("availability_zone") {
-                record.vars.availability_zone = Some(zone);
-                self.save_record(&record).await?;
-            }
-        }
         self.after_start(&record).await
     }
 
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
         let machine_type = self.machine_type(type_name)?;
+        let _acting = self.begin(machine_id)?;
         let mut record = self.record(machine_id).await?;
         if record.vars.spot {
             return Err(ProviderError::SpotResize);
@@ -861,17 +1138,22 @@ impl CloudProvider for AwsProvider {
         self.save_record(&record).await?;
         self.apply(&record).await?;
         let instance = self.instance_of(&record).await?;
-        Ok(self.machine_from(&record, instance.as_ref()))
+        Ok(self.machine_from(&record, instance.as_ref(), false))
     }
 
     async fn start(&self, machine_id: &str) -> ProviderResult<Machine> {
+        let _acting = self.begin(machine_id)?;
         let mut record = self.record(machine_id).await?;
         let instance = self.instance_of(&record).await?;
-        if instance.as_ref().map(|i| i.state) == Some(MachineState::Stopped) {
+        let up = instance
+            .as_ref()
+            .is_some_and(|i| matches!(i.state, MachineState::Pending | MachineState::Running));
+        if !up {
             let machine_type = self.machine_type(&record.vars.instance_type)?;
             self.check_gpu_quota(&record.vars.region, &machine_type, record.vars.spot)
                 .await?;
         }
+        self.check_none_running(Some(machine_id)).await?;
         record.vars.instance_state = InstanceState::Running;
         record.vars.library_volume_enabled = true;
         record.vars.client_cidrs = self.client_cidrs(record.vars.wireguard_enabled).await?;
@@ -881,6 +1163,7 @@ impl CloudProvider for AwsProvider {
     }
 
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine> {
+        let _acting = self.begin(machine_id)?;
         let mut record = self.record(machine_id).await?;
         if record.vars.spot {
             return Err(ProviderError::InvalidState(
@@ -888,16 +1171,7 @@ impl CloudProvider for AwsProvider {
             ));
         }
         let instance = self.instance_of(&record).await?;
-        let sync = match instance
-            .as_ref()
-            .filter(|i| i.state == MachineState::Running)
-        {
-            Some(i) => {
-                let access = self.access(&record, i).await?;
-                self.setup.before_stop(&access).await?
-            }
-            None => LibrarySync::NotSynced,
-        };
+        let sync = self.before_stop(&record, instance.as_ref()).await;
         record.vars.instance_state = InstanceState::Stopped;
         // D: only goes away once its games are safe in S3.
         if sync == LibrarySync::Synced {
@@ -906,10 +1180,11 @@ impl CloudProvider for AwsProvider {
         self.save_record(&record).await?;
         self.apply(&record).await?;
         let instance = self.instance_of(&record).await?;
-        Ok(self.machine_from(&record, instance.as_ref()))
+        Ok(self.machine_from(&record, instance.as_ref(), false))
     }
 
     async fn destroy(&self, machine_id: &str) -> ProviderResult<()> {
+        let _acting = self.begin(machine_id)?;
         let record = self.record(machine_id).await?;
         // The AWS provider cancels the spot request before terminating, and
         // the IAM policy doesn't allow that; terminating first leaves
@@ -946,21 +1221,22 @@ impl CloudProvider for AwsProvider {
     }
 
     async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {
-        let known: HashSet<String> = self
-            .api
-            .list_objects(&self.state_bucket(), record::PREFIX)
-            .await?
-            .iter()
-            .filter_map(|(key, _)| record::machine_id_of(key))
-            .map(String::from)
-            .collect();
+        let snapshot = self.snapshot().await?;
+        let owned: HashSet<&String> = snapshot.owned.values().flatten().collect();
         let regions = self.enabled_regions().await?;
         let mut orphans: Vec<Orphan> =
             try_join_all(regions.iter().map(|r| self.api.tagged_resources(r)))
                 .await?
                 .into_iter()
                 .flatten()
-                .filter(|o| o.machine_id.as_ref().is_none_or(|m| !known.contains(m)))
+                // Owned by a state, or by a machine whose run may still be
+                // creating it.
+                .filter(|o| !owned.contains(&o.id))
+                .filter(|o| {
+                    o.machine_id
+                        .as_ref()
+                        .is_none_or(|m| !snapshot.busy.contains(m))
+                })
                 .collect();
         orphans.sort_by(|a, b| (a.kind, &a.region_id, &a.id).cmp(&(b.kind, &b.region_id, &b.id)));
         Ok(orphans)
@@ -971,10 +1247,21 @@ impl CloudProvider for AwsProvider {
         let current: HashSet<Orphan> = self.orphans().await?.into_iter().collect();
         let mut doomed: Vec<&Orphan> = orphans.iter().filter(|o| current.contains(*o)).collect();
         doomed.sort_by_key(|o| o.kind);
+        // One that can't go yet doesn't keep the others.
+        let mut failures = Vec::new();
         for orphan in doomed {
-            self.api.delete_resource(orphan).await?;
+            if let Err(e) = self.api.delete_resource(orphan).await {
+                failures.push(format!("{}: {e}", orphan.id));
+            }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ProviderError::Cloud(format!(
+                "couldn't delete {}",
+                failures.join("; ")
+            )))
+        }
     }
 }
 

@@ -5,7 +5,8 @@
 //! cargo test -p rega_core --test aws_live -- --ignored --nocapture
 //! ```
 //!
-//! They list and price things but create, change and delete nothing.
+//! They list and price things. Only `storage_is_ready` changes anything: it
+//! makes the buckets ready, as the app's first launch would.
 
 use rega_core::aws::{AwsProvider, ConnectOptions};
 use rega_core::{region, CloudProvider};
@@ -58,4 +59,11 @@ async fn lists_machines_and_orphans() {
     let aws = connect().await;
     println!("machines: {:?}", aws.list_machines().await.unwrap());
     println!("orphans: {:?}", aws.orphans().await.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs AWS credentials"]
+async fn storage_is_ready() {
+    let aws = connect().await;
+    println!("{:?}", aws.ensure_storage().await.unwrap());
 }

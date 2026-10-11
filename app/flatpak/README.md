@@ -15,7 +15,9 @@ CI builds the same bundle and uploads `rega.flatpak` as an artifact.
 Terraform is bundled (the `terraform` module in the manifest); the app runs
 it from `/app/bin`. The AWS Terraform provider is downloaded on first use
 into the app's cache. The app reads AWS credentials from `~/.aws`, which
-the manifest shares read-only.
+the manifest shares read-only, apart from the SSO token cache. Terraform
+runs inside the sandbox, so quitting the app mid-change stops it; the app
+asks first, and clears the lock it leaves on the next change.
 
 Not bundled yet: Ansible. It will be added as a module here once the app
 runs it.

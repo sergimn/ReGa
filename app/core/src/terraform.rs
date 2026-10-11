@@ -2,12 +2,12 @@
 //! machine, with the module embedded in the app so the app always runs the
 //! module it was built and tested with.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::provider::{ProviderError, ProviderResult};
 
@@ -60,6 +60,36 @@ pub const VARS_FILE: &str = "terraform.tfvars.json";
 
 /// How long Terraform waits for another device's lock on the same state.
 const LOCK_TIMEOUT: &str = "-lock-timeout=5m";
+
+/// Names the Terraform process working in a machine folder, so an app opened
+/// again can tell whether the last run is still going or was killed.
+const RUN_MARKER: &str = "terraform.pid";
+
+/// What Terraform may see of the app's environment, besides the credentials
+/// the app passes. Anything else, such as `TF_WORKSPACE`, `TF_CLI_ARGS`,
+/// `TF_VAR_*` or another AWS profile, could point a run somewhere else.
+const PASSTHROUGH_ENV: &[&str] = &[
+    "HOME",
+    "PATH",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "TZ",
+    "TMPDIR",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "AWS_CA_BUNDLE",
+];
+
+fn passes_through(name: &str) -> bool {
+    PASSTHROUGH_ENV.contains(&name) || name.starts_with("LC_")
+}
 
 /// Runs the Terraform CLI. Behind a trait so tests can record the calls.
 #[async_trait]
@@ -119,33 +149,148 @@ impl Terraform for TerraformCli {
         tokio::fs::create_dir_all(&self.plugin_cache)
             .await
             .map_err(|e| io_error("create the Terraform plugin cache", e))?;
-        let output = tokio::process::Command::new(binary)
+        // Output goes to files, not pipes, and Terraform gets its own process
+        // group: if the app quits mid-run, Terraform can still finish and
+        // release its state lock instead of dying on a closed pipe.
+        let id = std::process::id();
+        let out_path = dir.join(format!(".terraform-{id}.out"));
+        let err_path = dir.join(format!(".terraform-{id}.err"));
+        let create = |path: &Path| {
+            std::fs::File::create(path).map_err(|e| io_error("save Terraform's output", e))
+        };
+        let mut child = tokio::process::Command::new(binary)
             .args(args)
             .current_dir(dir)
-            // The credentials in `env` must win over any profile.
-            .env_remove("AWS_PROFILE")
-            .env_remove("AWS_DEFAULT_PROFILE")
-            .env_remove("AWS_SESSION_TOKEN")
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(k, _)| k.to_str().is_some_and(passes_through)))
             .envs(env.iter().map(|(k, v)| (k, v)))
             .env("TF_IN_AUTOMATION", "1")
             .env("TF_INPUT", "0")
             .env("CHECKPOINT_DISABLE", "1")
             .env("TF_PLUGIN_CACHE_DIR", &self.plugin_cache)
             .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
+            .stdout(create(&out_path)?)
+            .stderr(create(&err_path)?)
+            .process_group(0)
+            .spawn()
             .map_err(|e| io_error("run Terraform", e))?;
-        if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        if let Some(pid) = child.id() {
+            let marker = RunMarker {
+                pid,
+                program: binary.to_string_lossy().into_owned(),
+                started: unix_now(),
+            };
+            // Best effort: without it a killed run's lock waits out its age.
+            let _ = tokio::fs::write(dir.join(RUN_MARKER), marker.to_json()).await;
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let status = child.wait().await;
+        let _ = tokio::fs::remove_file(dir.join(RUN_MARKER)).await;
+        let read = |path: PathBuf| async move {
+            let text = tokio::fs::read(&path).await.unwrap_or_default();
+            let _ = tokio::fs::remove_file(&path).await;
+            String::from_utf8_lossy(&text).into_owned()
+        };
+        let (stdout, stderr) = (read(out_path).await, read(err_path).await);
+        if status.map_err(|e| io_error("run Terraform", e))?.success() {
+            return Ok(stdout);
+        }
         let verb = args.first().map_or("", String::as_str);
         Err(ProviderError::Cloud(format!(
             "terraform {verb} failed: {}",
             summarize_errors(&stderr)
         )))
     }
+}
+
+/// A Terraform process started in a machine folder, maybe by an app that
+/// has quit since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMarker {
+    pub pid: u32,
+    /// The binary as started, which `/proc/<pid>/cmdline` repeats.
+    pub program: String,
+    /// Unix seconds.
+    pub started: u64,
+}
+
+impl RunMarker {
+    fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("markers always serialize")
+    }
+
+    /// Whether the process is still that Terraform run (Linux).
+    pub fn is_running(&self) -> bool {
+        std::fs::read(format!("/proc/{}/cmdline", self.pid))
+            .is_ok_and(|cmdline| cmdline.split(|b| *b == 0).next() == Some(self.program.as_bytes()))
+    }
+}
+
+pub fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The marker of the last run in `dir`, if it didn't clean up after itself.
+pub async fn run_marker(dir: &Path) -> Option<RunMarker> {
+    let json = tokio::fs::read(dir.join(RUN_MARKER)).await.ok()?;
+    serde_json::from_slice(&json).ok()
+}
+
+/// Waits while an earlier Terraform run in `dir` is still going, such as one
+/// that kept running after the app was closed. Returns its marker when that
+/// run is gone without cleaning up, which means it was killed and may have
+/// left its state lock behind.
+pub async fn wait_for_earlier_run(
+    dir: &Path,
+    at_most: Duration,
+) -> ProviderResult<Option<RunMarker>> {
+    let Some(marker) = run_marker(dir).await else {
+        return Ok(None);
+    };
+    let deadline = Instant::now() + at_most;
+    while marker.is_running() {
+        if Instant::now() >= deadline {
+            return Err(ProviderError::InvalidState(
+                "an earlier change to this machine is still running; try again when it's done"
+                    .into(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Ok(run_marker(dir).await.filter(|m| *m == marker))
+}
+
+/// What Terraform writes into a state's `.tflock` object while it holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LockInfo {
+    #[serde(rename = "ID")]
+    pub id: String,
+    /// `user@host` of whoever took it.
+    #[serde(rename = "Who", default)]
+    pub who: String,
+    /// RFC 3339, UTC.
+    #[serde(rename = "Created", default)]
+    pub created: String,
+}
+
+impl LockInfo {
+    pub fn parse(json: &[u8]) -> Option<Self> {
+        serde_json::from_slice(json).ok()
+    }
+
+    /// The host part of [`LockInfo::who`].
+    pub fn host(&self) -> Option<&str> {
+        self.who.rsplit_once('@').map(|(_, host)| host)
+    }
+}
+
+/// This computer's host name, as Terraform puts it in its locks.
+pub fn host_name() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
 }
 
 pub(crate) fn io_error(what: &str, e: std::io::Error) -> ProviderError {
@@ -223,10 +368,6 @@ pub fn destroy_args() -> Vec<String> {
     .to_vec()
 }
 
-pub fn output_args() -> Vec<String> {
-    ["output", "-json", "-no-color"].map(String::from).to_vec()
-}
-
 pub fn state_pull_args() -> Vec<String> {
     ["state", "pull"].map(String::from).to_vec()
 }
@@ -267,24 +408,6 @@ pub async fn prepare_workdir(dir: &Path, vars_json: &str) -> ProviderResult<()> 
         write(dir.join(name), contents.to_string()).await?;
     }
     write(dir.join(VARS_FILE), vars_json.to_string()).await
-}
-
-#[derive(Deserialize)]
-struct OutputValue {
-    value: serde_json::Value,
-}
-
-/// `terraform output -json`, reduced to the string outputs that are set.
-pub fn parse_outputs(json: &str) -> ProviderResult<HashMap<String, String>> {
-    let outputs: HashMap<String, OutputValue> = serde_json::from_str(json)
-        .map_err(|e| ProviderError::Cloud(format!("unreadable Terraform outputs: {e}")))?;
-    Ok(outputs
-        .into_iter()
-        .filter_map(|(k, v)| match v.value {
-            serde_json::Value::String(s) if !s.is_empty() => Some((k, s)),
-            _ => None,
-        })
-        .collect())
 }
 
 #[cfg(test)]
@@ -348,19 +471,6 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
         assert!(args.contains(&"-reconfigure".to_string()));
     }
 
-    #[test]
-    fn outputs_keep_set_strings() {
-        let json = r#"{
-            "instance_id": {"sensitive": false, "type": "string", "value": "i-1"},
-            "public_ip": {"sensitive": false, "type": "string", "value": ""},
-            "library_volume_id": {"sensitive": false, "type": "string", "value": null}
-        }"#;
-        let out = parse_outputs(json).unwrap();
-        assert_eq!(out.get("instance_id").map(String::as_str), Some("i-1"));
-        assert!(!out.contains_key("public_ip"));
-        assert!(!out.contains_key("library_volume_id"));
-    }
-
     #[tokio::test]
     async fn workdir_gets_the_module_and_drops_old_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -374,6 +484,120 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
             std::fs::read_to_string(dir.path().join(VARS_FILE)).unwrap(),
             "{}"
         );
+    }
+
+    /// A stand-in `terraform` that runs `script` with sh.
+    fn script(dir: &Path, script: &str) -> TerraformCli {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("terraform");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        TerraformCli {
+            binary: Some(path),
+            plugin_cache: dir.join("plugins"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terraform_sees_only_the_credentials_and_a_safe_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let tf = script(dir.path(), "env");
+        let env = tf
+            .run(
+                dir.path(),
+                &["version".into()],
+                &[("AWS_ACCESS_KEY_ID".into(), "AKIATEST".into())],
+            )
+            .await
+            .unwrap();
+        assert!(env.contains("AWS_ACCESS_KEY_ID=AKIATEST"), "{env}");
+        assert!(env.contains("TF_IN_AUTOMATION=1"));
+        assert!(env.lines().any(|l| l.starts_with("PATH=")));
+        // cargo sets these for the test run; Terraform mustn't see them.
+        assert!(!env.contains("CARGO_"), "{env}");
+        // Its output files and run marker are cleaned up.
+        let left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".terraform-") || n == RUN_MARKER)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[tokio::test]
+    async fn failures_report_terraforms_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let tf = script(
+            dir.path(),
+            "echo 'Error: Error acquiring the state lock' >&2; exit 1",
+        );
+        let err = tf
+            .run(dir.path(), &["apply".into()], &[])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "terraform apply failed: Error acquiring the state lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_marks_itself_while_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let tf = script(
+            dir.path(),
+            "for i in $(seq 100); do [ -f terraform.pid ] && break; sleep 0.05; done; cat terraform.pid",
+        );
+        let marker: RunMarker =
+            serde_json::from_str(&tf.run(dir.path(), &[], &[]).await.unwrap()).unwrap();
+        assert!(marker.program.ends_with("terraform"));
+        assert!(marker.started > 0);
+        assert_eq!(run_marker(dir.path()).await, None);
+    }
+
+    #[tokio::test]
+    async fn waits_only_for_a_live_earlier_run() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Ok(None)
+        );
+        // This test process stands in for a run that is still going.
+        let live = RunMarker {
+            pid: std::process::id(),
+            program: std::env::args().next().unwrap(),
+            started: unix_now(),
+        };
+        assert!(live.is_running());
+        std::fs::write(dir.path().join(RUN_MARKER), live.to_json()).unwrap();
+        assert!(matches!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Err(ProviderError::InvalidState(_))
+        ));
+        // A killed run's marker comes back, for its lock to be cleared.
+        let dead = RunMarker {
+            pid: u32::MAX,
+            ..live
+        };
+        assert!(!dead.is_running());
+        std::fs::write(dir.path().join(RUN_MARKER), dead.to_json()).unwrap();
+        assert_eq!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Ok(Some(dead))
+        );
+    }
+
+    #[test]
+    fn reads_terraforms_lock_info() {
+        let lock = LockInfo::parse(
+            br#"{"ID": "6a1c", "Operation": "OperationTypeApply", "Info": "",
+                "Who": "sergi@my-pc", "Version": "1.16.5",
+                "Created": "2026-10-11T03:21:12.123456789Z", "Path": "b/k"}"#,
+        )
+        .unwrap();
+        assert_eq!(lock.id, "6a1c");
+        assert_eq!(lock.host(), Some("my-pc"));
+        assert_eq!(LockInfo::parse(b"not json"), None);
     }
 
     #[tokio::test]

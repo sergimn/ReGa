@@ -91,6 +91,9 @@ async fn first_run_creates_private_buckets() {
     assert!(!calls.contains(&"enable_versioning rega-games-123456789012".to_string()));
     assert!(calls.contains(&"enable_encryption rega-games-123456789012".to_string()));
     assert!(calls.contains(&"tag_bucket rega-games-123456789012".to_string()));
+    // Old versions of the state bucket's objects expire.
+    assert!(calls.contains(&"expire_old_versions rega-tfstate-123456789012".to_string()));
+    assert!(!calls.contains(&"expire_old_versions rega-games-123456789012".to_string()));
 
     // Done once per session.
     let before = f.calls().len();
@@ -106,6 +109,7 @@ async fn existing_buckets_are_left_alone() {
         encrypted: true,
         public_access_blocked: true,
         tagged: true,
+        lifecycle: true,
     };
     account.buckets.insert(state_bucket(ACCOUNT), ready);
     account.buckets.insert(library_bucket(ACCOUNT), ready);
@@ -124,11 +128,20 @@ async fn a_public_bucket_is_refused_not_changed() {
             encrypted: true,
             public_access_blocked: false,
             tagged: true,
+            lifecycle: true,
         },
     );
     let f = fixture(account);
     let err = f.provider.ensure_storage().await.unwrap_err();
     assert!(err.to_string().contains("Block Public Access"), "{err}");
+}
+
+#[tokio::test]
+async fn a_new_bucket_is_read_once_s3_shows_it() {
+    let mut account = Account::typical();
+    account.slow_new_buckets = 1;
+    let f = fixture(account);
+    f.provider.ensure_storage().await.unwrap();
 }
 
 #[tokio::test]
@@ -268,7 +281,8 @@ async fn launch_saves_the_record_before_creating_anything() {
     assert_eq!(record.vars.root_volume_size, 128);
     assert!(record.vars.public_key.starts_with("ssh-rsa "));
     assert!(record.vars.client_cidrs.is_empty());
-    // The zone Terraform picked is pinned for later runs.
+    // The module's zone (the first one selling the GPU type) is pinned
+    // before the first apply, so a run that dies can't move the machine.
     assert_eq!(
         record.vars.availability_zone.as_deref(),
         Some("eu-central-1a")
@@ -558,4 +572,353 @@ fn encrypt_password(key: &MachineKey, password: &str) -> String {
     let mut out = vec![0; public.ciphertext_size()];
     let cipher = public.encrypt(password.as_bytes(), &mut out).unwrap();
     base64::engine::general_purpose::STANDARD.encode(cipher)
+}
+
+fn rfc3339(secs: u64) -> String {
+    use aws_sdk_s3::primitives::{DateTime, DateTimeFormat};
+    DateTime::from_secs(secs as i64)
+        .fmt(DateTimeFormat::DateTime)
+        .unwrap()
+}
+
+fn lock(who: &str, created: u64) -> Vec<u8> {
+    format!(
+        r#"{{"ID": "1f0c", "Operation": "OperationTypeApply", "Who": "{who}",
+            "Version": "1.16.5", "Created": "{}", "Path": "x"}}"#,
+        rfc3339(created)
+    )
+    .into_bytes()
+}
+
+impl Fixture {
+    fn put(&self, key: String, body: Vec<u8>) {
+        self.aws
+            .with(|a| a.objects.insert((state_bucket_name(), key), body));
+    }
+
+    fn has(&self, key: &str) -> bool {
+        self.aws
+            .with(|a| a.object(&state_bucket_name(), key).is_some())
+    }
+
+    fn stray_instance(&self, id: &str, machine_id: &str) {
+        self.aws.with(|a| {
+            a.instances.push(api::Instance {
+                id: id.into(),
+                region_id: "eu-central-1".into(),
+                machine_id: Some(machine_id.into()),
+                type_name: "t3.medium".into(),
+                state: MachineState::Running,
+                spot: false,
+                public_ip: None,
+            })
+        });
+    }
+}
+
+#[tokio::test]
+async fn an_instance_its_state_lost_is_a_leftover() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // Say a killed apply made a second instance and never wrote it down.
+    f.stray_instance("i-extra", &m.id);
+    let orphans = f.provider.orphans().await.unwrap();
+    let ids: Vec<&str> = orphans.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, ["i-extra"]);
+    // The machine is still the instance its state names.
+    let listed = f.provider.list_machines().await.unwrap();
+    assert_eq!(listed, vec![m]);
+}
+
+#[tokio::test]
+async fn a_machine_being_changed_is_busy_and_keeps_its_resources() {
+    let f = fixture(Account::typical());
+    *f.terraform.fail_apply.lock().unwrap() = Some("Blocked".into());
+    f.provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    let id = f.provider.list_machines().await.unwrap()[0].id.clone();
+
+    // Another device is launching it: its lock is fresh, and the instance
+    // it is creating isn't in the state yet.
+    f.put(
+        record::lock_key(&id),
+        lock("sergi@laptop", terraform::unix_now()),
+    );
+    f.stray_instance("i-new", &id);
+    let m = &f.provider.list_machines().await.unwrap()[0];
+    assert!(m.busy);
+    assert_eq!(m.state, MachineState::Running);
+    assert!(f.provider.orphans().await.unwrap().is_empty());
+
+    // A lock this old was left by a run that died.
+    f.put(
+        record::lock_key(&id),
+        lock("sergi@laptop", terraform::unix_now() - 3 * 3600),
+    );
+    let m = &f.provider.list_machines().await.unwrap()[0];
+    assert!(!m.busy);
+    assert_eq!(m.state, MachineState::Terminated);
+    let orphans = f.provider.orphans().await.unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].id, "i-new");
+}
+
+#[tokio::test]
+async fn busy_with_nothing_created_yet_reads_as_pending() {
+    let f = fixture(Account::typical());
+    *f.terraform.fail_apply.lock().unwrap() = Some("Blocked".into());
+    f.provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    let id = f.provider.list_machines().await.unwrap()[0].id.clone();
+    let _acting = f.provider.begin(&id).unwrap();
+    let m = &f.provider.list_machines().await.unwrap()[0];
+    assert!(m.busy);
+    assert_eq!(m.state, MachineState::Pending);
+}
+
+#[tokio::test]
+async fn one_change_per_machine_at_a_time() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let acting = f.provider.begin(&m.id).unwrap();
+    let err = f.provider.stop(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("still running"), "{err}");
+    assert!(matches!(
+        f.provider.destroy(&m.id).await,
+        Err(ProviderError::InvalidState(_))
+    ));
+    drop(acting);
+    f.provider.stop(&m.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn one_machine_runs_at_a_time() {
+    let f = fixture(Account::typical());
+    let first = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let err = f
+        .provider
+        .launch(&request("g4dn.xlarge", false))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("one machine at a time"), "{err}");
+
+    f.provider.stop(&first.id).await.unwrap();
+    let second = f
+        .provider
+        .launch(&LaunchRequest {
+            name: "Den".into(),
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .unwrap();
+    let err = f.provider.start(&first.id).await.unwrap_err();
+    assert!(err.to_string().contains(&second.name), "{err}");
+}
+
+#[tokio::test]
+async fn a_lock_left_by_a_killed_run_here_is_cleared() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The app was killed mid-run: its marker names a process that's gone,
+    // and the lock it took is still in the bucket.
+    let started = terraform::unix_now() - 30;
+    let marker = format!(r#"{{"pid": 4294967295, "program": "terraform", "started": {started}}}"#);
+    std::fs::write(f.provider.machine_dir(&m.id).join("terraform.pid"), marker).unwrap();
+    let host = terraform::host_name().unwrap();
+    f.put(
+        record::lock_key(&m.id),
+        lock(&format!("me@{host}"), started + 2),
+    );
+    assert!(!f.provider.list_machines().await.unwrap()[0].busy);
+
+    f.provider.stop(&m.id).await.unwrap();
+    let cleared = f.position(&format!("delete_object {}", record::lock_key(&m.id)));
+    let applied = f
+        .calls()
+        .iter()
+        .rposition(|c| c == &format!("terraform apply {}", m.id))
+        .unwrap();
+    assert!(cleared < applied);
+    assert!(!f.has(&record::lock_key(&m.id)));
+}
+
+#[tokio::test]
+async fn another_devices_live_lock_is_left_alone() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.put(
+        record::lock_key(&m.id),
+        lock("sergi@laptop", terraform::unix_now()),
+    );
+    f.provider.stop(&m.id).await.unwrap();
+    assert!(f.has(&record::lock_key(&m.id)));
+}
+
+#[test]
+fn stale_locks() {
+    let now = 1_800_000_000;
+    let created = |secs| LockInfo {
+        id: "1".into(),
+        who: "me@pc".into(),
+        created: rfc3339(secs),
+    };
+    let dead = RunMarker {
+        pid: 1,
+        program: "terraform".into(),
+        started: now - 100,
+    };
+    // Fresh and nobody known to be dead: held.
+    assert!(!stale_at(&created(now - 90), None, Some("pc"), now));
+    // Taken by the dead run on this computer.
+    assert!(stale_at(&created(now - 90), Some(&dead), Some("pc"), now));
+    // Same time, but another computer took it.
+    assert!(!stale_at(
+        &created(now - 90),
+        Some(&dead),
+        Some("other"),
+        now
+    ));
+    // Taken well after the dead run started: someone else's.
+    assert!(!stale_at(
+        &created(now - 100 + 3600),
+        Some(&dead),
+        Some("pc"),
+        now + 3600
+    ));
+    // Older than any run.
+    assert!(stale_at(&created(now - 3 * 3600), None, None, now));
+    // Unreadable time: never broken.
+    let garbled = LockInfo {
+        created: "yesterday".into(),
+        ..created(now)
+    };
+    assert!(!stale_at(&garbled, Some(&dead), Some("pc"), now));
+}
+
+#[test]
+fn service_linked_role_errors_say_what_to_do() {
+    let alarm = explain(ProviderError::Cloud(
+        "creating CloudWatch Metric Alarm: AccessDenied: not authorized to perform \
+         iam:CreateServiceLinkedRole"
+            .into(),
+    ));
+    assert!(
+        alarm.to_string().contains("events.amazonaws.com"),
+        "{alarm}"
+    );
+    let spot = explain(ProviderError::Cloud(
+        "AuthFailure.ServiceLinkedRoleCreationNotPermitted: spot instances".into(),
+    ));
+    assert!(spot.to_string().contains("spot.amazonaws.com"), "{spot}");
+    assert_eq!(
+        explain(ProviderError::Cloud("Blocked".into())),
+        ProviderError::Cloud("Blocked".into())
+    );
+}
+
+#[tokio::test]
+async fn deleting_leftovers_keeps_going_past_one_that_fails() {
+    let mut account = Account::typical();
+    let stray = |kind, id: &str| Orphan {
+        kind,
+        id: id.into(),
+        region_id: "eu-north-1".into(),
+        machine_id: None,
+        name: None,
+    };
+    account.resources = vec![
+        stray(ResourceKind::SecurityGroup, "sg-busy"),
+        stray(ResourceKind::KeyPair, "rega-x"),
+    ];
+    account.undeletable = Some("sg-busy".into());
+    let f = fixture(account);
+    let orphans = f.provider.orphans().await.unwrap();
+    let err = f.provider.delete_orphans(&orphans).await.unwrap_err();
+    assert!(err.to_string().contains("sg-busy"), "{err}");
+    let left: Vec<String> = f
+        .provider
+        .orphans()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|o| o.id)
+        .collect();
+    assert_eq!(left, ["sg-busy"]);
+}
+
+#[tokio::test]
+async fn an_unreadable_record_hides_only_itself() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.put(record::record_key("broken-000000"), b"{".to_vec());
+    assert_eq!(f.provider.list_machines().await.unwrap(), vec![m]);
+}
+
+struct Failing;
+
+#[async_trait]
+impl MachineSetup for Failing {
+    async fn after_start(&self, _machine: &MachineAccess) -> ProviderResult<()> {
+        Ok(())
+    }
+
+    async fn before_stop(&self, _machine: &MachineAccess) -> ProviderResult<LibrarySync> {
+        Err(ProviderError::Cloud("WinRM timed out".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_failing_setup_hook_doesnt_block_a_stop() {
+    let mut f = fixture(Account::typical());
+    f.provider = f.provider.with_setup(Arc::new(Failing));
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert_eq!(stopped.state, MachineState::Stopped);
+    // Nothing synced D:, so it stays.
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn without_a_setup_hook_no_password_is_fetched() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.provider.stop(&m.id).await.unwrap();
+    // NoSetup needs no access, so nothing can fail on fetching it.
+    assert!(!f.calls().iter().any(|c| c.starts_with("password_data")));
 }
