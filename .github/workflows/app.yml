@@ -20,7 +20,10 @@ defaults:
     working-directory: app
 
 env:
+  # renovate: datasource=flutter-version depName=flutter
   FLUTTER_VERSION: 3.47.7
+  # renovate: datasource=rust-version depName=rust
+  RUST_VERSION: 1.98.1
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -29,11 +32,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      # rustup comes with the runner image.
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app
       - run: cargo fmt --all --check
@@ -47,24 +54,35 @@ jobs:
     # (release, then debug for the integration test).
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
-      - uses: dtolnay/rust-toolchain@stable
+      # cargokit (app/rust_builder) always builds with `rustup run stable`,
+      # so stable is pointed at the pinned toolchain for the app build.
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+          rustup toolchain uninstall stable
+          sysroot=$(rustc --print sysroot)
+          ln -s "$sysroot" "$(dirname "$sysroot")/stable-$(rustc -vV | sed -n 's/^host: //p')"
+          rustup run stable rustc --version | grep -F "rustc $RUST_VERSION "
       # cargokit builds the Rust core inside Flutter's build folder.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             app -> build/linux/x64/release/plugins/rega_bridge/cargokit_build
             app -> build/linux/x64/debug/plugins/rega_bridge/cargokit_build
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-      - run: flutter pub get
+      - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test integration_test
       - run: flutter analyze
       - run: flutter test
@@ -76,7 +94,7 @@ jobs:
           REGA_DEMO: '1'
       # Artifacts drop file permissions, so ship the bundle as a tarball.
       - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rega-linux-x64
           path: app/rega-linux-x64.tar.gz
@@ -87,16 +105,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      # Built 2026-09-22, under the 30 days the rest of the repo waits: the
+      # registry only lists this tag's current digest, so no older one could
+      # be found to pin. Renovate can't date these images either, so updates
+      # wait on the Dependency Dashboard (see CONTRIBUTING.md).
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08@sha256:c91a88269eee8fcdd73ecf43064232fbebe27411f926f63f38bdf70c51f2ceae
       options: --privileged
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rega-linux-x64
           path: app
       - run: mkdir -p build/linux/x64/release && tar -C build/linux/x64/release -xzf rega-linux-x64.tar.gz
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6.8
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
         with:
           bundle: rega.flatpak
           manifest-path: app/flatpak/io.github.sergimn.rega.yml
