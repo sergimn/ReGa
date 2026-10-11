@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.sergimn.rega</id>
+  <name>ReGa</name>
+  <summary>Play games on a cloud machine you own</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <developer id="io.github.sergimn">
+    <name>Sergi</name>
+  </developer>
+  <description>
+    <p>
+      ReGa is an early preview of an app that sets up a Windows gaming
+      machine in your own cloud account and streams it to your desktop with
+      Moonlight. This version shows machine types, prices and regions from
+      sample data; launching machines comes in a later release.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/sergimn/ReGa</url>
+  <launchable type="desktop-id">io.github.sergimn.rega.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-11"/>
+  </releases>
+</component>

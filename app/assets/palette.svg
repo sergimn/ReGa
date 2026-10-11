@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1016" height="200" viewBox="0 0 1016 200" font-family="DejaVu Sans, Verdana, sans-serif">
+<rect x="0" y="0" width="120" height="96" rx="12" fill="#5EEAD4"/>
+<text x="12" y="62" font-size="14" font-weight="bold" fill="#0B1220">Aqua</text>
+<text x="12" y="82" font-size="12" fill="#0B1220">#5EEAD4</text>
+<rect x="128" y="0" width="120" height="96" rx="12" fill="#14B8A6"/>
+<text x="140" y="62" font-size="14" font-weight="bold" fill="#0B1220">Teal</text>
+<text x="140" y="82" font-size="12" fill="#0B1220">#14B8A6</text>
+<rect x="256" y="0" width="120" height="96" rx="12" fill="#0F766E"/>
+<text x="268" y="62" font-size="14" font-weight="bold" fill="#FFFFFF">Deep teal</text>
+<text x="268" y="82" font-size="12" fill="#FFFFFF">#0F766E</text>
+<rect x="384" y="0" width="120" height="96" rx="12" fill="#818CF8"/>
+<text x="396" y="62" font-size="14" font-weight="bold" fill="#0B1220">Indigo</text>
+<text x="396" y="82" font-size="12" fill="#0B1220">#818CF8</text>
+<rect x="512" y="0" width="120" height="96" rx="12" fill="#4F46E5"/>
+<text x="524" y="62" font-size="14" font-weight="bold" fill="#FFFFFF">Deep indigo</text>
+<text x="524" y="82" font-size="12" fill="#FFFFFF">#4F46E5</text>
+<rect x="640" y="0" width="120" height="96" rx="12" fill="#A78BFA"/>
+<text x="652" y="62" font-size="14" font-weight="bold" fill="#0B1220">Violet</text>
+<text x="652" y="82" font-size="12" fill="#0B1220">#A78BFA</text>
+<rect x="768" y="0" width="120" height="96" rx="12" fill="#7C3AED"/>
+<text x="780" y="62" font-size="14" font-weight="bold" fill="#FFFFFF">Deep violet</text>
+<text x="780" y="82" font-size="12" fill="#FFFFFF">#7C3AED</text>
+<rect x="896" y="0" width="120" height="96" rx="12" fill="#22C55E"/>
+<text x="908" y="62" font-size="14" font-weight="bold" fill="#0B1220">Success</text>
+<text x="908" y="82" font-size="12" fill="#0B1220">#22C55E</text>
+<rect x="0" y="104" width="120" height="96" rx="12" fill="#0B1220"/>
+<text x="12" y="166" font-size="14" font-weight="bold" fill="#E2E8F0">Night</text>
+<text x="12" y="186" font-size="12" fill="#E2E8F0">#0B1220</text>
+<rect x="128" y="104" width="120" height="96" rx="12" fill="#1C2A4A"/>
+<text x="140" y="166" font-size="14" font-weight="bold" fill="#E2E8F0">Navy</text>
+<text x="140" y="186" font-size="12" fill="#E2E8F0">#1C2A4A</text>
+<rect x="256" y="104" width="120" height="96" rx="12" fill="#334155"/>
+<text x="268" y="166" font-size="14" font-weight="bold" fill="#E2E8F0">Slate</text>
+<text x="268" y="186" font-size="12" fill="#E2E8F0">#334155</text>
+<rect x="384" y="104" width="120" height="96" rx="12" fill="#E2E8F0" stroke="#CBD5E1"/>
+<text x="396" y="166" font-size="14" font-weight="bold" fill="#0B1220">Cloud</text>
+<text x="396" y="186" font-size="12" fill="#0B1220">#E2E8F0</text>
+<rect x="512" y="104" width="120" height="96" rx="12" fill="#F4F7FB" stroke="#CBD5E1"/>
+<text x="524" y="166" font-size="14" font-weight="bold" fill="#0B1220">Mist</text>
+<text x="524" y="186" font-size="12" fill="#0B1220">#F4F7FB</text>
+<rect x="640" y="104" width="120" height="96" rx="12" fill="#CE2C31"/>
+<text x="652" y="166" font-size="14" font-weight="bold" fill="#FFFFFF">Error</text>
+<text x="652" y="186" font-size="12" fill="#FFFFFF">#CE2C31</text>
+<rect x="768" y="104" width="120" height="96" rx="12" fill="#F87171"/>
+<text x="780" y="166" font-size="14" font-weight="bold" fill="#0B1220">Error (dark)</text>
+<text x="780" y="186" font-size="12" fill="#0B1220">#F87171</text>
+</svg>
