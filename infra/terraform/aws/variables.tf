@@ -177,8 +177,8 @@ variable "idle_alarm_minutes" {
   default     = 120
 
   validation {
-    condition     = var.idle_alarm_minutes >= 15 && var.idle_alarm_minutes % 5 == 0
-    error_message = "idle_alarm_minutes must be a multiple of 5 and at least 15."
+    condition     = var.idle_alarm_minutes >= 15 && var.idle_alarm_minutes <= 1440 && var.idle_alarm_minutes % 5 == 0
+    error_message = "idle_alarm_minutes must be a multiple of 5 between 15 and 1440 (CloudWatch evaluates at most one day)."
   }
 }
 

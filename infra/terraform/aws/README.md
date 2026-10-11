@@ -35,7 +35,7 @@ applies when D: is recreated at the next start.
 
 Change `instance_type` only together with a start. The provider always
 starts the instance after a resize, so resizing a stopped machine boots it
-briefly before `instance_state` stops it again.
+briefly before `instance_state` stops it again in the same apply.
 
 Pass `availability_zone` back from the output once the machine exists, so it
 never moves zone. `public_ip` changes on every start.

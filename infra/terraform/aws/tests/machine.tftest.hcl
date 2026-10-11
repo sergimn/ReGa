@@ -243,3 +243,13 @@ run "rejects_non_rsa_keys" {
 
   expect_failures = [var.public_key]
 }
+
+run "rejects_idle_windows_over_a_day" {
+  command = plan
+
+  variables {
+    idle_alarm_minutes = 1445
+  }
+
+  expect_failures = [var.idle_alarm_minutes]
+}

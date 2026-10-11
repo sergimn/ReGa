@@ -64,6 +64,13 @@ resource "aws_ec2_instance_state" "machine" {
   state       = var.instance_state
 
   depends_on = [aws_volume_attachment.library]
+
+  lifecycle {
+    # A resize or user_data change stops and restarts the instance behind
+    # this resource's back. Re-apply the wanted state after every instance
+    # change, so a stopped machine stays stopped and public_ip is re-read.
+    replace_triggered_by = [aws_instance.machine]
+  }
 }
 
 # aws_instance only knows the address from before a stop or start, so read the
