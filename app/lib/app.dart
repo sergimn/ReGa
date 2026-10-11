@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'backend.dart';
 import 'provider_page.dart';
+import 'theme.dart';
 
 class RegaApp extends StatelessWidget {
   const RegaApp({super.key, required this.backend});
@@ -10,11 +11,10 @@ class RegaApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final seed = Colors.teal;
     return MaterialApp(
       title: 'ReGa',
-      theme: ThemeData(colorSchemeSeed: seed),
-      darkTheme: ThemeData(colorSchemeSeed: seed, brightness: Brightness.dark),
+      theme: regaTheme(Brightness.light),
+      darkTheme: regaTheme(Brightness.dark),
       home: HomeShell(backend: backend),
     );
   }
@@ -48,9 +48,20 @@ class _HomeShellState extends State<HomeShell> {
           NavigationRail(
             selectedIndex: _selected,
             labelType: NavigationRailLabelType.all,
-            leading: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('Platforms'),
+            leading: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(
+                children: [
+                  Image.asset(
+                    'assets/icon/rega-128.png',
+                    width: 40,
+                    height: 40,
+                    semanticLabel: 'ReGa',
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Platforms'),
+                ],
+              ),
             ),
             destinations: [
               for (final p in _providers)

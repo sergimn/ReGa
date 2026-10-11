@@ -10,8 +10,12 @@ app/
   test/          widget tests against a fake backend (no Rust, no cloud)
   integration_test/  runs the real app against the Rust core
   rust_builder/  cargokit glue that builds rust/ during `flutter build`
-  flatpak/       Flatpak manifest, desktop file, metainfo, icon
+  flatpak/       Flatpak manifest, desktop file, metainfo
+  assets/        app icon (SVG and PNG sizes) and the palette swatch
 ```
+
+Colours come from `RegaColors` in `lib/theme.dart`; use those rather than
+literal colours in widgets.
 
 ## Providers
 
