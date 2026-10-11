@@ -33,6 +33,10 @@ class _ProviderPageState extends State<ProviderPage> {
   Object? _error;
   bool _loading = true;
 
+  /// Bumped by every reload so a slower, older reload can't overwrite the
+  /// results of a newer one.
+  int _generation = 0;
+
   RegaBackend get _backend => widget.backend;
   String get _id => widget.provider.id;
 
@@ -44,22 +48,28 @@ class _ProviderPageState extends State<ProviderPage> {
   }
 
   Future<void> _reload() async {
+    final generation = ++_generation;
+    final spot = _spot;
+    final typeName = _typeName;
+    final wantedRegionId = _regionId;
+    bool stale() => !mounted || generation != _generation;
+
     setState(() => _loading = true);
     try {
       final choices = await _backend.regionChoices(
         _id,
-        typeName: _typeName,
-        spot: _spot,
+        typeName: typeName,
+        spot: spot,
       );
       final all = choices.all.map((r) => r.regionId);
-      final regionId = all.contains(_regionId)
-          ? _regionId
+      final regionId = all.contains(wantedRegionId)
+          ? wantedRegionId
           : choices.recommended?.regionId;
       final offers = regionId == null
           ? const <MachineOffer>[]
-          : await _backend.machineOffers(_id, regionId: regionId, spot: _spot);
+          : await _backend.machineOffers(_id, regionId: regionId, spot: spot);
       final machines = await _backend.listMachines(_id);
-      if (!mounted) return;
+      if (stale()) return;
       setState(() {
         _choices = choices;
         _regionId = regionId;
@@ -73,7 +83,7 @@ class _ProviderPageState extends State<ProviderPage> {
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (stale()) return;
       setState(() {
         _error = e;
         _loading = false;
@@ -108,7 +118,13 @@ class _ProviderPageState extends State<ProviderPage> {
           ),
           value: _spot,
           onChanged: (v) {
-            setState(() => _spot = v);
+            setState(() {
+              _spot = v;
+              // Spot only sells GPU types; drop a CPU pick so the region
+              // picker prices the GPU type instead of finding nothing.
+              final selected = _offers.where((o) => o.typeName == _typeName);
+              if (v && selected.any((o) => !o.isGpu)) _typeName = null;
+            });
             _reload();
           },
         ),

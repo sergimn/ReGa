@@ -30,7 +30,7 @@ class _RegionPickerState extends State<RegionPicker> {
     if (c.all.isEmpty) {
       return const ListTile(
         leading: Icon(Icons.info_outline),
-        title: Text('No region can launch a GPU machine on this account yet.'),
+        title: Text('No region offers this machine on this account yet.'),
       );
     }
     // One region can win several categories; show it once with every label.

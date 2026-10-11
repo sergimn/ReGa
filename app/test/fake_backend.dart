@@ -44,9 +44,12 @@ const virginia = RegionOption(
 
 /// In-memory backend for widget tests; records what the UI asked for.
 class FakeBackend implements RegaBackend {
-  FakeBackend({this.machines = const []});
+  FakeBackend({this.machines = const [], this.onDemandDelay = Duration.zero});
 
   final List<MachineSummary> machines;
+
+  /// Makes on-demand offers arrive late, to test overlapping reloads.
+  final Duration onDemandDelay;
   final List<String> calls = [];
   bool? lastSpot;
 
@@ -66,6 +69,10 @@ class FakeBackend implements RegaBackend {
     required bool spot,
   }) async {
     calls.add('regions $typeName');
+    // Like the real core: CPU types have no spot price anywhere.
+    if (spot && typeName == cpuOffer.typeName) {
+      return const RegionChoices(all: []);
+    }
     return const RegionChoices(
       recommended: stockholm,
       lowestLatency: frankfurt,
@@ -82,6 +89,7 @@ class FakeBackend implements RegaBackend {
   }) async {
     calls.add('offers $regionId');
     lastSpot = spot;
+    if (!spot) await Future<void>.delayed(onDemandDelay);
     return spot ? const [gpuOffer] : const [gpuOffer, cpuOffer];
   }
 

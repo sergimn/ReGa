@@ -44,6 +44,38 @@ void main() {
     expect(find.byKey(const ValueKey('offer-t3.medium')), findsNothing);
   });
 
+  testWidgets('Spot after picking a CPU type falls back to GPU', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('offer-t3.medium')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('offer-g4dn.xlarge')), findsOneWidget);
+    expect(find.textContaining('Recommended'), findsOneWidget);
+  });
+
+  testWidgets('a slow older reload does not overwrite a newer one', (
+    tester,
+  ) async {
+    final backend = FakeBackend(
+      onDemandDelay: const Duration(milliseconds: 500),
+    );
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pump();
+    // The first (on-demand) reload is still waiting; turn Spot on now.
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('offer-g4dn.xlarge')), findsOneWidget);
+    expect(find.byKey(const ValueKey('offer-t3.medium')), findsNothing);
+  });
+
   testWidgets('picking a machine reprices regions for it', (tester) async {
     final backend = FakeBackend();
     await tester.pumpWidget(RegaApp(backend: backend));

@@ -78,6 +78,6 @@ void main() {
         ),
       ),
     );
-    expect(find.textContaining('No region can launch'), findsOneWidget);
+    expect(find.textContaining('No region offers'), findsOneWidget);
   });
 }
