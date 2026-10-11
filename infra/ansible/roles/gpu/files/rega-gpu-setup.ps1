@@ -47,8 +47,9 @@ function Write-GpuLog {
 }
 
 function Get-NvidiaGpu {
+  # Before the driver is installed the T4 may have no device class at all.
   return @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
-    Where-Object { $_.InstanceId -like 'PCI\VEN_10DE*' -and $_.Class -in @('Display', '3D Video Controller', '') })
+    Where-Object { $_.InstanceId -like 'PCI\VEN_10DE*' })
 }
 
 function Test-NvidiaDriver {
@@ -242,13 +243,13 @@ $result = [ordered]@{
   changed         = $false
 }
 try {
-  $result.gpu = ((Get-NvidiaGpu).Count -gt 0)
+  $result.gpu = (@(Get-NvidiaGpu).Count -gt 0)
   $result.driver = $result.gpu -and (Test-NvidiaDriver)
-  $result.virtual_display = ((Get-VirtualDisplay).Count -gt 0)
+  $result.virtual_display = (@(Get-VirtualDisplay).Count -gt 0)
 
   if ($Action -eq 'VirtualDisplay' -and -not $result.virtual_display) {
     $result.reboot_required = Install-VirtualDisplay
-    $result.virtual_display = ((Get-VirtualDisplay).Count -gt 0)
+    $result.virtual_display = (@(Get-VirtualDisplay).Count -gt 0)
     $result.changed = $true
   } elseif ($Action -eq 'Auto' -and $result.gpu) {
     if (-not $result.driver) {
@@ -264,7 +265,7 @@ try {
       Set-GamingLicense
       if (-not $result.virtual_display) {
         $result.reboot_required = Install-VirtualDisplay
-        $result.virtual_display = ((Get-VirtualDisplay).Count -gt 0)
+        $result.virtual_display = (@(Get-VirtualDisplay).Count -gt 0)
         $result.changed = $true
       }
       $vdd = Get-VirtualDisplay | Where-Object { $_.Status -eq 'OK' }
