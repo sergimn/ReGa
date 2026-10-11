@@ -32,7 +32,7 @@ check one:
 | The Flatpak builder image | image digest |
 | pre-commit hooks | commit SHA, with the tag after `# frozen:` |
 | Python packages (Ansible controller, ansible-lint, pre-commit in CI) | a `.lock` file with a SHA-256 for every package, generated from the `.txt` file of the same name |
-| Rust crates, Dart packages, Terraform providers | `Cargo.lock`, `pubspec.lock`, `.terraform.lock.hcl` (checksums) |
+| Rust crates, Dart packages, Terraform providers | `Cargo.lock`, `pubspec.lock`, `.terraform.lock.hcl` (checksums), which CI uses read-only |
 | Sunshine, the virtual display driver, the AWS CLI, WireGuard | version and SHA-256 in the Ansible role defaults |
 | Terraform in the Flatpak | version and SHA-256 in the manifest |
 | Rust, Flutter, Terraform, TFLint, Python and runner images in CI | exact version |
@@ -74,7 +74,9 @@ found and what is waiting.
 - Updates whose source gives no release date (the Flatpak builder image on
   ghcr.io, the runner images) are never proposed on their own. They wait on
   the Dependency Dashboard until someone ticks them, and never merge on
-  their own.
+  their own. The builder image digest is the one exception to the 30 days:
+  ghcr.io only serves a tag's current digest, and the one pinned was 19 days
+  old when it was set.
 - Lock file refreshes are off, since they would take the newest version of
   everything at once with no age check. Cargo and pub can't filter by date:
   when a crate or Dart package update needs a newer version of something it
@@ -82,7 +84,12 @@ found and what is waiting.
 - Updates are grouped by area (GitHub Actions, pre-commit hooks, Rust
   crates, Dart packages, Terraform providers, Ansible).
 - Digest, patch and minor updates merge on their own once every check on the
-  PR has passed. Major updates wait for a review.
+  PR has passed. Major updates wait for a review, and so do breaking 0.x
+  updates of crates and Dart packages.
+- GitHub Actions and pre-commit hooks never merge on their own: their
+  release date is the date on the tag's commit, which whoever pushes the tag
+  sets, so the 30 days could be faked. A new digest on the same tag means
+  the tag was moved, which is worth a look on its own.
 - Sunshine and the virtual display driver: Renovate updates the version and
   the SHA-256 together, from the GitHub release.
 - Terraform: Renovate updates CI and the Flatpak together, but can't hash

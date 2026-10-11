@@ -93,9 +93,10 @@
   ],
 
   packageRules: [
-    // Vendored from the flutter_rust_bridge template; not ours to update.
+    // Glue from the flutter_rust_bridge template (cargokit vendored in it);
+    // not ours to update.
     {
-      matchFileNames: ['app/rust_builder/cargokit/**'],
+      matchFileNames: ['app/rust_builder/**'],
       enabled: false,
     },
     // Cargo.lock already pins every crate with a checksum, so dev-dependencies
@@ -111,6 +112,26 @@
     {
       matchUpdateTypes: ['minor', 'patch', 'digest', 'pinDigest'],
       automerge: true,
+    },
+    // Except where the release date comes from the tag's own commit (GitHub
+    // Actions, pre-commit hooks, Go modules): whoever pushes the tag can
+    // back-date it, so the 30-day wait can be faked there. A new digest on
+    // the same tag means the tag was moved.
+    {
+      matchDatasources: ['github-tags', 'github-digest', 'git-tags', 'git-refs', 'go'],
+      automerge: false,
+    },
+
+    // Exact Rust releases (1.99.0, not the 1.99 channel, which floats).
+    {
+      matchDatasources: ['rust-version'],
+      versioning: 'rust-release-channel',
+    },
+    // CI's Python stays on 3.12, the version the locks are built for.
+    {
+      matchManagers: ['github-actions'],
+      matchDepNames: ['python'],
+      allowedVersions: '/^3\\.12\\./',
     },
 
     // One PR per area for the routine updates; majors stay separate.
@@ -145,6 +166,14 @@
       matchFileNames: ['infra/ansible/**'],
       matchManagers: ['ansible-galaxy', 'pip-compile'],
       matchUpdateTypes: ['minor', 'patch'],
+    },
+    // A 0.x minor bump (base64 0.22 to 0.23) is breaking in Cargo and pub:
+    // its own PR, reviewed, so it can't hold up the rest of the group.
+    {
+      matchManagers: ['cargo', 'pub'],
+      matchIsBreaking: true,
+      groupName: null,
+      automerge: false,
     },
 
     // Updates that need a hand after Renovate's change, so they never merge

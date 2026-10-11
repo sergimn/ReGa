@@ -61,10 +61,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
+      # cargokit (app/rust_builder) always builds with `rustup run stable`,
+      # so stable is pointed at the pinned toolchain for the app build.
       - name: Install Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
           rustup default "$RUST_VERSION"
+          rustup toolchain uninstall stable
+          sysroot=$(rustc --print sysroot)
+          ln -s "$sysroot" "$(dirname "$sysroot")/stable-$(rustc -vV | sed -n 's/^host: //p')"
+          rustup run stable rustc --version | grep -F "rustc $RUST_VERSION "
       # cargokit builds the Rust core inside Flutter's build folder.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -76,7 +82,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-      - run: flutter pub get
+      - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test integration_test
       - run: flutter analyze
       - run: flutter test
@@ -99,6 +105,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
+      # Built 2026-09-22, under the 30 days the rest of the repo waits:
+      # ghcr.io only serves this tag's current digest, so no older one could
+      # be pinned. Renovate can't date these images either, so updates wait
+      # on the Dependency Dashboard (see CONTRIBUTING.md).
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08@sha256:c91a88269eee8fcdd73ecf43064232fbebe27411f926f63f38bdf70c51f2ceae
       options: --privileged
     steps:
