@@ -221,6 +221,7 @@ fn wire__crate__api__rega__launch_machine_impl(
             let api_type_name = <String>::sse_decode(&mut deserializer);
             let api_spot = <bool>::sse_decode(&mut deserializer);
             let api_wireguard = <bool>::sse_decode(&mut deserializer);
+            let api_cpu_first = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::rega::RegaError>(
@@ -232,6 +233,7 @@ fn wire__crate__api__rega__launch_machine_impl(
                             api_type_name,
                             api_spot,
                             api_wireguard,
+                            api_cpu_first,
                         )
                         .await?;
                         std::result::Result::Ok(output_ok)
@@ -729,6 +731,8 @@ impl SseDecode for crate::api::rega::MachineSummary {
         let mut var_busy = <bool>::sse_decode(deserializer);
         let mut var_starting = <bool>::sse_decode(deserializer);
         let mut var_switchType = <Option<String>>::sse_decode(deserializer);
+        let mut var_switchPricePerHour = <Option<f64>>::sse_decode(deserializer);
+        let mut var_stoppedItself = <bool>::sse_decode(deserializer);
         return crate::api::rega::MachineSummary {
             id: var_id,
             name: var_name,
@@ -740,6 +744,8 @@ impl SseDecode for crate::api::rega::MachineSummary {
             busy: var_busy,
             starting: var_starting,
             switch_type: var_switchType,
+            switch_price_per_hour: var_switchPricePerHour,
+            stopped_itself: var_stoppedItself,
         };
     }
 }
@@ -1010,6 +1016,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::MachineSummary {
             self.busy.into_into_dart().into_dart(),
             self.starting.into_into_dart().into_dart(),
             self.switch_type.into_into_dart().into_dart(),
+            self.switch_price_per_hour.into_into_dart().into_dart(),
+            self.stopped_itself.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1307,6 +1315,8 @@ impl SseEncode for crate::api::rega::MachineSummary {
         <bool>::sse_encode(self.busy, serializer);
         <bool>::sse_encode(self.starting, serializer);
         <Option<String>>::sse_encode(self.switch_type, serializer);
+        <Option<f64>>::sse_encode(self.switch_price_per_hour, serializer);
+        <bool>::sse_encode(self.stopped_itself, serializer);
     }
 }
 

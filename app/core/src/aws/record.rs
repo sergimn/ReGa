@@ -7,6 +7,7 @@
 //! machines/<id>.tfstate   Terraform state (S3 backend, with a .tflock while locked)
 //! machines/<id>.json      MachineRecord: the name and the Terraform variables
 //! machines/<id>.key.pem   the machine's RSA key, for its Windows password
+//! machines/<id>.secrets.json  passwords the setup gives the machine
 //! ```
 
 use std::collections::HashSet;
@@ -31,6 +32,18 @@ pub fn key_key(machine_id: &str) -> String {
     format!("{PREFIX}{machine_id}.key.pem")
 }
 
+/// The passwords the setup gives the machine ([`crate::setup::MachineSecrets`]).
+pub fn secrets_key(machine_id: &str) -> String {
+    format!("{PREFIX}{machine_id}.secrets.json")
+}
+
+/// Where the machine says whether its last upload of the game library
+/// worked, in the library bucket (`roles/library_agent` in
+/// `infra/ansible`).
+pub fn final_sync_key(machine_id: &str) -> String {
+    format!("rega/machines/{machine_id}/final-sync.json")
+}
+
 /// Terraform's lock on the state (S3 backend with `use_lockfile`).
 pub fn lock_key(machine_id: &str) -> String {
     format!("{}.tflock", state_key(machine_id))
@@ -43,16 +56,23 @@ pub fn all_keys(machine_id: &str) -> Vec<String> {
         lock_key(machine_id),
         record_key(machine_id),
         key_key(machine_id),
+        secrets_key(machine_id),
     ]
 }
 
 /// The machine id named by a state-bucket object, if it is one of ours.
 pub fn machine_id_of(key: &str) -> Option<&str> {
     let name = key.strip_prefix(PREFIX)?;
-    [".tfstate.tflock", ".tfstate", ".json", ".key.pem"]
-        .iter()
-        .find_map(|ext| name.strip_suffix(ext))
-        .filter(|id| is_machine_id(id))
+    [
+        ".tfstate.tflock",
+        ".tfstate",
+        ".secrets.json",
+        ".json",
+        ".key.pem",
+    ]
+    .iter()
+    .find_map(|ext| name.strip_suffix(ext))
+    .filter(|id| is_machine_id(id))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +108,9 @@ pub struct MachineRecord {
     /// The name the user gave the machine.
     pub name: String,
     pub vars: MachineVars,
+    /// When a device last saved it, in Unix seconds; 0 when unknown.
+    #[serde(default)]
+    pub saved_at: u64,
 }
 
 impl MachineRecord {
@@ -96,6 +119,7 @@ impl MachineRecord {
             version: RECORD_VERSION,
             name,
             vars,
+            saved_at: 0,
         }
     }
 
@@ -122,6 +146,40 @@ impl MachineRecord {
     /// `terraform.tfvars.json` for this machine.
     pub fn tfvars_json(&self) -> String {
         serde_json::to_string_pretty(&self.vars).expect("variables always serialize")
+    }
+}
+
+/// What the machine's agent writes at [`final_sync_key`] after its last
+/// upload of the game library before a stop.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FinalSync {
+    pub machine_id: String,
+    #[serde(default)]
+    pub instance_id: String,
+    pub synced: bool,
+    /// RFC 3339, UTC.
+    pub finished_utc: String,
+}
+
+impl FinalSync {
+    pub fn from_json(json: &[u8]) -> Option<Self> {
+        // Windows PowerShell writes a byte order mark when asked for UTF-8.
+        let json = json.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(json);
+        serde_json::from_slice(json).ok()
+    }
+
+    /// Whether it vouches for `instance_id` of `machine_id`, last started at
+    /// `started` (Unix seconds): the upload worked and finished after that
+    /// start, so no game installed since is missing from it.
+    pub fn vouches_for(&self, machine_id: &str, instance_id: &str, started: u64) -> bool {
+        use aws_sdk_s3::primitives::{DateTime, DateTimeFormat};
+        let finished = DateTime::from_str(&self.finished_utc, DateTimeFormat::DateTime)
+            .map(|t| t.as_secs_f64())
+            .unwrap_or(f64::MIN);
+        self.synced
+            && self.machine_id == machine_id
+            && (self.instance_id.is_empty() || self.instance_id == instance_id)
+            && finished > started as f64
     }
 }
 
@@ -252,6 +310,10 @@ mod tests {
         for key in all_keys("gaming-abc123") {
             assert_eq!(machine_id_of(&key), Some("gaming-abc123"), "{key}");
         }
+        assert_eq!(
+            secrets_key("gaming-abc123"),
+            "machines/gaming-abc123.secrets.json"
+        );
         assert_eq!(machine_id_of("machines/x.txt"), None);
         assert_eq!(machine_id_of("other/x.json"), None);
     }
@@ -290,6 +352,43 @@ mod tests {
         let mut newer = record.clone();
         newer.version = RECORD_VERSION + 1;
         assert!(MachineRecord::from_json(newer.to_json().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn older_records_without_a_save_time_still_read() {
+        let mut json: serde_json::Value =
+            serde_json::from_str(&MachineRecord::new("G".into(), vars()).to_json()).unwrap();
+        json.as_object_mut().unwrap().remove("saved_at");
+        let record = MachineRecord::from_json(json.to_string().as_bytes()).unwrap();
+        assert_eq!(record.saved_at, 0);
+    }
+
+    #[test]
+    fn a_final_sync_vouches_only_for_a_good_upload_after_the_last_start() {
+        // 2026-10-11T10:00:00Z
+        let started = 1_791_712_800;
+        // As Windows PowerShell writes it: a byte order mark and seven
+        // fractional digits.
+        let record = |synced: bool, machine: &str, instance: &str, finished: &str| {
+            let json = format!(
+                "\u{feff}{{\"machine_id\": \"{machine}\", \"instance_id\": \"{instance}\", \
+                 \"boot_utc\": \"2026-10-11T10:01:00.0000000Z\", \
+                 \"finished_utc\": \"{finished}\", \"synced\": {synced}, \
+                 \"skipped_apps\": [], \"failed_apps\": []}}"
+            );
+            FinalSync::from_json(json.as_bytes()).unwrap()
+        };
+        let good = record(true, "m", "i-1", "2026-10-11T10:30:00.1234567Z");
+        assert!(good.vouches_for("m", "i-1", started));
+        // From before the last start: games installed since aren't in it.
+        assert!(!good.vouches_for("m", "i-1", started + 3600));
+        assert!(!good.vouches_for("other", "i-1", started));
+        assert!(!good.vouches_for("m", "i-2", started));
+        assert!(!record(false, "m", "i-1", "2026-10-11T10:30:00Z").vouches_for("m", "i-1", started));
+        assert!(!record(true, "m", "i-1", "yesterday").vouches_for("m", "i-1", started));
+        // Off EC2 the agent can't name the instance.
+        assert!(record(true, "m", "", "2026-10-11T10:30:00Z").vouches_for("m", "i-1", started));
+        assert_eq!(FinalSync::from_json(b"{"), None);
     }
 
     #[test]

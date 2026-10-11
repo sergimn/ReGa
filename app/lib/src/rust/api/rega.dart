@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `choices_view`, `info`, `offer`, `option`, `orphan_from`, `orphan_view`, `region_name`, `summary`, `switch_type`, `view`
+// These functions are ignored because they are not marked as `pub`: `choices_view`, `info`, `offer`, `option`, `orphan_from`, `orphan_view`, `priced`, `region_name`, `summary`, `switch_type`, `view`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `is_gpu`
 
@@ -49,8 +49,10 @@ Future<RegionChoices> regionChoices({
 Future<List<MachineSummary>> listMachines({required String providerId}) =>
     RustLib.instance.api.crateApiRegaListMachines(providerId: providerId);
 
-/// Creates a machine and starts it. Takes several minutes: Windows has to
-/// boot and make its Administrator password first.
+/// Creates a machine, starts it and sets it up. Takes a while: Windows
+/// boots and makes its Administrator password, then the setup installs
+/// everything and restores the game library. With `cpu_first`, an
+/// on-demand GPU machine does all that on a cheap CPU type first.
 Future<MachineSummary> launchMachine({
   required String providerId,
   required String name,
@@ -58,6 +60,7 @@ Future<MachineSummary> launchMachine({
   required String typeName,
   required bool spot,
   required bool wireguard,
+  required bool cpuFirst,
 }) => RustLib.instance.api.crateApiRegaLaunchMachine(
   providerId: providerId,
   name: name,
@@ -65,6 +68,7 @@ Future<MachineSummary> launchMachine({
   typeName: typeName,
   spot: spot,
   wireguard: wireguard,
+  cpuFirst: cpuFirst,
 );
 
 Future<MachineSummary> startMachine({
@@ -75,6 +79,8 @@ Future<MachineSummary> startMachine({
   machineId: machineId,
 );
 
+/// Saves the game library and stops the machine; also finishes the stop of
+/// one that stopped itself.
 Future<MachineSummary> stopMachine({
   required String providerId,
   required String machineId,
@@ -83,7 +89,8 @@ Future<MachineSummary> stopMachine({
   machineId: machineId,
 );
 
-/// Changes a stopped machine's type (Switch to GPU / Switch to CPU).
+/// Changes a machine's type (Switch to GPU / Switch to CPU). A running one
+/// restarts as the new type and is set up again.
 Future<MachineSummary> resizeMachine({
   required String providerId,
   required String machineId,
@@ -94,8 +101,8 @@ Future<MachineSummary> resizeMachine({
   typeName: typeName,
 );
 
-/// Deletes the machine and its disks. The game library in object storage
-/// stays.
+/// Saves the game library of a running machine, then deletes the machine
+/// and its disks. The game library in object storage stays.
 Future<void> destroyMachine({
   required String providerId,
   required String machineId,
@@ -172,6 +179,9 @@ class MachineSummary {
 
   /// Human name of the region, such as `Europe (Stockholm)`.
   final String regionName;
+
+  /// Its type, priced the way it runs (spot or on-demand) when the price
+  /// could be read.
   final MachineOffer offer;
   final bool spot;
   final MachineStatus status;
@@ -187,6 +197,13 @@ class MachineSummary {
   /// machines, which can't change type.
   final String? switchType;
 
+  /// What [`MachineSummary::switch_type`] costs per hour, when known.
+  final double? switchPricePerHour;
+
+  /// It stopped on its own (idle) and the app should finish the stop,
+  /// which drops its game library disk once the games are saved.
+  final bool stoppedItself;
+
   const MachineSummary({
     required this.id,
     required this.name,
@@ -198,6 +215,8 @@ class MachineSummary {
     required this.busy,
     required this.starting,
     this.switchType,
+    this.switchPricePerHour,
+    required this.stoppedItself,
   });
 
   @override
@@ -211,7 +230,9 @@ class MachineSummary {
       status.hashCode ^
       busy.hashCode ^
       starting.hashCode ^
-      switchType.hashCode;
+      switchType.hashCode ^
+      switchPricePerHour.hashCode ^
+      stoppedItself.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -227,7 +248,9 @@ class MachineSummary {
           status == other.status &&
           busy == other.busy &&
           starting == other.starting &&
-          switchType == other.switchType;
+          switchType == other.switchType &&
+          switchPricePerHour == other.switchPricePerHour &&
+          stoppedItself == other.stoppedItself;
 }
 
 enum OrphanKind { instance, volume, securityGroup, keyPair, alarm }

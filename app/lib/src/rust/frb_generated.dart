@@ -102,6 +102,7 @@ abstract class RustLibApi extends BaseApi {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   });
 
   Future<List<MachineSummary>> crateApiRegaListMachines({
@@ -281,6 +282,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -292,6 +294,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(typeName, serializer);
           sse_encode_bool(spot, serializer);
           sse_encode_bool(wireguard, serializer);
+          sse_encode_bool(cpuFirst, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -304,7 +307,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_rega_error,
         ),
         constMeta: kCrateApiRegaLaunchMachineConstMeta,
-        argValues: [providerId, name, regionId, typeName, spot, wireguard],
+        argValues: [
+          providerId,
+          name,
+          regionId,
+          typeName,
+          spot,
+          wireguard,
+          cpuFirst,
+        ],
         apiImpl: this,
       ),
     );
@@ -319,6 +330,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       "typeName",
       "spot",
       "wireguard",
+      "cpuFirst",
     ],
   );
 
@@ -703,8 +715,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MachineSummary dco_decode_machine_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return MachineSummary(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -716,6 +728,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       busy: dco_decode_bool(arr[7]),
       starting: dco_decode_bool(arr[8]),
       switchType: dco_decode_opt_String(arr[9]),
+      switchPricePerHour: dco_decode_opt_box_autoadd_f_64(arr[10]),
+      stoppedItself: dco_decode_bool(arr[11]),
     );
   }
 
@@ -1017,6 +1031,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_busy = sse_decode_bool(deserializer);
     var var_starting = sse_decode_bool(deserializer);
     var var_switchType = sse_decode_opt_String(deserializer);
+    var var_switchPricePerHour = sse_decode_opt_box_autoadd_f_64(deserializer);
+    var var_stoppedItself = sse_decode_bool(deserializer);
     return MachineSummary(
       id: var_id,
       name: var_name,
@@ -1028,6 +1044,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       busy: var_busy,
       starting: var_starting,
       switchType: var_switchType,
+      switchPricePerHour: var_switchPricePerHour,
+      stoppedItself: var_stoppedItself,
     );
   }
 
@@ -1344,6 +1362,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.busy, serializer);
     sse_encode_bool(self.starting, serializer);
     sse_encode_opt_String(self.switchType, serializer);
+    sse_encode_opt_box_autoadd_f_64(self.switchPricePerHour, serializer);
+    sse_encode_bool(self.stoppedItself, serializer);
   }
 
   @protected

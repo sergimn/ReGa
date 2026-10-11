@@ -32,6 +32,10 @@ class ProviderPage extends StatefulWidget {
 class _ProviderPageState extends State<ProviderPage> {
   bool _spot = false;
   bool _wireguard = true;
+
+  /// Set a GPU machine up on a cheap CPU type first. Only for on-demand
+  /// GPU types; spot machines can't change type.
+  bool _cpuFirst = true;
   String? _typeName;
 
   /// The region offers are priced for: the user's pick while it's offered,
@@ -61,6 +65,9 @@ class _ProviderPageState extends State<ProviderPage> {
   final _name = TextEditingController(text: 'Gaming PC');
   bool _launching = false;
 
+  /// Whether the launch running now sets up on a CPU type first.
+  bool _launchingCpuFirst = false;
+
   /// Machines with an action in progress, and what it is.
   final Map<String, String> _busy = {};
 
@@ -69,10 +76,16 @@ class _ProviderPageState extends State<ProviderPage> {
   bool get _changing =>
       _launching || _busy.isNotEmpty || _machines.any((m) => m.starting);
 
-  /// Rechecks machines that another device (or an earlier run of the app)
-  /// is changing, since nothing else says when that's done.
+  /// Rechecks machines: often while another device (or an earlier run of
+  /// the app) is changing one, since nothing else says when that's done,
+  /// and every minute while one runs, to see it stop itself when idle.
   Timer? _poll;
+  Duration? _pollEvery;
   bool _rechecking = false;
+
+  /// Machines that stopped themselves whose stop this app already tried to
+  /// finish, so a failing one isn't retried on every reload.
+  final Set<String> _finishing = {};
 
   /// The last failed launch or machine action.
   Object? _actionError;
@@ -119,13 +132,38 @@ class _ProviderPageState extends State<ProviderPage> {
     return quit ? AppExitResponse.exit : AppExitResponse.cancel;
   }
 
-  void _pollWhileBusy() {
-    if (!_machines.any((m) => m.busy)) {
-      _poll?.cancel();
-      _poll = null;
-      return;
+  /// Runs after every new machine list.
+  void _machinesChanged() {
+    _schedulePoll();
+    _finishSelfStops();
+  }
+
+  void _schedulePoll() {
+    final every = _machines.any((m) => m.busy)
+        ? const Duration(seconds: 15)
+        : _machines.any((m) => m.status == MachineStatus.running)
+        ? const Duration(minutes: 1)
+        : null;
+    if (every == _pollEvery) return;
+    _poll?.cancel();
+    _pollEvery = every;
+    _poll = every == null ? null : Timer.periodic(every, (_) => _recheck());
+  }
+
+  /// A machine that stopped itself after sitting idle still has its game
+  /// library disk. Finishing the stop drops the disk if the machine saved
+  /// its games first, so the disk doesn't cost money while it's stopped.
+  void _finishSelfStops() {
+    _finishing.removeWhere(
+      (id) => !_machines.any((m) => m.id == id && m.stoppedItself),
+    );
+    for (final m in _machines) {
+      if (!m.stoppedItself || m.busy || _busy.containsKey(m.id)) continue;
+      if (!_finishing.add(m.id)) continue;
+      unawaited(
+        _act(m, 'Finishing the stop…', () => _backend.stopMachine(_id, m.id)),
+      );
     }
-    _poll ??= Timer.periodic(const Duration(seconds: 15), (_) => _recheck());
   }
 
   Future<void> _recheck() async {
@@ -134,14 +172,15 @@ class _ProviderPageState extends State<ProviderPage> {
     _rechecking = true;
     try {
       final generation = _generation;
+      final wasBusy = _machines.any((m) => m.busy);
       final machines = await _backend.listMachines(_id);
       if (!mounted || generation != _generation) return;
       setState(() {
         _machines = machines;
         _machinesError = null;
       });
-      _pollWhileBusy();
-      if (!machines.any((m) => m.busy)) {
+      _machinesChanged();
+      if (wasBusy && !machines.any((m) => m.busy)) {
         // Done: quotas and leftovers may have changed with it.
         await _reload();
         await _loadOrphans();
@@ -168,8 +207,10 @@ class _ProviderPageState extends State<ProviderPage> {
     final regionId = _regionId;
     final typeName = _typeName;
     if (regionId == null || typeName == null) return;
+    final cpuFirst = _cpuFirstApplies;
     setState(() {
       _launching = true;
+      _launchingCpuFirst = cpuFirst;
       _actionError = null;
     });
     try {
@@ -180,6 +221,7 @@ class _ProviderPageState extends State<ProviderPage> {
         typeName: typeName,
         spot: _spot,
         wireguard: _wireguard,
+        cpuFirst: cpuFirst,
       );
     } catch (e) {
       if (mounted) setState(() => _actionError = e);
@@ -240,13 +282,32 @@ class _ProviderPageState extends State<ProviderPage> {
   Future<void> _destroy(MachineSummary m) async {
     final ok = await _confirm(
       'Destroy ${m.name}?',
-      'This deletes the machine and its disks. Games already copied to '
-          'the game library stay there.',
+      'A running machine first saves its games to the game library, which '
+          'stays. Then this deletes the machine and its disks.',
       'Destroy',
     );
     if (!ok || !mounted) return;
     await _act(m, 'Destroying…', () => _backend.destroyMachine(_id, m.id));
     await _loadOrphans();
+  }
+
+  Future<void> _switch(MachineSummary m) async {
+    final to = m.switchType!;
+    final running = m.status == MachineStatus.running;
+    if (running) {
+      final ok = await _confirm(
+        'Switch ${m.name} to $to?',
+        'It restarts as ${switchedTo(m)} and is set up again, which takes a '
+            'few minutes. A stream running on it stops.',
+        'Switch',
+      );
+      if (!ok || !mounted) return;
+    }
+    await _act(
+      m,
+      running ? 'Switching and setting up…' : 'Switching…',
+      () => _backend.resizeMachine(_id, m.id, to),
+    );
   }
 
   Future<void> _deleteOrphans() async {
@@ -340,7 +401,7 @@ class _ProviderPageState extends State<ProviderPage> {
         _error = null;
         _loading = false;
       });
-      _pollWhileBusy();
+      _machinesChanged();
     } catch (e) {
       if (stale()) return;
       setState(() {
@@ -511,15 +572,12 @@ class _ProviderPageState extends State<ProviderPage> {
                         'Starting…',
                         () => _backend.startMachine(_id, m.id),
                       ),
-                onStop: () =>
-                    _act(m, 'Stopping…', () => _backend.stopMachine(_id, m.id)),
-                onSwitch: _changing
-                    ? null
-                    : () => _act(
-                        m,
-                        'Switching…',
-                        () => _backend.resizeMachine(_id, m.id, m.switchType!),
-                      ),
+                onStop: () => _act(
+                  m,
+                  'Saving games and stopping…',
+                  () => _backend.stopMachine(_id, m.id),
+                ),
+                onSwitch: _changing ? null : () => _switch(m),
                 onDestroy: () => _destroy(m),
               ),
           if (_orphans.isNotEmpty) ..._orphanSection(theme),
@@ -528,8 +586,14 @@ class _ProviderPageState extends State<ProviderPage> {
     );
   }
 
+  MachineOffer? get _offer =>
+      _offers.where((o) => o.typeName == _typeName).firstOrNull;
+
+  /// The CPU phase is for on-demand GPU machines only.
+  bool get _cpuFirstApplies => _cpuFirst && !_spot && (_offer?.isGpu ?? false);
+
   Widget _launchRow(ThemeData theme) {
-    final offer = _offers.where((o) => o.typeName == _typeName).firstOrNull;
+    final offer = _offer;
     final region = _choices?.all
         .where((r) => r.regionId == _regionId)
         .firstOrNull;
@@ -541,6 +605,20 @@ class _ProviderPageState extends State<ProviderPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (offer != null && offer.isGpu && !_spot)
+            SwitchListTile(
+              key: const ValueKey('cpu-first-toggle'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Set up on a cheap CPU machine first'),
+              subtitle: const Text(
+                'Installs Steam and Sunshine and copies your games while '
+                'the machine runs as a CPU type, then switches to the GPU.',
+              ),
+              value: _cpuFirst,
+              onChanged: _launching
+                  ? null
+                  : (v) => setState(() => _cpuFirst = v),
+            ),
           Row(
             children: [
               SizedBox(
@@ -562,9 +640,12 @@ class _ProviderPageState extends State<ProviderPage> {
           ),
           const SizedBox(height: 8),
           if (_launching)
-            const Text(
-              'Launching. Windows takes several minutes to boot and set '
-              'its password.',
+            Text(
+              'Launching. Windows takes several minutes to boot and make its '
+              'password. Then ReGa installs Steam and Sunshine and copies '
+              'your games, which can take a while'
+              '${_launchingCpuFirst ? ', on a CPU type before the switch to '
+                        'the GPU' : ''}.',
             )
           else if (ready)
             Text(

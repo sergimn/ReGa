@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use super::api::{AwsApi, BucketInfo, Instance};
-use super::record::{state_key, InstanceState, MachineVars};
+use super::keys::MachineKey;
+use super::record::{key_key, state_key, InstanceState, MachineVars};
 use super::{state_bucket, IpLookup};
 use crate::model::{MachineState, Orphan, ResourceKind};
 use crate::provider::{ProviderError, ProviderResult};
@@ -43,6 +44,14 @@ pub struct Account {
     pub undeletable: Option<String>,
     /// A new bucket stays invisible for this many reads.
     pub slow_new_buckets: u32,
+    /// Windows makes this Administrator password once its instance has
+    /// been asked for its password this many times (0: right away).
+    pub windows_password: Option<(String, u32)>,
+    /// What the IP lookup answers, when not [`MY_IP`].
+    pub my_ip: Option<String>,
+    /// Unix seconds; moves on with every start, which sets an instance's
+    /// launch time.
+    pub clock: u64,
     next_instance: u32,
 }
 
@@ -56,6 +65,8 @@ impl Account {
                 public_access_blocked: true,
                 ..BucketInfo::default()
             },
+            // 2026-10-11T10:00:00Z
+            clock: 1_791_712_800,
             ..Self::default()
         };
         for r in ["eu-central-1", "eu-north-1"] {
@@ -194,7 +205,33 @@ impl AwsApi for FakeAws {
         instance_id: &str,
     ) -> ProviderResult<Option<String>> {
         self.call(format!("password_data {instance_id}"));
-        Ok(self.with(|a| a.password_data.get(instance_id).cloned()))
+        Ok(self.with(|a| {
+            let asked = a
+                .calls
+                .iter()
+                .filter(|c| *c == &format!("password_data {instance_id}"))
+                .count() as u32;
+            if let (None, Some((password, after))) =
+                (a.password_data.get(instance_id), a.windows_password.clone())
+            {
+                if asked > after {
+                    let machine = a
+                        .instances
+                        .iter()
+                        .find(|i| i.id == instance_id)
+                        .and_then(|i| i.machine_id.clone())
+                        .unwrap();
+                    let pem = a
+                        .object(&state_bucket(ACCOUNT), &key_key(&machine))
+                        .cloned()
+                        .unwrap();
+                    let key = MachineKey::from_pem(&String::from_utf8(pem).unwrap()).unwrap();
+                    a.password_data
+                        .insert(instance_id.into(), encrypt_password(&key, &password));
+                }
+            }
+            a.password_data.get(instance_id).cloned()
+        }))
     }
 
     async fn tagged_resources(&self, region: &str) -> ProviderResult<Vec<Orphan>> {
@@ -384,12 +421,20 @@ impl Terraform for FakeTerraform {
                         InstanceState::Running => MachineState::Running,
                         InstanceState::Stopped => MachineState::Stopped,
                     };
+                    a.clock += 600;
+                    let now = a.clock;
                     let live = owned.as_ref().and_then(|(instance, _, _)| {
                         a.instances
                             .iter_mut()
                             .find(|i| &i.id == instance && i.state != MachineState::Terminated)
                     });
                     if let Some(i) = live {
+                        // A resize restarts it, as does a start.
+                        let restarted =
+                            i.type_name != vars.instance_type || i.state != MachineState::Running;
+                        if state == MachineState::Running && restarted {
+                            i.launched = Some(now);
+                        }
                         i.type_name = vars.instance_type.clone();
                         i.state = state;
                         return owned;
@@ -404,6 +449,7 @@ impl Terraform for FakeTerraform {
                         state,
                         spot: vars.spot,
                         public_ip: Some("198.51.100.1".into()),
+                        launched: Some(now),
                     });
                     for (kind, rid) in [
                         (ResourceKind::Volume, format!("vol-{n}")),
@@ -452,11 +498,32 @@ impl Terraform for FakeTerraform {
     }
 }
 
-pub struct FixedIp;
+/// Answers [`MY_IP`], or the account's `my_ip` when set.
+pub struct FixedIp(pub FakeAws);
 
 #[async_trait]
 impl IpLookup for FixedIp {
     async fn public_ip(&self) -> ProviderResult<String> {
-        Ok(MY_IP.into())
+        Ok(self
+            .0
+            .with(|a| a.my_ip.clone())
+            .unwrap_or_else(|| MY_IP.into()))
     }
+}
+
+/// `password` encrypted with `key`, as EC2 hands out a Windows password.
+pub fn encrypt_password(key: &MachineKey, password: &str) -> String {
+    use aws_lc_rs::rsa::{Pkcs1PublicEncryptingKey, PrivateDecryptingKey};
+    use base64::Engine;
+    let pem = key.to_pem();
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .unwrap();
+    let public =
+        Pkcs1PublicEncryptingKey::new(PrivateDecryptingKey::from_pkcs8(&der).unwrap().public_key())
+            .unwrap();
+    let mut out = vec![0; public.ciphertext_size()];
+    let cipher = public.encrypt(password.as_bytes(), &mut out).unwrap();
+    base64::engine::general_purpose::STANDARD.encode(cipher)
 }

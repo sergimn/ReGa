@@ -39,7 +39,9 @@ jobs:
         run: ansible-lint
 
       - name: Syntax check
-        run: ansible-playbook -i inventory.example.yml site.yml --syntax-check
+        run: |
+          ansible-playbook -i inventory.example.yml site.yml --syntax-check
+          ansible-playbook -i inventory.example.yml agent.yml --syntax-check
 
       - name: Install PowerShell modules
         shell: pwsh
@@ -148,6 +150,17 @@ jobs:
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
+
+      - name: Run the agent actions the app uses
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          cd ~/ansible
+          ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=Status
+          # No restore ran at this boot, so this returns right away.
+          ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=WaitRestore \
+            -e rega_restore_start_minutes=0 | tee wait-restore.log
+          grep -Eq 'wait[^a-z]+none' wait-restore.log
 
       - name: Check the machine
         shell: powershell

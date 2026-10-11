@@ -170,6 +170,23 @@ function Test-SameBoot {
   return ([Math]::Abs(($value - $Boot.ToUniversalTime()).TotalSeconds) -lt 60)
 }
 
+function Get-RestoreWaitState {
+  # Pure: where this boot's library restore is. The boot task writes
+  # restore.json as it starts, so until StartBy a missing or older record
+  # means it hasn't started yet.
+  #   running   the restore is copying
+  #   starting  no record for this boot yet, but it may still start
+  #   finished  it ended this boot (done, no-disk, failed or disk-full)
+  #   none      no restore started this boot
+  param($Restore, [datetime]$Boot, [datetime]$Now, [datetime]$StartBy)
+  if (Test-SameBoot (Get-PropertyValue $Restore 'boot_utc') $Boot) {
+    if ((Get-PropertyValue $Restore 'status') -eq 'running') { return 'running' }
+    return 'finished'
+  }
+  if ($Now -lt $StartBy) { return 'starting' }
+  return 'none'
+}
+
 function Get-IdleDecision {
   # Pure: given the saved state and the current signals, work out when the
   # machine was last active and whether it should stop now.

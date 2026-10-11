@@ -15,6 +15,7 @@ fn request(type_name: &str, spot: bool) -> LaunchRequest {
         disk_gib: 128,
         spot,
         wireguard: true,
+        cpu_first: false,
     }
 }
 
@@ -24,12 +25,15 @@ async fn cpu_then_gpu_lifecycle() {
     let m = p.launch(&request("t3.medium", false)).await.unwrap();
     assert_eq!(m.state, MachineState::Running);
 
-    let err = p.resize(&m.id, "g4dn.xlarge").await.unwrap_err();
-    assert!(matches!(err, ProviderError::InvalidState(_)));
-
-    p.stop(&m.id).await.unwrap();
+    // A running machine switches and keeps running.
     let m = p.resize(&m.id, "g4dn.xlarge").await.unwrap();
     assert!(m.machine_type.is_gpu());
+    assert_eq!(m.state, MachineState::Running);
+
+    p.stop(&m.id).await.unwrap();
+    let m = p.resize(&m.id, "t3.medium").await.unwrap();
+    assert!(!m.machine_type.is_gpu());
+    assert_eq!(m.state, MachineState::Stopped);
     p.start(&m.id).await.unwrap();
 
     p.destroy(&m.id).await.unwrap();

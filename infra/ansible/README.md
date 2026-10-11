@@ -12,8 +12,11 @@ If nobody runs it, the boot task does the same on its own.
 
 ## Running it
 
-The app writes an inventory and runs the playbook from its own folder. By
-hand:
+The app (`app/core/src/ansible.rs`) writes the playbook, an inventory and
+the machine's passwords to the machine's folder and runs `site.yml` from
+there after every launch, start and switch, and `agent.yml` for the agent
+actions below. `site.yml` first waits up to 15 minutes for WinRM, since the
+app runs it as soon as EC2 has the Windows password. By hand:
 
 ```sh
 cd infra/ansible
@@ -137,10 +140,24 @@ stop.
 The app can drive the agent over WinRM:
 
 ```powershell
-powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status     # JSON: streaming, downloads, restore and idle state
-powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action FinalSync  # before a stop the app starts; prints {"synced": true|false}
+powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status       # JSON: streaming, downloads, restore and idle state
+powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action FinalSync    # before a stop the app starts; prints {"synced": true|false}
+powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action WaitRestore  # waits for this boot's restore; prints {"wait": "finished"|"none"|...}
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action ResetIdle
 ```
+
+`agent.yml` runs Status, FinalSync or WaitRestore in a single WinRM session,
+which counts as activity, so the idle stop can't start its own upload
+meanwhile:
+
+```sh
+ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=FinalSync
+```
+
+WaitRestore gives the boot task `rega_restore_start_minutes` (5) to start a
+restore and waits up to `rega_restore_timeout_minutes` (240) for it. The app
+uses it in the CPU phase, so the games are on D: before the switch to the
+GPU type.
 
 Logs are in `C:\ProgramData\ReGa\logs`.
 
@@ -205,8 +222,11 @@ the next boot.
 - The playbook against a GitHub Windows Server 2022 runner, from Ansible in
   WSL over WinRM HTTPS set up by Terraform's own boot script. It runs twice
   and the second run must change nothing. Then it checks the services, the
-  tunnel, the Sunshine API login, an agent tick, and installs the virtual
+  tunnel, the Sunshine API login, an agent tick, runs `agent.yml` (Status,
+  and WaitRestore with no restore to wait for), and installs the virtual
   display.
+- The app's Rust tests syntax-check both playbooks as the app writes them,
+  with the inventory it generates (`.github/workflows/app.yml`).
 
 Not covered without a real g4dn: the NVIDIA driver install and license, the
 virtual display next to the NVIDIA GPU, Sunshine capture and encoding and its

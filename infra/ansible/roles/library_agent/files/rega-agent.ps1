@@ -10,16 +10,23 @@
               in S3, so the app knows whether it can delete the library disk.
   LaunchSteam (logon, desktop user)  Wait for the restore, register the
               library folder with Steam and start Steam.
+  WaitRestore (app, over WinRM)  Wait for this boot's restore to end, so the
+              games are on the disk before the app switches to the GPU type.
   Status      Print the agent state as JSON.
   ResetIdle   Restart the idle clock (Ansible runs it after a setup).
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('Restore', 'Tick', 'FinalSync', 'LaunchSteam', 'Status', 'ResetIdle')]
+  [ValidateSet('Restore', 'Tick', 'FinalSync', 'LaunchSteam', 'WaitRestore', 'Status', 'ResetIdle')]
   [string]$Action,
 
-  [string]$ConfigPath
+  [string]$ConfigPath,
+
+  # WaitRestore: how long the boot task may take to start the restore, and
+  # how long to wait in all.
+  [int]$StartMinutes = 5,
+  [int]$TimeoutMinutes = 240
 )
 
 # Windows PowerShell 5.1 leaves $PSScriptRoot empty in parameter defaults.
@@ -340,10 +347,8 @@ switch ($Action) {
     while ([datetime]::UtcNow -lt $deadline) {
       # Explorer may still start Steam from the Run key after the check above.
       Stop-Steam $steamExe
-      $restore = Read-JsonFile $restorePath
-      $sameBoot = Test-SameBoot (Get-PropertyValue $restore 'boot_utc') $boot
-      if ($sameBoot -and (Get-PropertyValue $restore 'status') -ne 'running') { break }
-      if (-not $sameBoot -and [datetime]::UtcNow -gt $startBy) { break }
+      $wait = Get-RestoreWaitState -Restore (Read-JsonFile $restorePath) -Boot $boot -Now ([datetime]::UtcNow) -StartBy $startBy
+      if ($wait -in @('finished', 'none')) { break }
       Start-Sleep -Seconds 10
     }
     # Steam rewrites libraryfolders.vdf on exit, so close it before editing.
@@ -366,6 +371,23 @@ switch ($Action) {
       }
     }
     Start-Process -FilePath $steamExe
+  }
+
+  'WaitRestore' {
+    # The open WinRM session counts as activity, so the idle stop waits too.
+    $boot = Get-BootTime
+    $startBy = [datetime]::UtcNow.AddMinutes($StartMinutes)
+    $deadline = [datetime]::UtcNow.AddMinutes($TimeoutMinutes)
+    while ($true) {
+      $restore = Read-JsonFile $restorePath
+      $wait = Get-RestoreWaitState -Restore $restore -Boot $boot -Now ([datetime]::UtcNow) -StartBy $startBy
+      if ($wait -in @('finished', 'none') -or [datetime]::UtcNow -ge $deadline) { break }
+      Start-Sleep -Seconds 10
+    }
+    [pscustomobject]@{
+      wait   = $wait
+      status = (Get-PropertyValue $restore 'status')
+    } | ConvertTo-Json -Compress
   }
 
   'Status' {

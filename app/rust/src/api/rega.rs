@@ -6,8 +6,8 @@ use std::fmt::Display;
 use futures::future::try_join_all;
 use rega_core::region::{self, RegionCandidate};
 use rega_core::{
-    CloudProvider, LaunchRequest, Machine, MachineState, MachineType, Orphan, Region, ResourceKind,
-    DEFAULT_DISK_GIB,
+    roomy_cpu_type, CloudProvider, LaunchRequest, Machine, MachineState, MachineType, Orphan,
+    Region, ResourceKind, DEFAULT_DISK_GIB,
 };
 
 use crate::registry;
@@ -91,6 +91,8 @@ pub struct MachineSummary {
     pub region_id: String,
     /// Human name of the region, such as `Europe (Stockholm)`.
     pub region_name: String,
+    /// Its type, priced the way it runs (spot or on-demand) when the price
+    /// could be read.
     pub offer: MachineOffer,
     pub spot: bool,
     pub status: MachineStatus,
@@ -102,6 +104,11 @@ pub struct MachineSummary {
     /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
     /// machines, which can't change type.
     pub switch_type: Option<String>,
+    /// What [`MachineSummary::switch_type`] costs per hour, when known.
+    pub switch_price_per_hour: Option<f64>,
+    /// It stopped on its own (idle) and the app should finish the stop,
+    /// which drops its game library disk once the games are saved.
+    pub stopped_itself: bool,
 }
 
 pub enum OrphanKind {
@@ -219,10 +226,39 @@ pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary
     // Region names are only for display; ids do when they can't be read.
     let (machines, regions) = (machines?, regions.unwrap_or_default());
     let types = provider.machine_types();
-    Ok(machines
-        .into_iter()
-        .map(|m| summary(m, &types, |id| region_name(&regions, id)))
-        .collect())
+    Ok(futures::future::join_all(machines.into_iter().map(|m| {
+        let s = summary(m, &types, |id| region_name(&regions, id));
+        priced(provider, s)
+    }))
+    .await)
+}
+
+/// Fills in what the machine's type and its switch type cost per hour.
+/// Prices are only for display, so one that can't be read stays unknown.
+async fn priced(provider: &dyn CloudProvider, mut s: MachineSummary) -> MachineSummary {
+    let price = |type_name: String| {
+        let region = s.region_id.clone();
+        let spot = s.spot;
+        async move {
+            provider
+                .price(&region, &type_name)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|p| p.per_hour(spot))
+        }
+    };
+    let current = price(s.offer.type_name.clone());
+    let switch = async {
+        match s.switch_type.clone() {
+            Some(t) => price(t).await,
+            None => None,
+        }
+    };
+    let (current, switch) = futures::join!(current, switch);
+    s.offer.price_per_hour = current;
+    s.switch_price_per_hour = switch;
+    s
 }
 
 fn region_name(regions: &[Region], id: &str) -> String {
@@ -237,13 +273,14 @@ fn region_name(regions: &[Region], id: &str) -> String {
 /// region's display name.
 async fn view(provider: &dyn CloudProvider, m: Machine) -> RegaResult<MachineSummary> {
     let regions = provider.regions().await.unwrap_or_default();
-    Ok(summary(m, &provider.machine_types(), |id| {
-        region_name(&regions, id)
-    }))
+    let s = summary(m, &provider.machine_types(), |id| region_name(&regions, id));
+    Ok(priced(provider, s).await)
 }
 
-/// Creates a machine and starts it. Takes several minutes: Windows has to
-/// boot and make its Administrator password first.
+/// Creates a machine, starts it and sets it up. Takes a while: Windows
+/// boots and makes its Administrator password, then the setup installs
+/// everything and restores the game library. With `cpu_first`, an
+/// on-demand GPU machine does all that on a cheap CPU type first.
 pub async fn launch_machine(
     provider_id: String,
     name: String,
@@ -251,6 +288,7 @@ pub async fn launch_machine(
     type_name: String,
     spot: bool,
     wireguard: bool,
+    cpu_first: bool,
 ) -> RegaResult<MachineSummary> {
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -266,6 +304,7 @@ pub async fn launch_machine(
             disk_gib: DEFAULT_DISK_GIB,
             spot,
             wireguard,
+            cpu_first,
         })
         .await?;
     view(provider, machine).await
@@ -277,13 +316,16 @@ pub async fn start_machine(provider_id: String, machine_id: String) -> RegaResul
     view(entry.provider(), machine).await
 }
 
+/// Saves the game library and stops the machine; also finishes the stop of
+/// one that stopped itself.
 pub async fn stop_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
     let machine = entry.provider().stop(&machine_id).await?;
     view(entry.provider(), machine).await
 }
 
-/// Changes a stopped machine's type (Switch to GPU / Switch to CPU).
+/// Changes a machine's type (Switch to GPU / Switch to CPU). A running one
+/// restarts as the new type and is set up again.
 pub async fn resize_machine(
     provider_id: String,
     machine_id: String,
@@ -294,8 +336,8 @@ pub async fn resize_machine(
     view(entry.provider(), machine).await
 }
 
-/// Deletes the machine and its disks. The game library in object storage
-/// stays.
+/// Saves the game library of a running machine, then deletes the machine
+/// and its disks. The game library in object storage stays.
 pub async fn destroy_machine(provider_id: String, machine_id: String) -> RegaResult<()> {
     let entry = registry::entry(&provider_id)?;
     Ok(entry.provider().destroy(&machine_id).await?)
@@ -383,10 +425,7 @@ fn switch_type(m: &Machine, types: &[MachineType]) -> Option<String> {
         return None;
     }
     let target = if m.machine_type.is_gpu() {
-        types
-            .iter()
-            .filter(|t| !t.is_gpu() && t.spec.ram_gib >= 4.0)
-            .min_by(|a, b| a.spec.ram_gib.total_cmp(&b.spec.ram_gib))
+        roomy_cpu_type(types)
     } else {
         types.iter().find(|t| t.is_gpu())
     };
@@ -413,6 +452,8 @@ fn summary(
         region_name: region_name(&m.region_id),
         busy: m.busy,
         starting: m.starting,
+        stopped_itself: m.stopped_itself,
+        switch_price_per_hour: None,
         id: m.id,
         name: m.name,
         region_id: m.region_id,
@@ -495,6 +536,7 @@ mod tests {
             state: MachineState::Running,
             busy: false,
             starting: false,
+            stopped_itself: false,
         }
     }
 
@@ -526,12 +568,17 @@ mod tests {
             "t3.medium".into(),
             false,
             true,
+            true,
         )
         .await
         .unwrap();
         assert_eq!(m.name, "Bridge test");
         assert_eq!(m.region_name, "Europe (Stockholm)");
         assert_eq!(m.switch_type.as_deref(), Some("g4dn.xlarge"));
+        // Priced as it runs, and what the switch would cost.
+        assert!(m.offer.price_per_hour.is_some());
+        assert!(m.switch_price_per_hour > m.offer.price_per_hour);
+        assert!(!m.stopped_itself);
         let m = stop_machine("aws".into(), m.id).await.unwrap();
         assert!(matches!(m.status, MachineStatus::Stopped));
         let m = resize_machine("aws".into(), m.id, "g4dn.xlarge".into())
@@ -555,6 +602,7 @@ mod tests {
             "t3.medium".into(),
             false,
             true,
+            false,
         )
         .await
         .err()

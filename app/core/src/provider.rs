@@ -62,15 +62,24 @@ pub trait CloudProvider: Send + Sync {
     /// Machines tagged `Project=ReGa`, in every region.
     async fn list_machines(&self) -> ProviderResult<Vec<Machine>>;
 
+    /// Creates a machine, starts it and sets it up. Takes a while: Windows
+    /// boots, the setup installs everything and restores the game library.
     async fn launch(&self, request: &LaunchRequest) -> ProviderResult<Machine>;
 
-    /// Changes a stopped on-demand machine's type (the CPU and GPU switch).
+    /// Changes an on-demand machine's type (the CPU and GPU switch). A
+    /// stopped machine stays stopped; a running one restarts as the new
+    /// type, keeping its game library disk, and is set up again.
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine>;
 
     async fn start(&self, machine_id: &str) -> ProviderResult<Machine>;
 
+    /// Saves the game library and stops the machine. The library disk goes
+    /// only once the machine has saved it. Also finishes the stop of a
+    /// machine that stopped itself ([`Machine::stopped_itself`]).
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine>;
 
+    /// Saves the game library of a running machine, then deletes the
+    /// machine and its disks.
     async fn destroy(&self, machine_id: &str) -> ProviderResult<()>;
 
     /// Resources tagged `Project=ReGa`, in every region, that belong to no

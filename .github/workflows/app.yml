@@ -3,10 +3,10 @@ name: App
 on:
   push:
     branches: [main]
-    # The app compiles the Terraform module in.
-    paths: ['app/**', 'infra/terraform/aws/**', '.github/workflows/app.yml']
+    # The app compiles the Terraform module and the Ansible playbook in.
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/app.yml']
   pull_request:
-    paths: ['app/**', 'infra/terraform/aws/**', '.github/workflows/app.yml']
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/app.yml']
 
 permissions:
   contents: read
@@ -36,9 +36,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app
+      # The setup tests syntax-check the embedded playbooks with the real
+      # ansible-playbook.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Ansible
+        working-directory: infra/ansible
+        run: |
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r requirements.yml
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          REGA_REQUIRE_ANSIBLE: '1'
 
   flutter:
     name: Flutter (analyze, test, Linux build)

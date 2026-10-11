@@ -43,6 +43,8 @@ abstract class RegaBackend {
 
   Future<List<MachineSummary>> listMachines(String providerId);
 
+  /// Creates a machine and sets it up. With `cpuFirst`, an on-demand GPU
+  /// machine is set up on a cheap CPU type, then switched to the GPU.
   Future<MachineSummary> launchMachine(
     String providerId, {
     required String name,
@@ -50,12 +52,16 @@ abstract class RegaBackend {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   });
 
   Future<MachineSummary> startMachine(String providerId, String machineId);
 
+  /// Saves the game library and stops the machine; also finishes the stop
+  /// of one that stopped itself.
   Future<MachineSummary> stopMachine(String providerId, String machineId);
 
+  /// A running machine restarts as the new type and is set up again.
   Future<MachineSummary> resizeMachine(
     String providerId,
     String machineId,
@@ -112,6 +118,7 @@ class RustBackend implements RegaBackend {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   }) => rust.launchMachine(
     providerId: providerId,
     name: name,
@@ -119,6 +126,7 @@ class RustBackend implements RegaBackend {
     typeName: typeName,
     spot: spot,
     wireguard: wireguard,
+    cpuFirst: cpuFirst,
   );
 
   @override
