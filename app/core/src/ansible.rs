@@ -542,14 +542,14 @@ mod tests {
         }
         let mut on_disk = Vec::new();
         walk(&root, "", &mut on_disk);
-        // What the app doesn't run: docs, examples, the controller's own
-        // requirements, lint settings and tests.
+        // What the app doesn't run: docs, examples, the controller's and
+        // the linter's requirements, lint settings and tests.
         let mut on_disk: Vec<String> = on_disk
             .into_iter()
             .filter(|p| {
                 !p.starts_with('.')
                     && !p.starts_with("tests/")
-                    && !p.starts_with("requirements.")
+                    && !p.starts_with("requirements")
                     && p != "README.md"
                     && p != "inventory.example.yml"
             })
