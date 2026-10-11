@@ -262,10 +262,10 @@ function Invoke-Aws {
 }
 
 function Test-DiskFullOutput {
-  # Pure: whether AWS CLI output says the local disk filled up (ENOSPC, or
-  # ERROR_DISK_FULL on Windows).
+  # Pure: whether AWS CLI output says the local disk filled up: ENOSPC, or
+  # Windows' ERROR_DISK_FULL (112) or ERROR_HANDLE_DISK_FULL (39).
   param([string[]]$Output)
-  return (@(@($Output) -match 'No space left on device|\[Errno 28\]|not enough space on the disk|\[WinError 112\]').Count -gt 0)
+  return (@(@($Output) -match 'No space left on device|\[Errno 28\]|not enough space on the disk|\[WinError 112\]|disk is full|\[WinError 39\]').Count -gt 0)
 }
 
 function Get-AcfValue {

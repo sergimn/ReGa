@@ -508,6 +508,7 @@ Describe 'Test-DiskFullOutput' {
   It 'sees a full disk in the CLI output' {
     Test-DiskFullOutput @('download failed: s3://b/k to D:\x [Errno 28] No space left on device') | Should -BeTrue
     Test-DiskFullOutput @('ok', '[WinError 112] There is not enough space on the disk') | Should -BeTrue
+    Test-DiskFullOutput @('[WinError 39] The disk is full') | Should -BeTrue
   }
 
   It 'does not mistake other failures for it' {
