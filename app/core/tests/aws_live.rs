@@ -5,8 +5,8 @@
 //! cargo test -p rega_core --test aws_live -- --ignored --nocapture
 //! ```
 //!
-//! They list and price things. Only `storage_is_ready` changes anything: it
-//! makes the buckets ready, as the app's first launch would.
+//! They list and price things. The only change they make is getting the
+//! buckets ready, as the app does the first time it lists machines.
 
 use rega_core::aws::{AwsProvider, ConnectOptions};
 use rega_core::{region, CloudProvider};

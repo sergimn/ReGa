@@ -27,20 +27,23 @@ first (`core/src/aws/`):
   (`MockProvider::demo_aws`) and says why; Reconnect tries again.
 - Regions, GPU quotas (Service Quotas), spot prices and instance offerings
   come from the AWS APIs; on-demand prices from the Price List API.
-- On first use the app creates `rega-tfstate-<account>` (versioned, with old
-  versions expiring after 30 days) and `rega-games-<account>` in eu-north-1,
-  encrypted and tagged. It only checks Block Public Access and refuses a
-  bucket that doesn't have it on.
+- The first time it lists machines, the app creates `rega-tfstate-<account>`
+  (versioned, with old versions expiring after 30 days) and
+  `rega-games-<account>` in eu-north-1, encrypted and tagged. It only checks
+  Block Public Access and refuses a bucket that doesn't have it on.
 - Launch, start, stop, resize and destroy run the Terraform module in
   `infra/terraform/aws`, which is compiled into the app. Each machine has its
   own state in the state bucket (the source of truth, so every device sees
   the same machines), next to a record of its settings and its RSA key. Each
   device keeps a working copy under `$XDG_DATA_HOME/rega/aws/<account>/`.
   Terraform comes from `REGA_TERRAFORM` or `PATH` (the Flatpak bundles it).
-- One change per machine at a time, and one machine up at a time: launch
-  and start refuse while another ReGa machine is running. A machine with a
-  change running (here or on another device, seen through its Terraform
-  state lock) shows as busy and offers no actions until it's done.
+- One change per machine at a time, and one machine up at a time: launch,
+  start and resize refuse while another ReGa machine is running or being
+  started, here or on another device. A machine with a change running
+  (seen through its Terraform state lock) shows as busy and offers no
+  actions until it's done; the app rechecks it every 15 seconds. Two
+  devices that launch within the same few seconds can still both get
+  through, since nothing in S3 serialises them yet.
 - If the app quits mid-change, Terraform keeps going outside the Flatpak
   and finishes. A run that was killed leaves its state lock behind; the next
   change to that machine removes it when this computer took it and the run

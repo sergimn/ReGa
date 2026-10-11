@@ -174,12 +174,7 @@ impl Terraform for TerraformCli {
             .process_group(0)
             .spawn()
             .map_err(|e| io_error("run Terraform", e))?;
-        if let Some(pid) = child.id() {
-            let marker = RunMarker {
-                pid,
-                program: binary.to_string_lossy().into_owned(),
-                started: unix_now(),
-            };
+        if let Some(marker) = child.id().and_then(RunMarker::of) {
             // Best effort: without it a killed run's lock waits out its age.
             let _ = tokio::fs::write(dir.join(RUN_MARKER), marker.to_json()).await;
         }
@@ -207,22 +202,41 @@ impl Terraform for TerraformCli {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunMarker {
     pub pid: u32,
-    /// The binary as started, which `/proc/<pid>/cmdline` repeats.
-    pub program: String,
+    /// When the process started, in clock ticks since boot. Together with
+    /// the pid it names the process even after it `exec`s the real binary
+    /// (snap, tfenv and asdf put a launcher in front of Terraform).
+    pub start_ticks: u64,
     /// Unix seconds.
     pub started: u64,
 }
 
 impl RunMarker {
+    /// The marker for running process `pid` (Linux).
+    pub fn of(pid: u32) -> Option<Self> {
+        Some(Self {
+            pid,
+            start_ticks: start_ticks(pid)?,
+            started: unix_now(),
+        })
+    }
+
     fn to_json(&self) -> String {
         serde_json::to_string(self).expect("markers always serialize")
     }
 
-    /// Whether the process is still that Terraform run (Linux).
+    /// Whether the process is still that Terraform run, not one that reused
+    /// its pid.
     pub fn is_running(&self) -> bool {
-        std::fs::read(format!("/proc/{}/cmdline", self.pid))
-            .is_ok_and(|cmdline| cmdline.split(|b| *b == 0).next() == Some(self.program.as_bytes()))
+        start_ticks(self.pid) == Some(self.start_ticks)
     }
+}
+
+/// Field 22 of `/proc/<pid>/stat`.
+fn start_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 2, the command, is in parentheses and may hold spaces or ')'.
+    let after_command = &stat[stat.rfind(')')? + 1..];
+    after_command.split_whitespace().nth(19)?.parse().ok()
 }
 
 pub fn unix_now() -> u64 {
@@ -544,14 +558,25 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
     #[tokio::test]
     async fn a_run_marks_itself_while_it_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let tf = script(
-            dir.path(),
-            "for i in $(seq 100); do [ -f terraform.pid ] && break; sleep 0.05; done; cat terraform.pid",
-        );
-        let marker: RunMarker =
-            serde_json::from_str(&tf.run(dir.path(), &[], &[]).await.unwrap()).unwrap();
-        assert!(marker.program.ends_with("terraform"));
+        // A launcher that execs the real binary, as snap and tfenv do.
+        let tf = script(dir.path(), "exec sleep 1");
+        let run = {
+            let dir = dir.path().to_path_buf();
+            tokio::spawn(async move { tf.run(&dir, &[], &[]).await })
+        };
+        let mut marker = None;
+        for _ in 0..100 {
+            marker = run_marker(dir.path()).await;
+            if marker.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let marker = marker.expect("the run writes its marker");
+        assert!(marker.is_running());
         assert!(marker.started > 0);
+        run.await.unwrap().unwrap();
+        assert!(!marker.is_running());
         assert_eq!(run_marker(dir.path()).await, None);
     }
 
@@ -563,12 +588,14 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
             Ok(None)
         );
         // This test process stands in for a run that is still going.
-        let live = RunMarker {
-            pid: std::process::id(),
-            program: std::env::args().next().unwrap(),
-            started: unix_now(),
-        };
+        let live = RunMarker::of(std::process::id()).unwrap();
         assert!(live.is_running());
+        // Another process that got the same pid later.
+        let reused = RunMarker {
+            start_ticks: live.start_ticks + 1,
+            ..live.clone()
+        };
+        assert!(!reused.is_running());
         std::fs::write(dir.path().join(RUN_MARKER), live.to_json()).unwrap();
         assert!(matches!(
             wait_for_earlier_run(dir.path(), Duration::ZERO).await,

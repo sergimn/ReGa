@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
@@ -59,6 +60,15 @@ class _ProviderPageState extends State<ProviderPage> {
   /// Machines with an action in progress, and what it is.
   final Map<String, String> _busy = {};
 
+  /// Something is changing a machine, here or on another device. ReGa
+  /// brings up one machine at a time, so Start, Switch and Launch wait.
+  bool get _changing =>
+      _launching || _busy.isNotEmpty || _machines.any((m) => m.busy);
+
+  /// Rechecks machines that another device (or an earlier run of the app)
+  /// is changing, since nothing else says when that's done.
+  Timer? _poll;
+
   /// The last failed launch or machine action.
   Object? _actionError;
   List<OrphanSummary> _orphans = const [];
@@ -84,6 +94,7 @@ class _ProviderPageState extends State<ProviderPage> {
 
   @override
   void dispose() {
+    _poll?.cancel();
     _lifecycle.dispose();
     _name.dispose();
     super.dispose();
@@ -101,6 +112,35 @@ class _ProviderPageState extends State<ProviderPage> {
       'Quit',
     );
     return quit ? AppExitResponse.exit : AppExitResponse.cancel;
+  }
+
+  void _pollWhileBusy() {
+    if (!_machines.any((m) => m.busy)) {
+      _poll?.cancel();
+      _poll = null;
+      return;
+    }
+    _poll ??= Timer.periodic(const Duration(seconds: 15), (_) => _recheck());
+  }
+
+  Future<void> _recheck() async {
+    // This app's own changes reload when they finish.
+    if (_launching || _busy.isNotEmpty) return;
+    final generation = _generation;
+    final List<MachineSummary> machines;
+    try {
+      machines = await _backend.listMachines(_id);
+    } catch (_) {
+      return; // Try again on the next tick.
+    }
+    if (!mounted || generation != _generation) return;
+    if (machines.any((m) => m.busy)) {
+      setState(() => _machines = machines);
+    } else {
+      // Done: quotas and leftovers may have changed with it.
+      await _reload();
+      await _loadOrphans();
+    }
   }
 
   /// Leftovers are looked for across every region, so only at start and
@@ -218,6 +258,8 @@ class _ProviderPageState extends State<ProviderPage> {
     }
     if (!mounted) return;
     setState(() => _deletingOrphans = false);
+    // A deleted instance frees its GPU quota.
+    await _reload();
     await _loadOrphans();
   }
 
@@ -281,6 +323,7 @@ class _ProviderPageState extends State<ProviderPage> {
         _error = null;
         _loading = false;
       });
+      _pollWhileBusy();
     } catch (e) {
       if (stale()) return;
       setState(() {
@@ -431,18 +474,22 @@ class _ProviderPageState extends State<ProviderPage> {
                 key: ValueKey('machine-${m.id}'),
                 machine: m,
                 busy: _busy[m.id],
-                onStart: () => _act(
-                  m,
-                  'Starting…',
-                  () => _backend.startMachine(_id, m.id),
-                ),
+                onStart: _changing
+                    ? null
+                    : () => _act(
+                        m,
+                        'Starting…',
+                        () => _backend.startMachine(_id, m.id),
+                      ),
                 onStop: () =>
                     _act(m, 'Stopping…', () => _backend.stopMachine(_id, m.id)),
-                onSwitch: () => _act(
-                  m,
-                  'Switching…',
-                  () => _backend.resizeMachine(_id, m.id, m.switchType!),
-                ),
+                onSwitch: _changing
+                    ? null
+                    : () => _act(
+                        m,
+                        'Switching…',
+                        () => _backend.resizeMachine(_id, m.id, m.switchType!),
+                      ),
                 onDestroy: () => _destroy(m),
               ),
           if (_orphans.isNotEmpty) ..._orphanSection(theme),
@@ -475,7 +522,7 @@ class _ProviderPageState extends State<ProviderPage> {
               const SizedBox(width: 12),
               FilledButton.icon(
                 key: const ValueKey('launch'),
-                onPressed: ready && !_launching ? _launch : null,
+                onPressed: ready && !_changing ? _launch : null,
                 icon: const Icon(Icons.rocket_launch_outlined),
                 label: const Text('Launch'),
               ),

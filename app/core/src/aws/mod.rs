@@ -252,6 +252,9 @@ pub struct AwsProvider {
     /// One action per machine at a time, so a stop can't land in the middle
     /// of a launch.
     actions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Held by a launch, start or resize from its check that no other
+    /// machine is up until Terraform is done, so two can't both pass it.
+    booting: tokio::sync::Mutex<()>,
 }
 
 impl AwsProvider {
@@ -272,6 +275,7 @@ impl AwsProvider {
             storage: tokio::sync::Mutex::new(None),
             terraform_lock: tokio::sync::Mutex::new(()),
             actions: Mutex::new(HashMap::new()),
+            booting: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -350,23 +354,72 @@ impl AwsProvider {
         Ok(())
     }
 
-    /// ReGa runs one machine at a time: refuses while another one is up.
+    /// ReGa runs one machine at a time: refuses while another one is up, or
+    /// is being started here or on another device. Hold [`Self::boot`]
+    /// from this check until the machine is up.
     async fn check_none_running(&self, except: Option<&str>) -> ProviderResult<()> {
-        let machines = self.list_machines().await?;
-        let running = machines.iter().find(|m| {
-            Some(m.id.as_str()) != except
-                && matches!(
-                    m.state,
-                    MachineState::Pending | MachineState::Running | MachineState::Stopping
-                )
-        });
-        match running {
-            Some(m) => Err(ProviderError::InvalidState(format!(
-                "{} is still running. ReGa runs one machine at a time, so stop or destroy it first.",
-                m.name
-            ))),
-            None => Ok(()),
+        for (record, m) in self.machines().await? {
+            if Some(m.id.as_str()) == except {
+                continue;
+            }
+            let up = matches!(
+                m.state,
+                MachineState::Pending | MachineState::Running | MachineState::Stopping
+            );
+            // Its instance may still read stopped while the change starts it.
+            let starting = m.busy && record.vars.instance_state == InstanceState::Running;
+            if up || starting {
+                return Err(ProviderError::InvalidState(format!(
+                    "{} is {}. ReGa runs one machine at a time, so {}.",
+                    m.name,
+                    if up { "still running" } else { "starting" },
+                    if up {
+                        "stop or destroy it first"
+                    } else {
+                        "wait for it to finish"
+                    }
+                )));
+            }
         }
+        Ok(())
+    }
+
+    /// Every machine, with the record it comes from.
+    async fn machines(&self) -> ProviderResult<Vec<(MachineRecord, Machine)>> {
+        let Snapshot {
+            mut records,
+            owned,
+            busy,
+        } = self.snapshot().await?;
+        records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
+        let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
+        let instances: Vec<Instance> =
+            try_join_all(regions.iter().map(|r| self.api.tagged_instances(r)))
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let busy = busy.contains(r.id());
+                let instance = pick_instance(&instances, r.id(), owned.get(r.id()), busy);
+                let machine = self.machine_from(&r, instance.as_ref(), busy);
+                (r, machine)
+            })
+            .collect())
+    }
+
+    /// Claims the right to bring a machine up; fails while another launch,
+    /// start or resize in this app has it.
+    fn boot(&self) -> ProviderResult<tokio::sync::MutexGuard<'_, ()>> {
+        self.booting.try_lock().map_err(|_| {
+            ProviderError::InvalidState(
+                "another machine is starting. ReGa runs one machine at a time, so wait for it \
+                 to finish."
+                    .into(),
+            )
+        })
     }
 
     /// Claims `machine_id` for one action; fails while another one runs.
@@ -398,8 +451,10 @@ impl AwsProvider {
         self.machines_dir.join(machine_id)
     }
 
-    /// Reads every record, state and lock in the state bucket.
+    /// Reads every record, state and lock in the state bucket, making the
+    /// buckets on first use.
     async fn snapshot(&self) -> ProviderResult<Snapshot> {
+        self.ensure_storage().await?;
         let bucket = self.state_bucket();
         let objects = self.api.list_objects(&bucket, record::PREFIX).await?;
         let ids_with = |suffix: &str| -> Vec<String> {
@@ -1030,27 +1085,7 @@ impl CloudProvider for AwsProvider {
     }
 
     async fn list_machines(&self) -> ProviderResult<Vec<Machine>> {
-        let Snapshot {
-            mut records,
-            owned,
-            busy,
-        } = self.snapshot().await?;
-        records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
-        let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
-        let instances: Vec<Instance> =
-            try_join_all(regions.iter().map(|r| self.api.tagged_instances(r)))
-                .await?
-                .into_iter()
-                .flatten()
-                .collect();
-        Ok(records
-            .iter()
-            .map(|r| {
-                let busy = busy.contains(r.id());
-                let instance = pick_instance(&instances, r.id(), owned.get(r.id()), busy);
-                self.machine_from(r, instance.as_ref(), busy)
-            })
-            .collect())
+        Ok(self.machines().await?.into_iter().map(|(_, m)| m).collect())
     }
 
     async fn launch(&self, request: &LaunchRequest) -> ProviderResult<Machine> {
@@ -1074,6 +1109,7 @@ impl CloudProvider for AwsProvider {
         }
         self.check_gpu_quota(&request.region_id, &machine_type, request.spot)
             .await?;
+        let _booting = self.boot()?;
         self.check_none_running(None).await?;
 
         let machine_id = record::new_machine_id(&request.name);
@@ -1130,9 +1166,11 @@ impl CloudProvider for AwsProvider {
             ));
         }
         // AWS boots the machine briefly after a resize (Terraform stops it
-        // again), so the new type needs quota too.
+        // again), so the new type needs quota, and no other machine up.
         self.check_gpu_quota(&record.vars.region, &machine_type, false)
             .await?;
+        let _booting = self.boot()?;
+        self.check_none_running(Some(machine_id)).await?;
         record.vars.instance_type = type_name.into();
         record.vars.instance_state = InstanceState::Stopped;
         self.save_record(&record).await?;
@@ -1153,6 +1191,7 @@ impl CloudProvider for AwsProvider {
             self.check_gpu_quota(&record.vars.region, &machine_type, record.vars.spot)
                 .await?;
         }
+        let _booting = self.boot()?;
         self.check_none_running(Some(machine_id)).await?;
         record.vars.instance_state = InstanceState::Running;
         record.vars.library_volume_enabled = true;

@@ -21,9 +21,12 @@ class MachineTile extends StatelessWidget {
   /// While set, or while the machine is busy with a change from elsewhere,
   /// no action is offered.
   final String? busy;
-  final VoidCallback onStart;
+
+  /// Start and Switch boot the machine; null while another machine is
+  /// changing, since ReGa brings up one at a time.
+  final VoidCallback? onStart;
   final VoidCallback onStop;
-  final VoidCallback onSwitch;
+  final VoidCallback? onSwitch;
   final VoidCallback onDestroy;
 
   @override

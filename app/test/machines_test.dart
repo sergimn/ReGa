@@ -173,21 +173,20 @@ void main() {
     expect(find.text('Leftover resources'), findsNothing);
   });
 
-  testWidgets('a machine busy elsewhere offers no actions', (tester) async {
-    final backend = FakeBackend(
-      machines: const [
-        MachineSummary(
-          id: 'gaming-1',
-          name: 'Gaming',
-          regionId: 'eu-north-1',
-          regionName: 'Europe (Stockholm)',
-          offer: gpuOffer,
-          spot: false,
-          status: MachineStatus.running,
-          busy: true,
-        ),
-      ],
+  testWidgets('a machine busy elsewhere waits, then comes back', (
+    tester,
+  ) async {
+    MachineSummary gaming({required bool busy}) => MachineSummary(
+      id: 'gaming-1',
+      name: 'Gaming',
+      regionId: 'eu-north-1',
+      regionName: 'Europe (Stockholm)',
+      offer: gpuOffer,
+      spot: false,
+      status: MachineStatus.running,
+      busy: busy,
     );
+    final backend = FakeBackend(machines: [gaming(busy: true)]);
     // The spinner never settles.
     await tester.pumpWidget(RegaApp(backend: backend));
     for (var i = 0; i < 5; i++) {
@@ -196,6 +195,54 @@ void main() {
     expect(find.text('Working…'), findsOneWidget);
     expect(find.byKey(const ValueKey('stop-gaming-1')), findsNothing);
     expect(find.byKey(const ValueKey('destroy-gaming-1')), findsNothing);
+    expect(
+      tester.widget<ButtonStyleButton>(find.byKey(const ValueKey('launch'))),
+      isA<ButtonStyleButton>().having((b) => b.onPressed, 'onPressed', null),
+    );
+
+    // The other device finishes; the next check picks that up.
+    backend.machines[0] = gaming(busy: false);
+    await tester.pump(const Duration(seconds: 15));
+    await tester.pumpAndSettle();
+    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('stop-gaming-1')), findsOneWidget);
+  });
+
+  testWidgets('nothing else starts while a machine starts', (tester) async {
+    final backend = FakeBackend(
+      machines: [
+        stockholmMachine,
+        MachineSummary(
+          id: 'den-1',
+          name: 'Den',
+          regionId: 'eu-north-1',
+          regionName: 'Europe (Stockholm)',
+          offer: cpuOffer,
+          spot: false,
+          status: MachineStatus.stopped,
+          busy: false,
+          switchType: 'g4dn.xlarge',
+        ),
+      ],
+    );
+    final gate = Completer<void>();
+    backend.actionGate = gate.future;
+    await open(tester, backend);
+    VoidCallback? onPressed(String key) =>
+        tester.widget<ButtonStyleButton>(find.byKey(ValueKey(key))).onPressed;
+    expect(onPressed('start-den-1'), isNotNull);
+
+    await tester.tap(find.byKey(const ValueKey('start-gaming-1')));
+    await tester.pump();
+    expect(onPressed('start-den-1'), isNull);
+    expect(onPressed('switch-den-1'), isNull);
+    expect(onPressed('launch'), isNull);
+    // Stopping or destroying another machine is still fine.
+    expect(onPressed('destroy-den-1'), isNotNull);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(onPressed('start-den-1'), isNotNull);
   });
 
   testWidgets('quitting mid-change asks first', (tester) async {

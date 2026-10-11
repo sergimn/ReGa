@@ -732,6 +732,69 @@ async fn one_machine_runs_at_a_time() {
 }
 
 #[tokio::test]
+async fn a_machine_starting_anywhere_blocks_starting_another() {
+    let f = fixture(Account::typical());
+    let mut ids = vec![];
+    for name in ["Den", "Gaming"] {
+        let m = f
+            .provider
+            .launch(&LaunchRequest {
+                name: name.into(),
+                ..request("t3.medium", false)
+            })
+            .await
+            .unwrap();
+        f.provider.stop(&m.id).await.unwrap();
+        ids.push(m.id);
+    }
+    let (den, gaming) = (&ids[0], &ids[1]);
+
+    // Another device is stopping Den: that doesn't block a start.
+    f.put(
+        record::lock_key(den),
+        lock("sergi@laptop", terraform::unix_now()),
+    );
+    f.provider.start(gaming).await.unwrap();
+    f.provider.stop(gaming).await.unwrap();
+
+    // Now it is starting Den, whose instance still reads stopped.
+    let mut record = f.record(den);
+    record.vars.instance_state = InstanceState::Running;
+    f.put(record::record_key(den), record.to_json().into_bytes());
+    let err = f.provider.start(gaming).await.unwrap_err();
+    assert!(err.to_string().contains("Den is starting"), "{err}");
+    let err = f.provider.resize(gaming, "g4dn.xlarge").await.unwrap_err();
+    assert!(err.to_string().contains("Den is starting"), "{err}");
+    f.aws.with(|a| {
+        a.objects
+            .remove(&(state_bucket_name(), record::lock_key(den)))
+    });
+
+    // A start in this app holds the others off until it is done.
+    let booting = f.provider.boot().unwrap();
+    let err = f.provider.start(gaming).await.unwrap_err();
+    assert!(
+        err.to_string().contains("another machine is starting"),
+        "{err}"
+    );
+    assert!(matches!(
+        f.provider.launch(&request("t3.medium", false)).await,
+        Err(ProviderError::InvalidState(_))
+    ));
+    drop(booting);
+    f.provider.start(gaming).await.unwrap();
+}
+
+#[tokio::test]
+async fn listing_makes_the_buckets() {
+    let f = fixture(Account::typical());
+    assert!(f.provider.list_machines().await.unwrap().is_empty());
+    assert!(f
+        .calls()
+        .contains(&"create_bucket rega-tfstate-123456789012 eu-north-1".to_string()));
+}
+
+#[tokio::test]
 async fn a_lock_left_by_a_killed_run_here_is_cleared() {
     let f = fixture(Account::typical());
     let m = f
@@ -742,7 +805,7 @@ async fn a_lock_left_by_a_killed_run_here_is_cleared() {
     // The app was killed mid-run: its marker names a process that's gone,
     // and the lock it took is still in the bucket.
     let started = terraform::unix_now() - 30;
-    let marker = format!(r#"{{"pid": 4294967295, "program": "terraform", "started": {started}}}"#);
+    let marker = format!(r#"{{"pid": 4294967295, "start_ticks": 1, "started": {started}}}"#);
     std::fs::write(f.provider.machine_dir(&m.id).join("terraform.pid"), marker).unwrap();
     let host = terraform::host_name().unwrap();
     f.put(
@@ -788,7 +851,7 @@ fn stale_locks() {
     };
     let dead = RunMarker {
         pid: 1,
-        program: "terraform".into(),
+        start_ticks: 1,
         started: now - 100,
     };
     // Fresh and nobody known to be dead: held.
