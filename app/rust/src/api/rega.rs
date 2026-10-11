@@ -84,6 +84,8 @@ pub struct MachineSummary {
     pub id: String,
     pub name: String,
     pub region_id: String,
+    /// Human name of the region, such as `Europe (Stockholm)`.
+    pub region_name: String,
     pub offer: MachineOffer,
     pub spot: bool,
     pub status: MachineStatus,
@@ -177,8 +179,17 @@ fn choices_view(candidates: region::Candidates) -> RegionChoices {
 
 pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary>> {
     let provider = registry::entry(&provider_id)?.provider();
-    let machines = provider.list_machines().await?;
-    Ok(machines.into_iter().map(summary).collect())
+    let (machines, regions) = futures::try_join!(provider.list_machines(), provider.regions())?;
+    let region_name = |id: &str| {
+        regions
+            .iter()
+            .find(|r| r.id == id)
+            .map_or_else(|| id.to_string(), |r| r.display_name.clone())
+    };
+    Ok(machines
+        .into_iter()
+        .map(|m| summary(m, &region_name))
+        .collect())
 }
 
 fn offer(t: &MachineType, price_per_hour: Option<f64>) -> MachineOffer {
@@ -203,7 +214,7 @@ fn option(c: RegionCandidate) -> RegionOption {
     }
 }
 
-fn summary(m: Machine) -> MachineSummary {
+fn summary(m: Machine, region_name: impl Fn(&str) -> String) -> MachineSummary {
     let mut o = offer(&m.machine_type, None);
     o.disk_gib = m.disk_gib;
     MachineSummary {
@@ -215,6 +226,7 @@ fn summary(m: Machine) -> MachineSummary {
             MachineState::Stopped => MachineStatus::Stopped,
             MachineState::Terminated => MachineStatus::Terminated,
         },
+        region_name: region_name(&m.region_id),
         id: m.id,
         name: m.name,
         region_id: m.region_id,
@@ -273,6 +285,23 @@ mod tests {
         });
         assert!(view.all.is_empty());
         assert_eq!(view.unreachable, vec!["Asia Pacific (Tokyo)".to_string()]);
+    }
+
+    #[test]
+    fn machines_carry_their_region_name() {
+        let m = Machine {
+            id: "i-1".into(),
+            name: "Gaming".into(),
+            region_id: "us-east-1".into(),
+            machine_type: rega_core::aws::catalog().remove(0),
+            disk_gib: 128,
+            spot: false,
+            state: MachineState::Running,
+        };
+        let names = |id: &str| format!("name of {id}");
+        let s = summary(m, names);
+        assert_eq!(s.region_name, "name of us-east-1");
+        assert!(matches!(s.status, MachineStatus::Running));
     }
 
     #[tokio::test]

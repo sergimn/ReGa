@@ -235,6 +235,7 @@ void main() {
           id: 'i-1',
           name: 'Gaming',
           regionId: 'eu-north-1',
+          regionName: 'Europe (Stockholm)',
           offer: gpuOffer,
           spot: false,
           status: MachineStatus.stopped,

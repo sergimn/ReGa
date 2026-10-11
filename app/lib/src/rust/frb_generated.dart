@@ -402,15 +402,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MachineSummary dco_decode_machine_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return MachineSummary(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
       regionId: dco_decode_String(arr[2]),
-      offer: dco_decode_machine_offer(arr[3]),
-      spot: dco_decode_bool(arr[4]),
-      status: dco_decode_machine_status(arr[5]),
+      regionName: dco_decode_String(arr[3]),
+      offer: dco_decode_machine_offer(arr[4]),
+      spot: dco_decode_bool(arr[5]),
+      status: dco_decode_machine_status(arr[6]),
     );
   }
 
@@ -668,6 +669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_String(deserializer);
     var var_name = sse_decode_String(deserializer);
     var var_regionId = sse_decode_String(deserializer);
+    var var_regionName = sse_decode_String(deserializer);
     var var_offer = sse_decode_machine_offer(deserializer);
     var var_spot = sse_decode_bool(deserializer);
     var var_status = sse_decode_machine_status(deserializer);
@@ -675,6 +677,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       name: var_name,
       regionId: var_regionId,
+      regionName: var_regionName,
       offer: var_offer,
       spot: var_spot,
       status: var_status,
@@ -943,6 +946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_String(self.name, serializer);
     sse_encode_String(self.regionId, serializer);
+    sse_encode_String(self.regionName, serializer);
     sse_encode_machine_offer(self.offer, serializer);
     sse_encode_bool(self.spot, serializer);
     sse_encode_machine_status(self.status, serializer);

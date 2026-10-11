@@ -98,6 +98,9 @@ class MachineSummary {
   final String id;
   final String name;
   final String regionId;
+
+  /// Human name of the region, such as `Europe (Stockholm)`.
+  final String regionName;
   final MachineOffer offer;
   final bool spot;
   final MachineStatus status;
@@ -106,6 +109,7 @@ class MachineSummary {
     required this.id,
     required this.name,
     required this.regionId,
+    required this.regionName,
     required this.offer,
     required this.spot,
     required this.status,
@@ -116,6 +120,7 @@ class MachineSummary {
       id.hashCode ^
       name.hashCode ^
       regionId.hashCode ^
+      regionName.hashCode ^
       offer.hashCode ^
       spot.hashCode ^
       status.hashCode;
@@ -128,6 +133,7 @@ class MachineSummary {
           id == other.id &&
           name == other.name &&
           regionId == other.regionId &&
+          regionName == other.regionName &&
           offer == other.offer &&
           spot == other.spot &&
           status == other.status;

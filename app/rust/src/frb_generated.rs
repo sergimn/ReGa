@@ -422,6 +422,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_regionId = <String>::sse_decode(deserializer);
+        let mut var_regionName = <String>::sse_decode(deserializer);
         let mut var_offer = <crate::api::rega::MachineOffer>::sse_decode(deserializer);
         let mut var_spot = <bool>::sse_decode(deserializer);
         let mut var_status = <crate::api::rega::MachineStatus>::sse_decode(deserializer);
@@ -429,6 +430,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
             id: var_id,
             name: var_name,
             region_id: var_regionId,
+            region_name: var_regionName,
             offer: var_offer,
             spot: var_spot,
             status: var_status,
@@ -651,6 +653,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::MachineSummary {
             self.id.into_into_dart().into_dart(),
             self.name.into_into_dart().into_dart(),
             self.region_id.into_into_dart().into_dart(),
+            self.region_name.into_into_dart().into_dart(),
             self.offer.into_into_dart().into_dart(),
             self.spot.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
@@ -887,6 +890,7 @@ impl SseEncode for crate::api::rega::MachineSummary {
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.name, serializer);
         <String>::sse_encode(self.region_id, serializer);
+        <String>::sse_encode(self.region_name, serializer);
         <crate::api::rega::MachineOffer>::sse_encode(self.offer, serializer);
         <bool>::sse_encode(self.spot, serializer);
         <crate::api::rega::MachineStatus>::sse_encode(self.status, serializer);
