@@ -65,6 +65,19 @@ function Get-FinalSyncKey {
   return "s3://$($Target.Bucket)/rega/machines/$($config.machine_id)/final-sync.json"
 }
 
+function Remove-FinalSyncRecord {
+  # Deleting a key that isn't there succeeds too.
+  param($Target)
+  $key = Get-FinalSyncKey $Target
+  foreach ($wait in @(0, 5, 15)) {
+    if ($wait -gt 0) { Start-Sleep -Seconds $wait }
+    $code = Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'rm', $key, '--region', $Target.Region, '--only-show-errors')
+    if ($code -eq 0) { return $true }
+  }
+  Write-ReGaLog "Could not delete $key (exit code $code)." 'error'
+  return $false
+}
+
 function Initialize-LibraryFolder {
   # Steam needs steamapps\ and libraryfolder.vdf in each library, and the
   # desktop user must be able to write there.
@@ -120,6 +133,8 @@ function Invoke-FinalSync {
       Write-ReGaLog "Could not write $key (exit code $code)." 'error'
       return $false
     }
+    # This record replaces any one the Tick still had to delete.
+    Save-State @{ final_sync_stale = $false }
   } catch {
     Write-ReGaLog "Could not record the final sync: $_" 'error'
     return $false
@@ -187,8 +202,9 @@ switch ($Action) {
         $result = 'done'
       } else {
         $target = Get-Target -Attempts 6
-        # A record from an earlier session must not vouch for this disk.
-        Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'rm', (Get-FinalSyncKey $target), '--region', $target.Region, '--only-show-errors') | Out-Null
+        # A record from an earlier session must not vouch for this disk. The
+        # app also ignores one written before the machine's last start.
+        Remove-FinalSyncRecord $target | Out-Null
         New-Item -ItemType Directory -Path $libraryPath -Force | Out-Null
         $arguments = Get-SyncArguments -Source $target.Uri -Destination $libraryPath -Region $target.Region `
           -Excludes $config.library.excludes
@@ -236,6 +252,13 @@ switch ($Action) {
       # Already shutting down since this boot.
       return
     }
+    if (Get-PropertyValue $state 'final_sync_stale' $false) {
+      try {
+        if (Remove-FinalSyncRecord (Get-Target)) { Save-State @{ final_sync_stale = $false } }
+      } catch {
+        Write-ReGaLog "Could not delete the final-sync record: $_" 'error'
+      }
+    }
     $decision = Get-IdleDecision -State $state -Now $signals.Now -BootTime $signals.Boot -Active $signals.Active `
       -IdleMinutes ([int]$config.idle_minutes) -IdleStopEnabled ([bool]$config.idle_stop_enabled)
     Save-State @{ last_active_utc = (ConvertTo-IsoString $decision.LastActiveUtc); idle_minutes = $decision.IdleMinutes }
@@ -264,15 +287,16 @@ switch ($Action) {
       if ((Get-Signals).Active) {
         # Someone connected during the upload, which can take minutes.
         Write-ReGaLog 'Activity during the final upload; not stopping.'
-        Save-State @{ last_active_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) }
         # The record would vouch for a disk that keeps changing, for example
-        # if the CloudWatch alarm stops the machine later.
+        # if the CloudWatch alarm stops the machine later. Until it is gone,
+        # every tick tries again.
+        $removed = $false
         try {
-          $target = Get-Target
-          Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'rm', (Get-FinalSyncKey $target), '--region', $target.Region, '--only-show-errors') | Out-Null
+          $removed = Remove-FinalSyncRecord (Get-Target)
         } catch {
-          Write-ReGaLog "Could not remove the final-sync record: $_" 'warning'
+          Write-ReGaLog "Could not delete the final-sync record: $_" 'error'
         }
+        Save-State @{ last_active_utc = (ConvertTo-IsoString ([datetime]::UtcNow)); final_sync_stale = (-not $removed) }
         return
       }
       if (-not $synced) { Write-ReGaLog 'Stopping without a final upload; the app keeps the library disk.' 'warning' }

@@ -410,15 +410,19 @@ function Invoke-LibraryUpload {
   # when this disk changed it:
   #   1. copy libraryfolder.vdf;
   #   2. for each game this disk installed, updated or wrote files into
-  #      since the restore or its last upload: mirror its folder and
-  #      workshop content, then upload its manifest, so S3 never has a
-  #      manifest ahead of its files;
+  #      since the restore or its last upload: upload its folders, then its
+  #      manifest, so S3 never has a manifest ahead of its files;
   #   3. delete the games whose manifest file this disk had and lost.
   # Games are looked at when their manifests changed, or all of them with
   # -All (before a stop, so saves and mods written into game folders are
-  # kept). A game is left alone, for upload and for removal, when S3 holds
-  # a build another machine uploaded. Only a disk restored from S3 this
-  # session uploads at all: its marker records the games it started with.
+  # kept, and a game another machine removed goes back while this disk
+  # still has it). A game's folder is mirrored, deletes included, only when
+  # S3 holds another build or none; on the same build files are only added
+  # or replaced, so two machines' saves both stay. Workshop content always
+  # mirrors its manifest. A game is left alone, for upload and for removal,
+  # when S3 holds a build another machine uploaded. Only a disk restored
+  # from S3 this session uploads at all: its marker records the games it
+  # started with.
   # Returns Ok, the apps skipped for another machine's build and the apps
   # that failed.
   param([string]$AwsPath, [string]$LibraryPath, [string]$MarkerPath, $Target, [switch]$All)
@@ -447,7 +451,7 @@ function Invoke-LibraryUpload {
   $folderFile = Join-Path $LibraryPath 'libraryfolder.vdf'
   if (Test-Path -LiteralPath $folderFile) {
     $arguments = @('s3', 'cp', $folderFile, "${uri}libraryfolder.vdf", '--region', $region, '--only-show-errors')
-    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false; $failed += 'libraryfolder.vdf' }
   }
 
   foreach ($id in @($current.Keys | Sort-Object)) {
@@ -455,21 +459,36 @@ function Invoke-LibraryUpload {
     $dir = $current[$id]
     $manifest = Join-Path $steamApps "appmanifest_$id.acf"
     try { $localBuild = Get-AcfValue ([IO.File]::ReadAllText($manifest)) 'buildid' } catch { $ok = $false; $failed += $id; continue }
+    # Local folder, S3 prefix, and whether it always mirrors. Soundtracks
+    # install under music instead of common.
     $folders = @(
-      @((Join-Path (Join-Path $steamApps 'common') $dir), "${uri}steamapps/common/$dir/"),
-      @((Join-Path (Join-Path $workshop 'content') $id), "${uri}steamapps/workshop/content/$id/")
+      @((Join-Path (Join-Path $steamApps 'common') $dir), "${uri}steamapps/common/$dir/", $false),
+      @((Join-Path (Join-Path $steamApps 'music') $dir), "${uri}steamapps/music/$dir/", $false),
+      @((Join-Path (Join-Path $workshop 'content') $id), "${uri}steamapps/workshop/content/$id/", $true)
     )
     $since = ConvertTo-UtcDate $knownSynced[$id]
     if ($null -eq $since) { $since = $restoredUtc }
     $changed = (-not $known.ContainsKey($id)) -or ($localBuild -ne $knownBuilds[$id]) -or
       (Test-ChangedSince -Paths @($folders | ForEach-Object { $_[0] }) -Since $since)
+    $remote = $null
+    if (-not $changed -and $All) {
+      # Another machine may have uninstalled it; this disk still has it.
+      $remote = Get-S3Text -AwsPath $AwsPath -Uri "${uri}steamapps/appmanifest_$id.acf" -Region $region
+      if (-not $remote.Ok) { $ok = $false; $failed += $id; continue }
+      if (-not $remote.Found) {
+        Write-ReGaLog "Uploading app $id ($dir) again: another machine removed it from $uri."
+        $changed = $true
+      }
+    }
     if (-not $changed) {
       # Only the manifest was rewritten, as Steam does at its first start.
       $knownStamps[$id] = $stamps[$id]
       continue
     }
-    $remote = Get-S3Text -AwsPath $AwsPath -Uri "${uri}steamapps/appmanifest_$id.acf" -Region $region
-    if (-not $remote.Ok) { $ok = $false; $failed += $id; continue }
+    if ($null -eq $remote) {
+      $remote = Get-S3Text -AwsPath $AwsPath -Uri "${uri}steamapps/appmanifest_$id.acf" -Region $region
+      if (-not $remote.Ok) { $ok = $false; $failed += $id; continue }
+    }
     $s3Build = Get-AcfValue $remote.Text 'buildid'
     if (-not (Test-UploadAllowed -S3Build $s3Build -BaseBuild $knownBuilds[$id] -LocalBuild $localBuild)) {
       Write-ReGaLog "Not uploading app $id ($dir): S3 has build $s3Build from another machine, this disk has $localBuild." 'warning'
@@ -481,9 +500,10 @@ function Invoke-LibraryUpload {
     if (-not $known.ContainsKey($id)) { $known[$id] = $dir }
     $started = [datetime]::UtcNow
     $appOk = $true
-    foreach ($pair in $folders) {
-      if (-not (Test-Path -LiteralPath $pair[0])) { continue }
-      $arguments = Get-SyncArguments -Source $pair[0] -Destination $pair[1] -Region $region -Excludes @() -Delete
+    foreach ($folder in $folders) {
+      if (-not (Test-Path -LiteralPath $folder[0])) { continue }
+      $mirror = $folder[2] -or ($s3Build -ne $localBuild)
+      $arguments = Get-SyncArguments -Source $folder[0] -Destination $folder[1] -Region $region -Excludes @() -Delete:$mirror
       if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $appOk = $false }
     }
     # A leading comma keeps a single pair from being flattened.
@@ -523,7 +543,10 @@ function Invoke-LibraryUpload {
         @('s3', 'rm', "${uri}steamapps/workshop/appworkshop_$id.acf"),
         @('s3', 'rm', "${uri}steamapps/workshop/content/$id/", '--recursive')
       )
-      if ($app.DeleteFolder) { $deletes += , @('s3', 'rm', "${uri}steamapps/common/$($app.InstallDir)/", '--recursive') }
+      if ($app.DeleteFolder) {
+        $deletes += , @('s3', 'rm', "${uri}steamapps/common/$($app.InstallDir)/", '--recursive')
+        $deletes += , @('s3', 'rm', "${uri}steamapps/music/$($app.InstallDir)/", '--recursive')
+      }
       foreach ($delete in $deletes) {
         if ((Invoke-Aws -AwsPath $AwsPath -Arguments (@($delete) + @('--region', $region, '--only-show-errors'))) -ne 0) { $forget = $false }
       }
@@ -551,7 +574,7 @@ function Invoke-LibraryUpload {
   if ($ok) {
     Write-ReGaLog "Uploaded $LibraryPath to $uri."
   } else {
-    Write-ReGaLog "Upload to $uri was incomplete (apps: $($failed -join ', ')); the rest is retried at the next change or stop." 'error'
+    Write-ReGaLog "Upload to $uri was incomplete (failed: $($failed -join ', ')); the rest is retried at the next change or stop." 'error'
   }
   return [pscustomobject]@{ Ok = $ok; Skipped = $skipped; Failed = $failed }
 }

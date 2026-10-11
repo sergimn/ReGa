@@ -329,6 +329,14 @@ Describe 'Invoke-LibraryUpload' {
     $calls | Should -Contain "s3 cp $(Join-Path $library 'libraryfolder.vdf') s3://b/steam-library/libraryfolder.vdf --region eu-north-1 --only-show-errors"
   }
 
+  It 'reports a libraryfolder.vdf that did not upload' {
+    Set-Content -LiteralPath (Join-Path $library 'libraryfolder.vdf') -Value 'vdf'
+    Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments -contains 's3://b/steam-library/libraryfolder.vdf') { return 1 } ; return 0 }
+    $result = Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target
+    $result.Ok | Should -BeFalse
+    $result.Failed | Should -Be @('libraryfolder.vdf')
+  }
+
   It 'uploads only the changed game, its files before its manifest' {
     (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
     $folder = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match 'steamapps/common/Portal/ .*--delete$' })
@@ -343,6 +351,7 @@ Describe 'Invoke-LibraryUpload' {
     $removals = @($calls | Where-Object { $_ -match '^s3 rm .*(620|Portal 2)' })
     $removals[0] | Should -Be 's3 rm s3://b/steam-library/steamapps/appmanifest_620.acf --region eu-north-1 --only-show-errors'
     $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
+    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/music/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
   }
 
   It 'records what it uploaded so the next run does nothing' {
@@ -383,16 +392,40 @@ Describe 'Invoke-LibraryUpload' {
     $calls.Count | Should -Be 0
   }
 
-  It 'uploads a game this disk wrote into before a stop, even with the same manifest' {
+  It 'uploads a game this disk wrote into before a stop, keeping files S3 has on the same build' {
     Set-Content -LiteralPath (Join-Path $apps 'common/Half-Life/save.dat') -Value 'progress'
     (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
-    @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--only-show-errors$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match '--delete' -and $_ -match 'Half-Life' }).Count | Should -Be 0
     @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_70\.acf' }).Count | Should -Be 1
   }
 
   It 'leaves a game this disk never touched alone, even before a stop' {
     (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -match 'Half-Life|appmanifest_70' }).Count | Should -Be 0
+  }
+
+  It 'does not ask S3 about an untouched game during a session' {
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
+    Should -Invoke Get-S3Text -ModuleName ReGa.Agent -ParameterFilter { $Uri -like '*appmanifest_70.acf' } -Times 0 -Exactly
+  }
+
+  It 'uploads an untouched game again before a stop when another machine removed it' {
+    Mock Get-S3Text -ModuleName ReGa.Agent {
+      $build = switch -Wildcard ($Uri) { '*appmanifest_400.acf' { '100' } '*appmanifest_620.acf' { '200' } default { '' } }
+      [pscustomobject]@{ Ok = $true; Found = ($build -ne ''); Text = "`"buildid`"`t`t`"$build`"" }
+    }
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_70\.acf' }).Count | Should -Be 1
+  }
+
+  It 'uploads a soundtrack from steamapps\music' {
+    New-Item -ItemType Directory -Path (Join-Path $apps 'music/Portal Soundtrack') -Force | Out-Null
+    New-Manifest (Join-Path $apps 'appmanifest_900.acf') '900' 'Portal Soundtrack' '1'
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'steamapps/music/Portal Soundtrack/ .*--delete$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_900\.acf' }).Count | Should -Be 1
   }
 
   It 'does not upload a game whose manifest Steam merely rewrote' {
