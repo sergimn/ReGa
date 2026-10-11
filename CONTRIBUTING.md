@@ -86,10 +86,10 @@ found and what is waiting.
 - Digest, patch and minor updates merge on their own once every check on the
   PR has passed. Major updates wait for a review, and so do breaking 0.x
   updates of crates and Dart packages.
-- GitHub Actions and pre-commit hooks never merge on their own: their
-  release date is the date on the tag's commit, which whoever pushes the tag
-  sets, so the 30 days could be faked. A new digest on the same tag means
-  the tag was moved, which is worth a look on its own.
+- For GitHub Actions and pre-commit hooks, the release date is the date on
+  the tag's commit, which whoever pushes the tag sets, so a hijacked repo
+  could back-date a release past the 30 days. They still merge on their
+  own once CI passes.
 - Sunshine and the virtual display driver: Renovate updates the version and
   the SHA-256 together, from the GitHub release.
 - Terraform: Renovate updates CI and the Flatpak together, but can't hash

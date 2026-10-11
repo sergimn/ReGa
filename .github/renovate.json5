@@ -108,18 +108,12 @@
     },
 
     // Routine updates merge on their own once CI passes; majors wait for a
-    // review.
+    // review. That includes GitHub Actions and pre-commit hooks, by choice,
+    // even though their release date is the tag's commit date, which whoever
+    // pushes the tag sets (see CONTRIBUTING.md).
     {
       matchUpdateTypes: ['minor', 'patch', 'digest', 'pinDigest'],
       automerge: true,
-    },
-    // Except where the release date comes from the tag's own commit (GitHub
-    // Actions, pre-commit hooks, Go modules): whoever pushes the tag can
-    // back-date it, so the 30-day wait can be faked there. A new digest on
-    // the same tag means the tag was moved.
-    {
-      matchDatasources: ['github-tags', 'github-digest', 'git-tags', 'git-refs', 'go'],
-      automerge: false,
     },
 
     // Exact Rust releases (1.99.0, not the 1.99 channel, which floats).
