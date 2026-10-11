@@ -15,7 +15,7 @@
           - "{{ rega_agent_dir }}\\rega-gpu-setup.ps1"
           - -NoReboot
       register: rega_gpu_setup
-      changed_when: (rega_gpu_setup.stdout_lines | last | from_json).changed
+      changed_when: rega_gpu_setup.rc == 0 and (rega_gpu_setup.stdout_lines | last | from_json).changed
 
     - name: Read the GPU setup result
       ansible.builtin.set_fact:

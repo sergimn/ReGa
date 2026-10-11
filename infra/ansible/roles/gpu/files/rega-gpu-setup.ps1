@@ -25,8 +25,11 @@ param(
   [ValidateSet('Auto', 'VirtualDisplay', 'Status')]
   [string]$Action = 'Auto',
   [switch]$NoReboot,
-  [string]$ConfigPath = (Join-Path $PSScriptRoot 'gpu-config.json')
+  [string]$ConfigPath
 )
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty in parameter defaults.
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'gpu-config.json' }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0

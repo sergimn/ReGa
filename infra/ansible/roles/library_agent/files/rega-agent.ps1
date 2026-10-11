@@ -19,8 +19,11 @@ param(
   [ValidateSet('Restore', 'Tick', 'FinalSync', 'LaunchSteam', 'Status', 'ResetIdle')]
   [string]$Action,
 
-  [string]$ConfigPath = (Join-Path $PSScriptRoot 'config.json')
+  [string]$ConfigPath
 )
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty in parameter defaults.
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'config.json' }
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReGa.Agent.psm1') -Force
