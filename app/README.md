@@ -45,10 +45,12 @@ first (`core/src/aws/`):
   devices that launch at about the same time, before either one's Terraform
   has taken its state lock, can still both get through, since nothing in S3
   serialises them yet.
-- If the app quits mid-change, Terraform keeps going outside the Flatpak
-  and finishes. A run that was killed leaves its state lock behind; the next
+- If the app quits mid-change, Terraform keeps going and finishes (in the
+  Flatpak too). A run that was killed leaves its state lock behind; the next
   change to that machine removes it when this computer took it and the run
-  is gone, or when it is over two hours old.
+  is gone, or when it is over two hours old. A run started by an earlier
+  Flatpak sandbox can't be seen from a new one, so it counts as gone only
+  after a reboot.
 - Leftovers are resources tagged `Project=ReGa` that no machine's Terraform
   state names, such as an instance a killed run made. They show up under
   "Leftover resources", with a button to delete them.

@@ -44,6 +44,27 @@ class CheckTest(unittest.TestCase):
             f.write("boto3==1.0.0\n")
         self.assertDrift("pins boto3==1.0.0; app/flatpak/ansible.yml has nothing")
 
+    def pinned(self, name):
+        return str(pins.python_pins(self.root)[name])
+
+    def test_python_pin_removed(self):
+        self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+\n", "")
+        self.assertDrift(f"requirements.txt now pins {self.pinned('ansible-core')}.")
+
+    def test_extras_added(self):
+        # The wheels still match, but the extras' dependencies aren't bundled.
+        self.edit(pins.REQUIREMENTS, r"^pywinrm==", "pywinrm[credssp]==")
+        self.assertDrift(f"now pins {self.pinned('ansible-core')} {self.pinned('pywinrm')}.")
+
+    def test_module_without_its_pins(self):
+        self.edit(pins.ANSIBLE_MODULE, r"^# Built from: .*\n", "")
+        self.assertDrift("doesn't say which pins it was built from")
+
+    def test_same_release_written_longer(self):
+        self.edit(pins.REQUIREMENTS, r"^pywinrm==(\S+)", r"pywinrm==\1.0")
+        self.edit(pins.ANSIBLE_MODULE, r"pywinrm==(\S+)", r"pywinrm==\1.0")
+        self.assertEqual(pins.check(self.root), [])
+
     def test_loose_python_pin(self):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+", "pywinrm>=0.5")
         with self.assertRaises(SystemExit):

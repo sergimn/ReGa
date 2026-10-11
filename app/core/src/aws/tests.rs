@@ -859,6 +859,8 @@ fn stale_locks() {
         pid: 1,
         start_ticks: 1,
         started: now - 100,
+        pid_namespace: None,
+        boot_id: None,
     };
     // Fresh and nobody known to be dead: held.
     assert!(!stale_at(&created(now - 90), None, Some("pc"), now));

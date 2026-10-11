@@ -5,12 +5,13 @@ ReGa ships as the Flatpak `io.github.sergimn.rega`, for x86_64, on the
 
 ## Install
 
-Every CI run of the App workflow builds `rega.flatpak` (the `rega-flatpak`
-artifact). On Ubuntu:
+Every CI run of the App workflow builds `rega.flatpak`; download the
+`rega-flatpak` artifact from the run's page. On Ubuntu:
 
 ```sh
 sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+unzip rega-flatpak.zip
 flatpak install --user rega.flatpak     # also pulls the runtime from Flathub
 flatpak run io.github.sergimn.rega
 ```
@@ -30,9 +31,14 @@ writable so an SSO sign-in can refresh it. Nothing else in your home folder.
 
 Things to know when the app runs these tools:
 
-- Terraform and Ansible run inside the sandbox, so quitting the app stops a
-  run that is still going. The app asks before quitting mid-change, and the
-  next change to that machine clears the Terraform lock the run left.
+- Terraform and Ansible run inside the sandbox. Quitting the app mid-change
+  doesn't stop Terraform: the sandbox stays up, without a window, until
+  Terraform finishes and releases its state lock.
+- Each launch of the app gets a new sandbox, which can't see processes in an
+  earlier one. So a reopened app can't tell whether a run it finds there is
+  still going, and goes by the state lock instead: the machine shows busy
+  while the lock is held, and a lock left by a killed run counts as stale
+  after a reboot or after two hours.
 - The AWS Terraform provider isn't bundled; Terraform downloads it on first
   use into the app's cache.
 - Inside the sandbox, `$HOME` is a scratch folder that is emptied when the
@@ -56,8 +62,9 @@ dbus-run-session -- flatpak/smoke-test.sh
 
 The smoke test checks the installed app: Terraform and Ansible run in the
 sandbox, the Windows collections are there, `infra/ansible/site.yml` passes
-a syntax check, and the app opens its window (on demo data, under Xvfb when
-there is no display). It needs Xvfb and xdotool.
+a syntax check, and the app draws its window (on demo data, on a private
+Xvfb display over X11, whatever your desktop runs). It needs Xvfb and
+xdotool.
 
 ## Pins
 
