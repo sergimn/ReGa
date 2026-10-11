@@ -22,7 +22,7 @@ flatpak run io.github.sergimn.rega
 | --- | --- |
 | `/app/lib/rega`, `/app/bin/rega` | The Flutter release bundle with the Rust core |
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
-| `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.txt` |
+| `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock` |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
 
 Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
@@ -69,20 +69,24 @@ xdotool.
 
 ## Pins
 
-`ansible.yml` is generated: every wheel Ansible needs for the runtime's
-Python, and the Galaxy collections, each with its URL and sha256. Like
-Renovate, it only takes releases at least 30 days old, and that goes for the
-wheels the pins pull in too. After changing `infra/ansible/requirements.txt`
-or `requirements.yml`, or moving to a runtime with a different Python,
-regenerate it. That needs pip 26.1 or later, for `--uploaded-prior-to`:
+`ansible.yml` is generated: a wheel for every package in
+`infra/ansible/requirements.lock`, at the lock's version and with one of its
+SHA-256 hashes, and the Galaxy collections in `requirements.yml`, each with
+its URL and sha256. So the Flatpak runs exactly the Ansible that CI tests,
+held to the same 30-day rule (see `CONTRIBUTING.md`). Of the wheels the lock
+allows, it takes the one pip would install on the runtime's Python.
+
+After the lock or `requirements.yml` changes, or the runtime moves to a
+different Python, regenerate it (this needs network, nothing else):
 
 ```sh
-python3 -m venv /tmp/pins && /tmp/pins/bin/pip install --upgrade pip
-/tmp/pins/bin/python flatpak/pins.py update
+python3 flatpak/pins.py update
 ```
 
-`python3 flatpak/pins.py check` runs in CI and fails when the manifest no
-longer matches the repo's pins, Terraform included.
+Renovate's PRs for these files say so. `python3 flatpak/pins.py check` runs
+in CI and fails when the manifest no longer matches the lock, the lock no
+longer matches `requirements.txt`, or the bundled Terraform isn't the one
+CI tests the module with.
 
 ## Not done yet
 

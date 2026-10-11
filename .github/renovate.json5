@@ -197,6 +197,19 @@
         "Renovate can't hash the Flatpak's Terraform download: set `sha256` in `app/flatpak/io.github.sergimn.rega.yml` from the release's `SHA256SUMS` file on https://releases.hashicorp.com/terraform/ before merging.",
       ],
     },
+    // The Flatpak bundles Ansible at exactly the versions in these files,
+    // from app/flatpak/ansible.yml, which pins.py generates from them.
+    {
+      matchFileNames: [
+        'infra/ansible/requirements.txt',
+        'infra/ansible/requirements.lock',
+        'infra/ansible/requirements.yml',
+      ],
+      automerge: false,
+      prBodyNotes: [
+        'The Flatpak bundles these exact versions: run `python3 app/flatpak/pins.py update` and commit `app/flatpak/ansible.yml` before merging. Until then the "Flatpak pins and metadata" check fails.',
+      ],
+    },
     // Renovate's own renovate-config manager would also bump
     // constraints.flutter, alone and with automerge on; the regex manager
     // above keeps it in the Flutter update instead.

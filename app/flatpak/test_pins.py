@@ -1,4 +1,4 @@
-"""Tests for pins.py check, on a copy of the repo's real pin files.
+"""Tests for pins.py, on a copy of the repo's real pin files.
 
     python3 -m unittest discover -s app/flatpak
 """
@@ -16,7 +16,7 @@ class CheckTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
-        for path in (pins.MANIFEST, pins.ANSIBLE_MODULE, pins.REQUIREMENTS,
+        for path in (pins.MANIFEST, pins.ANSIBLE_MODULE, pins.REQUIREMENTS, pins.LOCK,
                      pins.COLLECTIONS, pins.TERRAFORM_WORKFLOW):
             (self.root / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(pins.ROOT / path, self.root / path)
@@ -32,37 +32,68 @@ class CheckTest(unittest.TestCase):
         for fragment in fragments:
             self.assertIn(fragment, errors)
 
+    def locked(self, name):
+        return pins.locked_packages(self.root)[name].version
+
     def test_repo_matches(self):
         self.assertEqual(pins.check(pins.ROOT), [])
 
-    def test_python_pin_bumped(self):
+    def test_lock_bumped(self):
+        self.edit(pins.LOCK, r"^pywinrm==\S+", "pywinrm==9.9.9")
+        self.assertDrift("requirements.lock has pywinrm==9.9.9; app/flatpak/ansible.yml has 0.5",
+                         "pins.py update")
+
+    def test_lock_package_added(self):
+        with open(self.root / pins.LOCK, "a") as f:
+            f.write("boto3==1.0.0 \\\n    --hash=sha256:" + "0" * 64 + "\n")
+        self.assertDrift("requirements.lock has boto3==1.0.0; app/flatpak/ansible.yml has nothing")
+
+    def test_lock_package_removed(self):
+        self.edit(pins.LOCK, r"^xmltodict==.*\n(?:\s+.*\n)*", "")
+        self.assertDrift("ansible.yml has xmltodict-", "which infra/ansible/requirements.lock doesn't have")
+
+    def test_wheel_not_in_lock(self):
+        self.edit(pins.ANSIBLE_MODULE, r"(pywinrm-[^\"]+\"\n\s+sha256:) \S+", r"\1 " + "0" * 64)
+        self.assertDrift("pywinrm-", "whose sha256 isn't one of")
+
+    def test_marker_for_another_platform(self):
+        # sspilib is Windows-only in the lock, so the Flatpak skips it...
+        self.assertNotIn("sspilib", (self.root / pins.ANSIBLE_MODULE).read_text())
+        # ...until the lock says otherwise.
+        self.edit(pins.LOCK, r"^(sspilib==\S+) ;[^\\]*", r"\1 ")
+        self.assertDrift(f"has sspilib=={self.locked('sspilib')}; app/flatpak/ansible.yml has nothing")
+
+    def test_unknown_marker(self):
+        self.edit(pins.LOCK, r"^(sspilib==\S+ ;)[^\\]*", r"\1 platform_release == '6' ")
+        with self.assertRaises(SystemExit):
+            pins.check(self.root)
+
+    def test_markers(self):
+        env = pins.marker_environment(pins.Runtime("3.13", (2, 42)))
+        for marker, applies in [
+            ("", True),
+            ("sys_platform == 'win32'", False),
+            ("platform_python_implementation != 'PyPy'", True),
+            ("implementation_name != 'PyPy' and sys_platform == 'win32'", False),
+            ("sys_platform == 'win32' or python_version >= '3.10'", True),
+            ("(sys_platform == 'win32' or python_version < '3.13') and os_name == 'posix'", False),
+            ('python_version <= "3.13"', True),
+        ]:
+            with self.subTest(marker):
+                self.assertEqual(pins.marker_applies(marker, env), applies)
+        for marker in ("sys_platform == 'linux' and", "(os_name == 'posix'", "sys_platform ~= 'linux'",
+                       "sys_platform < 'linux'"):
+            with self.subTest(marker), self.assertRaises(SystemExit):
+                pins.marker_applies(marker, env)
+
+    def test_requirements_ahead_of_lock(self):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+", "pywinrm==9.9.9")
-        self.assertDrift("pins pywinrm==9.9.9", "pins.py update")
-
-    def test_python_pin_added(self):
-        with open(self.root / pins.REQUIREMENTS, "a") as f:
-            f.write("boto3==1.0.0\n")
-        self.assertDrift("pins boto3==1.0.0; app/flatpak/ansible.yml has nothing")
-
-    def pinned(self, name):
-        return str(pins.python_pins(self.root)[name])
-
-    def test_python_pin_removed(self):
-        self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+\n", "")
-        self.assertDrift(f"requirements.txt now pins {self.pinned('ansible-core')}.")
-
-    def test_extras_added(self):
-        # The wheels still match, but the extras' dependencies aren't bundled.
-        self.edit(pins.REQUIREMENTS, r"^pywinrm==", "pywinrm[credssp]==")
-        self.assertDrift(f"now pins {self.pinned('ansible-core')} {self.pinned('pywinrm')}.")
-
-    def test_module_without_its_pins(self):
-        self.edit(pins.ANSIBLE_MODULE, r"^# Built from: .*\n", "")
-        self.assertDrift("doesn't say which pins it was built from")
+        self.assertDrift(f"pins pywinrm==9.9.9, but infra/ansible/requirements.lock has "
+                         f"pywinrm=={self.locked('pywinrm')}; regenerate the lock")
 
     def test_same_release_written_longer(self):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==(\S+)", r"pywinrm==\1.0")
-        self.edit(pins.ANSIBLE_MODULE, r"pywinrm==(\S+)", r"pywinrm==\1.0")
+        self.edit(pins.LOCK, r"^pywinrm==(\S+)", r"pywinrm==\1.0")
         self.assertEqual(pins.check(self.root), [])
 
     def test_loose_python_pin(self):
@@ -87,15 +118,50 @@ class CheckTest(unittest.TestCase):
 
     def test_wheel_for_another_python(self):
         self.edit(pins.ANSIBLE_MODULE, r"(pyyaml-[^-]+)-cp313-cp313-", r"\1-cp312-cp312-")
-        self.assertDrift("cp312 wheel of pyyaml")
+        self.assertDrift("-cp312-cp312-", "doesn't install on the 25.08 runtime")
 
     def test_unknown_runtime(self):
         self.edit(pins.MANIFEST, r"^runtime-version: .*", "runtime-version: '99.08'")
-        self.assertDrift("Runtime 99.08 isn't in RUNTIME_PYTHON")
+        self.assertDrift("Runtime 99.08 isn't in RUNTIMES")
 
     def test_module_not_included(self):
         self.edit(pins.MANIFEST, r"^\s*- ansible\.yml\n", "")
         self.assertDrift("doesn't include ansible.yml")
+
+
+class BestWheelTest(unittest.TestCase):
+    runtime = pins.Runtime("3.13", (2, 42))
+
+    def best(self, *filenames):
+        return pins.best_wheel(filenames, self.runtime)
+
+    def test_newest_glibc_the_runtime_has(self):
+        self.assertEqual(self.best(
+            "x-1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "x-1-cp313-cp313-manylinux_2_34_x86_64.whl",
+            "x-1-cp313-cp313-manylinux_2_43_x86_64.whl",
+            "x-1-cp313-cp313-musllinux_1_2_x86_64.whl",
+            "x-1-cp313-cp313-manylinux_2_39_aarch64.whl",
+            "x-1-cp313-cp313-linux_x86_64.whl",
+        ), "x-1-cp313-cp313-manylinux_2_34_x86_64.whl")
+
+    def test_own_abi_then_abi3_then_pure(self):
+        own = "x-1-cp313-cp313-manylinux_2_17_x86_64.whl"
+        abi3 = "x-1-cp311-abi3-manylinux_2_34_x86_64.whl"
+        pure = "x-1-py3-none-any.whl"
+        self.assertEqual(self.best(pure, abi3, own), own)
+        self.assertEqual(self.best(pure, abi3), abi3)
+        self.assertEqual(self.best(pure), pure)
+        self.assertEqual(self.best("x-1-py2.py3-none-any.whl"), "x-1-py2.py3-none-any.whl")
+
+    def test_nothing_that_loads(self):
+        self.assertIsNone(self.best(
+            "x-1-cp314-cp314-manylinux_2_17_x86_64.whl",
+            "x-1-cp314-abi3-manylinux_2_17_x86_64.whl",
+            "x-1-cp312-cp312-manylinux_2_17_x86_64.whl",
+            "x-1-cp313-cp313-win_amd64.whl",
+            "x-1-py2-none-any.whl",
+        ))
 
 
 if __name__ == "__main__":
