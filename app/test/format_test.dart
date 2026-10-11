@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rega/backend.dart';
 import 'package:rega/widgets/format.dart';
 
 void main() {
@@ -18,5 +19,11 @@ void main() {
     expect(formatRtt(38), '38 ms');
     expect(formatRtt(null), 'Measuring…');
     expect(formatRtt(null, measuring: false), 'Latency unknown');
+  });
+
+  test('machine states read as words', () {
+    expect(formatStatus(MachineStatus.pending), 'Starting');
+    expect(formatStatus(MachineStatus.stopped), 'Stopped');
+    expect(formatStatus(MachineStatus.terminated), 'Destroyed');
   });
 }

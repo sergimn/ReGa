@@ -245,6 +245,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Gaming'), findsOneWidget);
-    expect(find.text('stopped'), findsOneWidget);
+    expect(find.text('Stopped'), findsOneWidget);
+    expect(find.textContaining('· Europe (Stockholm)'), findsWidgets);
   });
 }

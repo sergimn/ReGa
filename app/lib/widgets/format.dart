@@ -1,6 +1,8 @@
 /// Display helpers shared by the widgets.
 library;
 
+import '../backend.dart';
+
 String formatPrice(double? perHour) {
   if (perHour == null) return 'Not offered';
   // Cheap CPU types need a third decimal to tell them apart.
@@ -18,3 +20,11 @@ String formatRtt(int? ms, {bool measuring = true}) => ms != null
     : measuring
     ? 'Measuring…'
     : 'Latency unknown';
+
+String formatStatus(MachineStatus status) => switch (status) {
+  MachineStatus.pending => 'Starting',
+  MachineStatus.running => 'Running',
+  MachineStatus.stopping => 'Stopping',
+  MachineStatus.stopped => 'Stopped',
+  MachineStatus.terminated => 'Destroyed',
+};

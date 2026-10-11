@@ -78,6 +78,10 @@ class _ProviderPageState extends State<ProviderPage> {
     }
   }
 
+  String _regionName(String id) =>
+      _choices?.all.where((r) => r.regionId == id).firstOrNull?.displayName ??
+      id;
+
   /// Reloads regions, offers and machines. With `regions: false` (the user
   /// only picked another region) the region list is kept as is.
   Future<void> _reload({bool regions = true}) async {
@@ -242,9 +246,9 @@ class _ProviderPageState extends State<ProviderPage> {
                 title: Text(m.name),
                 subtitle: Text(
                   '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
-                  '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionId}',
+                  '${m.offer.gpuModel ?? 'No GPU'} · ${_regionName(m.regionId)}',
                 ),
-                trailing: Text(m.status.name),
+                trailing: Text(formatStatus(m.status)),
               ),
         ],
       ],

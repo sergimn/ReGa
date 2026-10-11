@@ -73,7 +73,11 @@ class _RegionPickerState extends State<RegionPicker> {
         .firstOrNull;
     final tiles = <Widget>[
       for (final MapEntry(key: id, value: names) in labels.entries)
-        _tile(options[id]!, label: names.join(' · ')),
+        _tile(
+          options[id]!,
+          label: names.join(' · '),
+          recommended: id == c.recommended?.regionId,
+        ),
       if (!_showAll && picked != null && !labels.containsKey(picked.regionId))
         _tile(picked, label: 'Your pick'),
       Align(
@@ -91,7 +95,9 @@ class _RegionPickerState extends State<RegionPicker> {
     return Column(children: tiles);
   }
 
-  Widget _tile(RegionOption option, {String? label}) {
+  /// `recommended` marks the Recommended tile; tapping it means "follow
+  /// Recommended" rather than pinning this region.
+  Widget _tile(RegionOption option, {String? label, bool recommended = false}) {
     final selected = option.regionId == widget.selectedRegionId;
     final copy = option.oneOffCost > 0
         ? ' · \$${option.oneOffCost.toStringAsFixed(2)} once to copy games'
@@ -108,8 +114,7 @@ class _RegionPickerState extends State<RegionPicker> {
         '${formatRtt(option.rttMs, measuring: widget.measuring)} · '
         '${formatPrice(option.pricePerHour)}$copy',
       ),
-      onTap: () =>
-          widget.onSelected(option, label?.contains('Recommended') ?? false),
+      onTap: () => widget.onSelected(option, recommended),
     );
   }
 }
