@@ -91,17 +91,22 @@ Any WinRM shell keeps the machine up, so the app should not poll the agent
 over WinRM while waiting for the idle stop.
 
 Every machine in the account shares the one library, so an upload never
-mirrors deletes across the whole library. For each game whose Steam
-manifest changed since the restore or the last upload, it mirrors the game's
-folder and workshop content (so files an update removed go away) and only
-then uploads the manifest, so S3 never has a manifest ahead of its files. It
-skips a game when S3 already holds a build another machine uploaded, and
-deletes from S3 only the games whose manifest this disk had and lost.
-Nothing is uploaded from a disk that wasn't restored from S3 this session.
+mirrors deletes across the whole library. During a session it handles the
+games whose Steam manifests changed since the restore or the last upload;
+before a stop it handles every installed game, so saves and mods inside game
+folders are kept. For each one it mirrors the game's folder and workshop
+content (so files an update removed go away) and only then uploads the
+manifest, so S3 never has a manifest ahead of its files. It deletes from S3
+only the games whose manifest this disk had and lost. A game is left alone,
+both ways, when S3 holds a build another machine uploaded since. Nothing is
+uploaded from a disk that wasn't restored from S3 this session. Two machines
+uploading the same game at the same moment can still interleave; the last
+manifest wins.
 
 Before a stop, the agent uploads once more and writes
 `s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json` with
-`synced`, `boot_utc` and `finished_utc`, whether the upload worked or not.
+`synced`, `boot_utc`, `finished_utc` and `skipped_apps` (games left alone
+for another machine's build), whether the upload worked or not.
 The restore deletes that record. The app may delete the library disk only
 when the record says `"synced": true` and `finished_utc` is later than the
 instance's last start. The idle stop then shuts Windows down, which EC2

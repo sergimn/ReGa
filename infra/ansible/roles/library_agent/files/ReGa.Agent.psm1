@@ -313,14 +313,19 @@ function Get-SteamApps {
 }
 
 function Get-ManifestStamps {
-  # appid -> size and write time of each app manifest file, whether it
-  # parses or not. Steam rewrites a manifest whenever the app changes.
+  # appid -> size and write time of each app manifest file (whether it
+  # parses or not) and of its workshop manifest. Steam rewrites them
+  # whenever the app or its workshop items change.
   param([string]$SteamAppsPath)
   $stamps = @{}
   if (-not (Test-Path -LiteralPath $SteamAppsPath)) { return $stamps }
   foreach ($file in @(Get-ChildItem -LiteralPath $SteamAppsPath -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
     if ($file.Name -match '^appmanifest_(\d+)\.acf$') {
-      $stamps[$Matches[1]] = '{0}:{1}' -f $file.Length, $file.LastWriteTimeUtc.Ticks
+      $id = $Matches[1]
+      $stamp = '{0}:{1}' -f $file.Length, $file.LastWriteTimeUtc.Ticks
+      $workshop = Get-Item -LiteralPath (Join-Path (Join-Path $SteamAppsPath 'workshop') "appworkshop_$id.acf") -ErrorAction SilentlyContinue
+      if ($workshop) { $stamp += '|{0}:{1}' -f $workshop.Length, $workshop.LastWriteTimeUtc.Ticks }
+      $stamps[$id] = $stamp
     }
   }
   return $stamps
@@ -386,17 +391,21 @@ function Invoke-LibraryUpload {
   # Other machines in the account share the library, so nothing here
   # mirrors deletes across the whole library. Instead:
   #   1. upload files outside the games (libraryfolder.vdf and the like);
-  #   2. for each game whose manifest changed since the restore or the last
-  #      upload: mirror its folder and workshop content, then upload its
-  #      manifest, so S3 never has a manifest ahead of its files;
+  #   2. for each game whose manifests changed since the restore or the last
+  #      upload (every game with -All, as before a stop, so saves and mods
+  #      inside game folders are kept): mirror its folder and workshop
+  #      content, then upload its manifest, so S3 never has a manifest
+  #      ahead of its files;
   #   3. delete the games whose manifest file this disk had and lost.
-  # A game is skipped when S3 already holds a build another machine
-  # uploaded. Only a disk restored from S3 this session uploads at all: its
-  # marker records the games it started with.
-  param([string]$AwsPath, [string]$LibraryPath, [string]$MarkerPath, $Target, [string[]]$Excludes)
+  # A game is left alone, for upload and for removal, when S3 holds a build
+  # another machine uploaded. Only a disk restored from S3 this session
+  # uploads at all: its marker records the games it started with.
+  # Returns Ok and the apps skipped for another machine's build.
+  param([string]$AwsPath, [string]$LibraryPath, [string]$MarkerPath, $Target, [string[]]$Excludes, [switch]$All)
+  $skipped = @()
   if (-not (Test-Path -LiteralPath $MarkerPath)) {
     Write-ReGaLog "Skipping upload: $LibraryPath was not restored from S3 this session." 'warning'
-    return $false
+    return [pscustomobject]@{ Ok = $false; Skipped = $skipped }
   }
   $steamApps = Join-Path $LibraryPath 'steamapps'
   $workshop = Join-Path $steamApps 'workshop'
@@ -415,7 +424,7 @@ function Invoke-LibraryUpload {
   if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
 
   foreach ($id in @($current.Keys | Sort-Object)) {
-    if ($stamps[$id] -eq $knownStamps[$id]) { continue }
+    if (-not $All -and $stamps[$id] -eq $knownStamps[$id]) { continue }
     $dir = $current[$id]
     $manifest = Join-Path $steamApps "appmanifest_$id.acf"
     try { $localBuild = Get-AcfValue ([IO.File]::ReadAllText($manifest)) 'buildid' } catch { $ok = $false; continue }
@@ -424,8 +433,12 @@ function Invoke-LibraryUpload {
     $s3Build = Get-AcfValue $remote.Text 'buildid'
     if (-not (Test-UploadAllowed -S3Build $s3Build -BaseBuild $knownBuilds[$id] -LocalBuild $localBuild)) {
       Write-ReGaLog "Not uploading app $id ($dir): S3 has build $s3Build from another machine, this disk has $localBuild." 'warning'
+      $skipped += $id
       continue
     }
+    # Known from the first attempt on, so an uninstall cleans up a partial
+    # upload too.
+    if (-not $known.ContainsKey($id)) { $known[$id] = $dir }
     $appOk = $true
     $folders = @(
       @((Join-Path (Join-Path $steamApps 'common') $dir), "${uri}steamapps/common/$dir/"),
@@ -456,6 +469,17 @@ function Invoke-LibraryUpload {
 
   foreach ($app in (Get-RemovedApps -Known $known -Current $current -Present @($stamps.Keys))) {
     $id = $app.AppId
+    $remote = Get-S3Text -AwsPath $AwsPath -Uri "${uri}steamapps/appmanifest_$id.acf" -Region $region
+    if (-not $remote.Ok) { $ok = $false; continue }
+    $s3Build = Get-AcfValue $remote.Text 'buildid'
+    if ($remote.Found -and $s3Build -ne $knownBuilds[$id]) {
+      # Another machine uploaded it since; it is theirs now.
+      Write-ReGaLog "Not removing app ${id}: S3 has build $s3Build from another machine." 'warning'
+      $known.Remove($id)
+      $knownStamps.Remove($id)
+      $knownBuilds.Remove($id)
+      continue
+    }
     Write-ReGaLog "Removing uninstalled app $id ($($app.InstallDir)) from $uri."
     # The manifest goes first: a half-finished removal reads as uninstalled.
     $deletes = @(
@@ -485,12 +509,12 @@ function Invoke-LibraryUpload {
     builds       = $knownBuilds
     uploaded_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
   })
-  if (-not $ok) {
+  if ($ok) {
+    Write-ReGaLog "Uploaded $LibraryPath to $uri."
+  } else {
     Write-ReGaLog "Upload to $uri was incomplete; the rest is retried at the next change or stop." 'error'
-    return $false
   }
-  Write-ReGaLog "Uploaded $LibraryPath to $uri."
-  return $true
+  return [pscustomobject]@{ Ok = $ok; Skipped = $skipped }
 }
 
 function Get-LibraryFingerprint {

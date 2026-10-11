@@ -312,11 +312,16 @@ Describe 'Invoke-LibraryUpload' {
     $script:calls = [Collections.ArrayList]::new()
     $script:s3Build = '100'
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); return 0 }
-    Mock Get-S3Text -ModuleName ReGa.Agent { [pscustomobject]@{ Ok = $true; Found = $true; Text = "`"buildid`"`t`t`"$script:s3Build`"" } }
+    # S3 holds the builds this disk was restored from, except Portal's
+    # (set per test).
+    Mock Get-S3Text -ModuleName ReGa.Agent {
+      $build = switch -Wildcard ($Uri) { '*appmanifest_400.acf' { $script:s3Build } '*appmanifest_70.acf' { '7' } '*appmanifest_620.acf' { '200' } default { '' } }
+      [pscustomobject]@{ Ok = $true; Found = ($build -ne ''); Text = "`"buildid`"`t`t`"$build`"" }
+    }
   }
 
   It 'never deletes across the whole library' {
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @('steamapps/downloading/*') | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @('steamapps/downloading/*')).Ok | Should -BeTrue
     $root = @($calls | Where-Object { $_ -like "s3 sync $library s3://b/steam-library/ *" })
     $root.Count | Should -Be 1
     $root[0] | Should -Not -Match '--delete'
@@ -326,7 +331,7 @@ Describe 'Invoke-LibraryUpload' {
   }
 
   It 'uploads only the changed game, its files before its manifest' {
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
     $folder = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match 'steamapps/common/Portal/ .*--delete$' })
     $manifest = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match '^s3 cp .*appmanifest_400\.acf s3://b/steam-library/steamapps/appmanifest_400\.acf' })
     $folder | Should -BeGreaterOrEqual 0
@@ -348,32 +353,107 @@ Describe 'Invoke-LibraryUpload' {
     (ConvertTo-AppTable $saved.builds)['400'] | Should -Be '101'
     $saved.restored_utc | Should -Not -BeNullOrEmpty
     $calls.Clear()
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -notlike "s3 sync $library *" }).Count | Should -Be 0
   }
 
   It 'skips a game another machine uploaded a different build of' {
     $script:s3Build = '102'
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    $result = Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()
+    $result.Ok | Should -BeTrue
+    $result.Skipped | Should -Be @('400')
     @($calls | Where-Object { $_ -match 'Portal/|appmanifest_400' }).Count | Should -Be 0
   }
 
   It 'keeps the manifest back and retries when the folder upload fails' {
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); if ($Arguments -contains '--delete') { return 1 } ; return 0 }
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
     @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_400' }).Count | Should -Be 0
     (ConvertTo-AppTable (Read-JsonFile $marker).builds)['400'] | Should -Be '100'
   }
 
   It 'keeps a removal to retry when it fails' {
     Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments[1] -eq 'rm') { return 1 } ; return 0 }
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
     (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeTrue
   }
 
   It 'uploads nothing from a disk that was not restored' {
     Remove-Item -LiteralPath $marker
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
     $calls.Count | Should -Be 0
+  }
+
+  It 'uploads every game before a stop, changed or not' {
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() -All).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_70\.acf' }).Count | Should -Be 1
+  }
+
+  It 'sees a workshop change as a change' {
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    New-Item -ItemType Directory -Path (Join-Path $apps 'workshop/content/70/123') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $apps 'workshop/appworkshop_70.acf') -Value 'items'
+    $calls.Clear()
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'steamapps/workshop/content/70/ .*--delete$' }).Count | Should -Be 1
+    @($calls | Where-Object { $_ -match '^s3 cp .*appworkshop_70\.acf' }).Count | Should -Be 1
+  }
+
+  It 'leaves an uninstalled game alone when another machine uploaded a new build' {
+    Mock Get-S3Text -ModuleName ReGa.Agent {
+      $build = if ($Uri -like '*appmanifest_620.acf') { '201' } else { $script:s3Build }
+      [pscustomobject]@{ Ok = $true; Found = $true; Text = "`"buildid`"`t`t`"$build`"" }
+    }
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match '^s3 rm .*(620|Portal 2)' }).Count | Should -Be 0
+    (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeFalse
+  }
+
+  It 'cleans up a partial upload of a new game that is uninstalled' {
+    New-Item -ItemType Directory -Path (Join-Path $apps 'common/New Game') -Force | Out-Null
+    New-Manifest (Join-Path $apps 'appmanifest_900.acf') '900' 'New Game' '1'
+    Mock Get-S3Text -ModuleName ReGa.Agent { [pscustomobject]@{ Ok = $true; Found = $false; Text = '' } }
+    Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); if ($Arguments -contains '--delete') { return 1 } ; return 0 }
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
+    Remove-Item -LiteralPath (Join-Path $apps 'appmanifest_900.acf')
+    $calls.Clear()
+    Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); return 0 }
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/New Game/ --recursive --region eu-north-1 --only-show-errors'
+  }
+}
+
+Describe 'Get-S3Text' {
+  BeforeAll {
+    # A stand-in for the AWS CLI: prints its output and exits with a code.
+    $script:stub = Join-Path $TestDrive 'aws-stub.ps1'
+    Set-Content -LiteralPath $stub -Value @'
+param([Parameter(ValueFromRemainingArguments = $true)] $Rest)
+if ($env:REGA_STUB_ERROR) { Write-Error $env:REGA_STUB_ERROR; exit 1 }
+'"buildid"		"42"'
+exit 0
+'@
+  }
+  AfterEach { $env:REGA_STUB_ERROR = $null }
+
+  It 'returns the object text' {
+    $r = Get-S3Text -AwsPath $stub -Uri 's3://b/k' -Region 'r'
+    $r.Ok | Should -BeTrue
+    $r.Found | Should -BeTrue
+    Get-AcfValue $r.Text 'buildid' | Should -Be '42'
+  }
+
+  It 'reports a missing object as not found' {
+    $env:REGA_STUB_ERROR = 'download failed: s3://b/k to - An error occurred (404) when calling the HeadObject operation: Not Found'
+    $r = Get-S3Text -AwsPath $stub -Uri 's3://b/k' -Region 'r'
+    $r.Ok | Should -BeTrue
+    $r.Found | Should -BeFalse
+  }
+
+  It 'reports other errors as failures' {
+    $env:REGA_STUB_ERROR = 'An error occurred (403) when calling the HeadObject operation: Forbidden'
+    $r = Get-S3Text -AwsPath $stub -Uri 's3://b/k' -Region 'r'
+    $r.Ok | Should -BeFalse
   }
 }

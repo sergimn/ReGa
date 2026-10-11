@@ -77,8 +77,9 @@ function Initialize-LibraryFolder {
 }
 
 function Invoke-Upload {
+  param([switch]$All)
   return Invoke-LibraryUpload -AwsPath $config.aws_path -LibraryPath $libraryPath -MarkerPath $marker `
-    -Target (Get-Target) -Excludes @($config.library.excludes)
+    -Target (Get-Target) -Excludes @($config.library.excludes) -All:$All
 }
 
 function Invoke-FinalSync {
@@ -86,7 +87,14 @@ function Invoke-FinalSync {
   # app deletes the library disk only for a record with synced = true that
   # was written after the machine's last start.
   $synced = $false
-  try { $synced = Invoke-Upload } catch { Write-ReGaLog "Final upload failed: $_" 'error' }
+  $skipped = @()
+  try {
+    $upload = Invoke-Upload -All
+    $synced = $upload.Ok
+    $skipped = @($upload.Skipped)
+  } catch {
+    Write-ReGaLog "Final upload failed: $_" 'error'
+  }
   try {
     $target = Get-Target
     $identity = Get-Ec2Identity
@@ -96,6 +104,8 @@ function Invoke-FinalSync {
       boot_utc     = (ConvertTo-IsoString (Get-BootTime))
       finished_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
       synced       = $synced
+      # Games this disk didn't upload because S3 has another machine's build.
+      skipped_apps = $skipped
       library_uri  = $target.Uri
     }
     $file = Join-Path $stateDir 'final-sync.json'
@@ -118,7 +128,8 @@ function Stop-Steam {
   if (-not (Get-Process -Name 'steam' -ErrorAction SilentlyContinue)) { return }
   Write-ReGaLog 'Closing Steam.'
   & $SteamExe -shutdown
-  $wait = [datetime]::UtcNow.AddSeconds(90)
+  # Generous, so a Steam that is updating itself can finish first.
+  $wait = [datetime]::UtcNow.AddSeconds(300)
   while ((Get-Process -Name 'steam' -ErrorAction SilentlyContinue) -and [datetime]::UtcNow -lt $wait) { Start-Sleep -Seconds 2 }
   Get-Process -Name 'steam' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
@@ -232,7 +243,7 @@ switch ($Action) {
       $fingerprint = Get-LibraryFingerprint $steamApps
       if ($fingerprint -ne (Get-PropertyValue $state 'synced_fingerprint' '')) {
         try {
-          if (Invoke-Upload) { Save-State @{ synced_fingerprint = $fingerprint; last_sync_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) } }
+          if ((Invoke-Upload).Ok) { Save-State @{ synced_fingerprint = $fingerprint; last_sync_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) } }
         } catch {
           Write-ReGaLog "Upload failed: $_" 'error'
         }
