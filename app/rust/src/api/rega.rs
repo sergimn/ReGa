@@ -188,7 +188,7 @@ pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary
     };
     Ok(machines
         .into_iter()
-        .map(|m| summary(m, &region_name))
+        .map(|m| summary(m, region_name))
         .collect())
 }
 
