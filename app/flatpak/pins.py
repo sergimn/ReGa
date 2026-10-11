@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Pins for the tools the Flatpak bundles next to the app.
 
-    python3 app/flatpak/pins.py update   # regenerate ansible.yml (needs network and pip)
+    python3 app/flatpak/pins.py update   # regenerate ansible.yml (needs network and pip 26.1+)
     python3 app/flatpak/pins.py check    # offline; CI runs it
 
 infra/ansible/requirements.txt and requirements.yml are the source of truth
 for Ansible, and .github/workflows/terraform.yml for Terraform. `update` turns
 the Ansible pins into the manifest module ansible.yml: every Python wheel they
 need (resolved for the runtime's Python) and the Galaxy collections, each with
-its URL and sha256. `check` fails when the manifest no longer matches them.
+its URL and sha256. Like Renovate, it only takes releases at least
+MIN_AGE_DAYS old, dependencies of the pins included. `check` fails when the
+manifest no longer matches them.
 Only stdlib, so it runs on a bare CI runner.
 """
 
@@ -22,6 +24,7 @@ import sys
 import tempfile
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +48,10 @@ WHEEL_PLATFORMS = [
     "manylinux_2_34_x86_64",
     "manylinux_2_39_x86_64",
 ]
+
+# Releases younger than this are left out (a hijacked release is usually
+# caught and pulled within days).
+MIN_AGE_DAYS = 30
 
 GALAXY = "https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index"
 
@@ -89,7 +96,7 @@ def python_pins(root: Path) -> dict[str, Pin]:
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
-        m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*==\s*([^\s;]+)", line)
+        m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*==\s*([^\s;*=]+)", line)
         if not m:
             raise SystemExit(f"{REQUIREMENTS}: pin every package exactly, not {line!r}")
         extras = sorted(normalize(e) for e in (m.group(2) or "[]")[1:-1].split(",") if e.strip())
@@ -210,12 +217,23 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def resolve_wheels(root: Path, python: str) -> list[Source]:
+def released(timestamp: str) -> datetime:
+    """An ISO 8601 time from PyPI or Galaxy."""
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+
+def resolve_wheels(root: Path, python: str, cutoff: datetime) -> list[Source]:
     """Every wheel the pins need, from PyPI, checked against what pip fetched."""
+    pip = [sys.executable, "-m", "pip"]
+    help_text = subprocess.run([*pip, "download", "--help"], capture_output=True, text=True).stdout
+    if "--uploaded-prior-to" not in help_text:
+        raise SystemExit("pins.py update needs pip 26.1 or later (for --uploaded-prior-to); "
+                         "run it with a venv's python that has it.")
     with tempfile.TemporaryDirectory() as tmp:
         platforms = [arg for p in WHEEL_PLATFORMS for arg in ("--platform", p)]
         subprocess.run(
-            [sys.executable, "-m", "pip", "download", "--quiet", "--dest", tmp,
+            [*pip, "download", "--quiet", "--dest", tmp,
+             "--uploaded-prior-to", cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
              "--only-binary=:all:", "--implementation", "cp",
              "--python-version", python, "--abi", "cp" + python.replace(".", ""),
              *platforms, "-r", str(root / REQUIREMENTS)],
@@ -231,21 +249,28 @@ def resolve_wheels(root: Path, python: str) -> list[Source]:
             digest = match[0]["digests"]["sha256"]
             if digest != sha256(wheel):
                 raise SystemExit(f"{wheel.name}: PyPI's sha256 doesn't match the download")
+            # pip only filters when the index reports upload times; make sure.
+            if released(match[0]["upload_time_iso_8601"]) > cutoff:
+                raise SystemExit(f"{wheel.name} is less than {MIN_AGE_DAYS} days old")
             sources.append(Source(wheel.name, match[0]["url"], digest))
         return sources
 
 
-def resolve_collections(root: Path) -> list[Source]:
+def resolve_collections(root: Path, cutoff: datetime) -> list[Source]:
     sources = []
     for name, version in collection_pins(root).items():
         namespace, collection = name.split(".", 1)
         info = fetch_json(f"{GALAXY}/{namespace}/{collection}/versions/{version}/")
+        if released(info["created_at"]) > cutoff:
+            raise SystemExit(f"{COLLECTIONS} pins {name} {version}, which is less than "
+                             f"{MIN_AGE_DAYS} days old; pin an older one.")
         artifact = info["artifact"]
         sources.append(Source(artifact["filename"], info["download_url"], artifact["sha256"]))
     return sources
 
 
-def render(python: str, pins: dict[str, Pin], wheels: list[Source], collections: list[Source]) -> str:
+def render(python: str, cutoff: datetime, pins: dict[str, Pin], wheels: list[Source],
+           collections: list[Source]) -> str:
     q = json.dumps  # a JSON string is a valid YAML double-quoted scalar
     site_packages = f"${{FLATPAK_DEST}}/lib/python{python}/site-packages"
     tarballs = " ".join(s.filename for s in collections)
@@ -253,6 +278,7 @@ def render(python: str, pins: dict[str, Pin], wheels: list[Source], collections:
         f"# Generated by `python3 app/flatpak/pins.py update` from {REQUIREMENTS}",
         f"# and {COLLECTIONS}. Don't edit by hand.",
         "# Built from: " + " ".join(sorted(str(pin) for pin in pins.values())),
+        f"# Only releases from before {cutoff:%Y-%m-%d} ({MIN_AGE_DAYS} days before it was generated).",
         "#",
         "# Ansible and its WinRM client from wheels, then the Windows collections",
         "# into site-packages, where Ansible finds them without any config.",
@@ -286,7 +312,9 @@ def update(root: Path) -> None:
     python = RUNTIME_PYTHON.get(runtime)
     if python is None:
         raise SystemExit(f"Runtime {runtime} isn't in RUNTIME_PYTHON; add its Python first.")
-    text = render(python, python_pins(root), resolve_wheels(root, python), resolve_collections(root))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MIN_AGE_DAYS)
+    text = render(python, cutoff, python_pins(root), resolve_wheels(root, python, cutoff),
+                  resolve_collections(root, cutoff))
     (root / ANSIBLE_MODULE).write_text(text, encoding="utf-8")
     print(f"Wrote {ANSIBLE_MODULE}.")
 

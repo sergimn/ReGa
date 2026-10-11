@@ -37,12 +37,13 @@ Things to know when the app runs these tools:
 - Each launch of the app gets a new sandbox, which can't see processes in an
   earlier one. So a reopened app can't tell whether a run it finds there is
   still going, and goes by the state lock instead: the machine shows busy
-  while the lock is held, and a lock left by a killed run counts as stale
-  after a reboot or after two hours.
+  while the lock is held. A lock left by a run that was killed (say, by
+  logging out) counts as stale after two hours, or at the first change
+  after a reboot if nothing else ran on that machine before it.
 - The AWS Terraform provider isn't bundled; Terraform downloads it on first
   use into the app's cache.
 - Inside the sandbox, `$HOME` is a scratch folder that is emptied when the
-  app quits. That suits `~/.ansible` (Ansible's temp files) and
+  sandbox exits. That suits `~/.ansible` (Ansible's temp files) and
   `~/.terraform.d`. Anything that must survive goes under `$XDG_DATA_HOME`
   or `$XDG_CACHE_HOME`, which point into `~/.var/app/io.github.sergimn.rega/`;
   the playbook already keeps its WireGuard keys and Sunshine password there.
@@ -69,12 +70,15 @@ xdotool.
 ## Pins
 
 `ansible.yml` is generated: every wheel Ansible needs for the runtime's
-Python, and the Galaxy collections, each with its URL and sha256. After
-changing `infra/ansible/requirements.txt` or `requirements.yml`, or moving
-to a runtime with a different Python, regenerate it:
+Python, and the Galaxy collections, each with its URL and sha256. Like
+Renovate, it only takes releases at least 30 days old, and that goes for the
+wheels the pins pull in too. After changing `infra/ansible/requirements.txt`
+or `requirements.yml`, or moving to a runtime with a different Python,
+regenerate it. That needs pip 26.1 or later, for `--uploaded-prior-to`:
 
 ```sh
-python3 flatpak/pins.py update
+python3 -m venv /tmp/pins && /tmp/pins/bin/pip install --upgrade pip
+/tmp/pins/bin/python flatpak/pins.py update
 ```
 
 `python3 flatpak/pins.py check` runs in CI and fails when the manifest no

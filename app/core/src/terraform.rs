@@ -152,7 +152,9 @@ impl Terraform for TerraformCli {
         // Output goes to files, not pipes, and Terraform gets its own process
         // group: if the app quits mid-run, Terraform can still finish and
         // release its state lock instead of dying on a closed pipe.
-        let id = std::process::id();
+        // Unique per run: in a Flatpak sandbox the app's pid is always the
+        // same, and a run from an earlier sandbox may still be writing here.
+        let id = format!("{}-{}", std::process::id(), unique_suffix());
         let out_path = dir.join(format!(".terraform-{id}.out"));
         let err_path = dir.join(format!(".terraform-{id}.err"));
         let create = |path: &Path| {
@@ -256,6 +258,12 @@ impl RunMarker {
     }
 }
 
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
+}
+
 fn pid_namespace() -> Option<String> {
     std::fs::read_link("/proc/self/ns/pid")
         .ok()
@@ -293,7 +301,8 @@ pub async fn run_marker(dir: &Path) -> Option<RunMarker> {
 }
 
 /// Waits while an earlier Terraform run in `dir` is still going, such as one
-/// that kept running after the app was closed. Returns its marker when that
+/// that kept running after the app was closed (outside Flatpak; see
+/// [`run_marker`] for runs in another sandbox). Returns its marker when that
 /// run is gone without cleaning up, which means it was killed and may have
 /// left its state lock behind.
 pub async fn wait_for_earlier_run(

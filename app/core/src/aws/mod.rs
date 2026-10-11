@@ -45,7 +45,9 @@ pub const MAX_DISK_GIB: u32 = 256;
 pub const LIBRARY_COPY_USD_PER_GB: f64 = 0.02;
 
 /// How long an action waits for an earlier Terraform run on the same machine
-/// to end, such as a launch that kept going after the app was closed.
+/// to end, such as a launch that kept going after the app was closed. A run
+/// in another Flatpak sandbox can't be seen, so its state lock makes the
+/// action wait instead (Terraform's own lock timeout).
 const EARLIER_RUN_WAIT: Duration = Duration::from_secs(30 * 60);
 
 /// A state lock this old was left by a run that died: no run of the module

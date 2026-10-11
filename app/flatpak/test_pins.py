@@ -66,9 +66,11 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(pins.check(self.root), [])
 
     def test_loose_python_pin(self):
-        self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+", "pywinrm>=0.5")
-        with self.assertRaises(SystemExit):
-            pins.check(self.root)
+        for loose in ("pywinrm>=0.5", "pywinrm==0.*", "pywinrm===0.5.0"):
+            with self.subTest(loose):
+                self.edit(pins.REQUIREMENTS, r"^pywinrm\S+", loose)
+                with self.assertRaises(SystemExit):
+                    pins.check(self.root)
 
     def test_collection_bumped(self):
         self.edit(pins.COLLECTIONS, r"(name: ansible\.windows\s+version:) \S+", r"\1 9.9.9")
