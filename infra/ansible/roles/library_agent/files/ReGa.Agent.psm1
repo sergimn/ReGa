@@ -248,7 +248,8 @@ function Get-SyncArguments {
 }
 
 function Invoke-Aws {
-  param([string]$AwsPath, [string[]]$Arguments)
+  # The exit code, or with -PassThru the code and the output lines.
+  param([string]$AwsPath, [string[]]$Arguments, [switch]$PassThru)
   Write-ReGaLog ("aws " + ($Arguments -join ' '))
   # Windows PowerShell turns native stderr into terminating errors when
   # ErrorActionPreference is Stop.
@@ -256,7 +257,15 @@ function Invoke-Aws {
   $output = & $AwsPath @Arguments 2>&1
   $code = $LASTEXITCODE
   foreach ($line in $output) { Write-ReGaLog "aws: $line" 'debug' }
+  if ($PassThru) { return [pscustomobject]@{ Code = $code; Output = @($output | ForEach-Object { "$_" }) } }
   return $code
+}
+
+function Test-DiskFullOutput {
+  # Pure: whether AWS CLI output says the local disk filled up (ENOSPC, or
+  # ERROR_DISK_FULL on Windows).
+  param([string[]]$Output)
+  return (@(@($Output) -match 'No space left on device|\[Errno 28\]|not enough space on the disk|\[WinError 112\]').Count -gt 0)
 }
 
 function Get-AcfValue {

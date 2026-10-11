@@ -504,6 +504,40 @@ Describe 'Invoke-LibraryUpload' {
   }
 }
 
+Describe 'Test-DiskFullOutput' {
+  It 'sees a full disk in the CLI output' {
+    Test-DiskFullOutput @('download failed: s3://b/k to D:\x [Errno 28] No space left on device') | Should -BeTrue
+    Test-DiskFullOutput @('ok', '[WinError 112] There is not enough space on the disk') | Should -BeTrue
+  }
+
+  It 'does not mistake other failures for it' {
+    Test-DiskFullOutput @('Could not connect to the endpoint URL') | Should -BeFalse
+    Test-DiskFullOutput @() | Should -BeFalse
+  }
+}
+
+Describe 'Invoke-Aws' {
+  BeforeAll {
+    $script:awsStub = Join-Path $TestDrive 'aws-exit.ps1'
+    Set-Content -LiteralPath $awsStub -Value @'
+param([Parameter(ValueFromRemainingArguments = $true)] $Rest)
+Write-Error '[Errno 28] No space left on device'
+exit 1
+'@
+    Mock Write-ReGaLog -ModuleName ReGa.Agent { }
+  }
+
+  It 'returns the exit code' {
+    Invoke-Aws -AwsPath $awsStub -Arguments @('s3', 'sync') | Should -Be 1
+  }
+
+  It 'returns the output too with -PassThru' {
+    $run = Invoke-Aws -AwsPath $awsStub -Arguments @('s3', 'sync') -PassThru
+    $run.Code | Should -Be 1
+    Test-DiskFullOutput $run.Output | Should -BeTrue
+  }
+}
+
 Describe 'Get-S3Text' {
   BeforeAll {
     # A stand-in for the AWS CLI: prints its output and exits with a code.

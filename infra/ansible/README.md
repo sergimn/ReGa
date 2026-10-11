@@ -108,10 +108,12 @@ build another machine uploaded since.
 With more than one machine: an uninstall sticks only if no other machine
 still has the game, because before its stop a machine that has it uploads it
 again. Two machines writing the same file of the same game keep the last
-upload. A file deleted from a game folder without a Steam update or DLC
-change stays in S3 and comes back at the next restore. A change is seen by
-file and folder times, so a file copied over another with its old timestamp
-kept (some archive tools do this) is not uploaded.
+upload, and a DLC or language change on one machine mirrors the whole game
+folder, removing what another machine added to it in the meantime. A file
+deleted from a game folder without a Steam update or DLC change stays in S3
+and comes back at the next restore. A change is seen by file and folder
+times, so a file copied over another with its old timestamp kept (some
+archive tools do this) is not uploaded.
 
 Nothing is uploaded from a disk that wasn't restored from S3 this session.
 When the library doesn't fit on the disk, the restore gives up with status

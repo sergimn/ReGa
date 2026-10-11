@@ -208,7 +208,6 @@ switch ($Action) {
         New-Item -ItemType Directory -Path $libraryPath -Force | Out-Null
         $arguments = Get-SyncArguments -Source $target.Uri -Destination $libraryPath -Region $target.Region `
           -Excludes $config.library.excludes
-        $drive = [IO.Path]::GetPathRoot($libraryPath).TrimEnd('\').TrimEnd(':')
         $full = $false
         $code = 1
         foreach ($wait in @(0, 30, 60, 120, 240)) {
@@ -216,10 +215,10 @@ switch ($Action) {
             Write-ReGaLog "Restore attempt failed with exit code $code; retrying in $wait seconds." 'warning'
             Start-Sleep -Seconds $wait
           }
-          $code = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments
+          $run = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments -PassThru
+          $code = $run.Code
           if ($code -eq 0) { break }
-          $volume = Get-Volume -DriveLetter $drive -ErrorAction SilentlyContinue
-          if ($volume -and $volume.SizeRemaining -lt 1GB) { $full = $true; break }
+          if (Test-DiskFullOutput $run.Output) { $full = $true; break }
         }
         if ($full) {
           # Retrying can't help: the library needs a bigger disk or fewer games.
