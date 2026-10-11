@@ -257,6 +257,12 @@ impl CloudProvider for FlakyRegion {
     async fn destroy(&self, machine_id: &str) -> rega_core::ProviderResult<()> {
         self.0.destroy(machine_id).await
     }
+    async fn orphans(&self) -> rega_core::ProviderResult<Vec<rega_core::Orphan>> {
+        self.0.orphans().await
+    }
+    async fn delete_orphans(&self, orphans: &[rega_core::Orphan]) -> rega_core::ProviderResult<()> {
+        self.0.delete_orphans(orphans).await
+    }
 }
 
 #[tokio::test]
@@ -375,4 +381,18 @@ async fn start_is_refused_when_another_machine_took_the_quota() {
     p.stop(&a.id).await.unwrap();
     p.launch(&gpu()).await.unwrap();
     assert!(matches!(p.start(&a.id).await, Err(ProviderError::Cloud(_))));
+}
+
+#[tokio::test]
+async fn deleting_orphans_removes_only_those_named() {
+    let orphan = |id: &str| rega_core::Orphan {
+        kind: rega_core::ResourceKind::Volume,
+        id: id.into(),
+        region_id: "eu-north-1".into(),
+        machine_id: None,
+        name: None,
+    };
+    let p = MockProvider::demo_aws().with_orphans(vec![orphan("vol-1"), orphan("vol-2")]);
+    p.delete_orphans(&[orphan("vol-1")]).await.unwrap();
+    assert_eq!(p.orphans().await.unwrap(), vec![orphan("vol-2")]);
 }

@@ -7,13 +7,15 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `choices_view`, `offer`, `option`, `summary`
+// These functions are ignored because they are not marked as `pub`: `choices_view`, `info`, `offer`, `option`, `orphan_from`, `orphan_view`, `region_name`, `summary`, `switch_type`, `view`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `is_gpu`
 
-/// Providers for the side menu.
-List<ProviderInfo> listProviders() =>
-    RustLib.instance.api.crateApiRegaListProviders();
+/// Signs in to every provider and returns them for the side menu. A
+/// provider without working credentials comes back as demo data, with the
+/// reason. Calling it again reconnects.
+Future<List<ProviderInfo>> connectProviders() =>
+    RustLib.instance.api.crateApiRegaConnectProviders();
 
 /// Machine types sold in `region_id` the chosen way, priced. With `spot` on
 /// that means GPU types only.
@@ -46,6 +48,75 @@ Future<RegionChoices> regionChoices({
 
 Future<List<MachineSummary>> listMachines({required String providerId}) =>
     RustLib.instance.api.crateApiRegaListMachines(providerId: providerId);
+
+/// Creates a machine and starts it. Takes several minutes: Windows has to
+/// boot and make its Administrator password first.
+Future<MachineSummary> launchMachine({
+  required String providerId,
+  required String name,
+  required String regionId,
+  required String typeName,
+  required bool spot,
+  required bool wireguard,
+}) => RustLib.instance.api.crateApiRegaLaunchMachine(
+  providerId: providerId,
+  name: name,
+  regionId: regionId,
+  typeName: typeName,
+  spot: spot,
+  wireguard: wireguard,
+);
+
+Future<MachineSummary> startMachine({
+  required String providerId,
+  required String machineId,
+}) => RustLib.instance.api.crateApiRegaStartMachine(
+  providerId: providerId,
+  machineId: machineId,
+);
+
+Future<MachineSummary> stopMachine({
+  required String providerId,
+  required String machineId,
+}) => RustLib.instance.api.crateApiRegaStopMachine(
+  providerId: providerId,
+  machineId: machineId,
+);
+
+/// Changes a stopped machine's type (Switch to GPU / Switch to CPU).
+Future<MachineSummary> resizeMachine({
+  required String providerId,
+  required String machineId,
+  required String typeName,
+}) => RustLib.instance.api.crateApiRegaResizeMachine(
+  providerId: providerId,
+  machineId: machineId,
+  typeName: typeName,
+);
+
+/// Deletes the machine and its disks. The game library in object storage
+/// stays.
+Future<void> destroyMachine({
+  required String providerId,
+  required String machineId,
+}) => RustLib.instance.api.crateApiRegaDestroyMachine(
+  providerId: providerId,
+  machineId: machineId,
+);
+
+/// Leftover resources in the account that belong to no machine.
+Future<List<OrphanSummary>> listOrphans({required String providerId}) =>
+    RustLib.instance.api.crateApiRegaListOrphans(providerId: providerId);
+
+/// Deletes the given leftovers, skipping any that a machine has claimed
+/// since they were listed.
+Future<void> deleteOrphans({
+  required String providerId,
+  required List<OrphanSummary> orphans,
+}) => RustLib.instance.api.crateApiRegaDeleteOrphans(
+  providerId: providerId,
+  orphans: orphans,
+);
 
 class MachineOffer {
   final String typeName;
@@ -105,6 +176,17 @@ class MachineSummary {
   final bool spot;
   final MachineStatus status;
 
+  /// A change to it is running, on this device or another one; its
+  /// actions wait until that ends.
+  final bool busy;
+
+  /// That change is bringing it up, so no other machine can start.
+  final bool starting;
+
+  /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
+  /// machines, which can't change type.
+  final String? switchType;
+
   const MachineSummary({
     required this.id,
     required this.name,
@@ -113,6 +195,9 @@ class MachineSummary {
     required this.offer,
     required this.spot,
     required this.status,
+    required this.busy,
+    required this.starting,
+    this.switchType,
   });
 
   @override
@@ -123,7 +208,10 @@ class MachineSummary {
       regionName.hashCode ^
       offer.hashCode ^
       spot.hashCode ^
-      status.hashCode;
+      status.hashCode ^
+      busy.hashCode ^
+      starting.hashCode ^
+      switchType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -136,7 +224,52 @@ class MachineSummary {
           regionName == other.regionName &&
           offer == other.offer &&
           spot == other.spot &&
-          status == other.status;
+          status == other.status &&
+          busy == other.busy &&
+          starting == other.starting &&
+          switchType == other.switchType;
+}
+
+enum OrphanKind { instance, volume, securityGroup, keyPair, alarm }
+
+/// A leftover resource tagged for ReGa that no machine accounts for.
+class OrphanSummary {
+  final OrphanKind kind;
+  final String id;
+  final String regionId;
+  final String regionName;
+  final String? machineId;
+  final String? name;
+
+  const OrphanSummary({
+    required this.kind,
+    required this.id,
+    required this.regionId,
+    required this.regionName,
+    this.machineId,
+    this.name,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^
+      id.hashCode ^
+      regionId.hashCode ^
+      regionName.hashCode ^
+      machineId.hashCode ^
+      name.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrphanSummary &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id &&
+          regionId == other.regionId &&
+          regionName == other.regionName &&
+          machineId == other.machineId &&
+          name == other.name;
 }
 
 class ProviderInfo {
@@ -146,14 +279,19 @@ class ProviderInfo {
   /// True while the provider shows sample data instead of a real account.
   final bool demo;
 
+  /// Why it shows sample data, such as missing credentials.
+  final String? notice;
+
   const ProviderInfo({
     required this.id,
     required this.name,
     required this.demo,
+    this.notice,
   });
 
   @override
-  int get hashCode => id.hashCode ^ name.hashCode ^ demo.hashCode;
+  int get hashCode =>
+      id.hashCode ^ name.hashCode ^ demo.hashCode ^ notice.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -162,7 +300,8 @@ class ProviderInfo {
           runtimeType == other.runtimeType &&
           id == other.id &&
           name == other.name &&
-          demo == other.demo;
+          demo == other.demo &&
+          notice == other.notice;
 }
 
 /// An error the UI shows as is: a plain message, never a backtrace.

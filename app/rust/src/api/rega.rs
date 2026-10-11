@@ -5,7 +5,10 @@ use std::fmt::Display;
 
 use futures::future::try_join_all;
 use rega_core::region::{self, RegionCandidate};
-use rega_core::{Machine, MachineState, MachineType, DEFAULT_DISK_GIB};
+use rega_core::{
+    CloudProvider, LaunchRequest, Machine, MachineState, MachineType, Orphan, Region, ResourceKind,
+    DEFAULT_DISK_GIB,
+};
 
 use crate::registry;
 
@@ -34,6 +37,8 @@ pub struct ProviderInfo {
     pub name: String,
     /// True while the provider shows sample data instead of a real account.
     pub demo: bool,
+    /// Why it shows sample data, such as missing credentials.
+    pub notice: Option<String>,
 }
 
 pub struct MachineOffer {
@@ -89,6 +94,32 @@ pub struct MachineSummary {
     pub offer: MachineOffer,
     pub spot: bool,
     pub status: MachineStatus,
+    /// A change to it is running, on this device or another one; its
+    /// actions wait until that ends.
+    pub busy: bool,
+    /// That change is bringing it up, so no other machine can start.
+    pub starting: bool,
+    /// The type "Switch to GPU" or "Switch to CPU" moves to; `None` for spot
+    /// machines, which can't change type.
+    pub switch_type: Option<String>,
+}
+
+pub enum OrphanKind {
+    Instance,
+    Volume,
+    SecurityGroup,
+    KeyPair,
+    Alarm,
+}
+
+/// A leftover resource tagged for ReGa that no machine accounts for.
+pub struct OrphanSummary {
+    pub kind: OrphanKind,
+    pub id: String,
+    pub region_id: String,
+    pub region_name: String,
+    pub machine_id: Option<String>,
+    pub name: Option<String>,
 }
 
 #[flutter_rust_bridge::frb(init)]
@@ -96,17 +127,20 @@ pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
 }
 
-/// Providers for the side menu.
-#[flutter_rust_bridge::frb(sync)]
-pub fn list_providers() -> Vec<ProviderInfo> {
-    registry::entries()
-        .iter()
-        .map(|e| ProviderInfo {
-            id: e.provider().id().into(),
-            name: e.provider().display_name().into(),
-            demo: e.is_demo(),
-        })
-        .collect()
+/// Signs in to every provider and returns them for the side menu. A
+/// provider without working credentials comes back as demo data, with the
+/// reason. Calling it again reconnects.
+pub async fn connect_providers() -> Vec<ProviderInfo> {
+    registry::connect().await.iter().map(|e| info(e)).collect()
+}
+
+fn info(e: &registry::Entry) -> ProviderInfo {
+    ProviderInfo {
+        id: e.provider().id().into(),
+        name: e.provider().display_name().into(),
+        demo: e.demo_reason().is_some(),
+        notice: e.demo_reason().map(String::from),
+    }
 }
 
 /// Machine types sold in `region_id` the chosen way, priced. With `spot` on
@@ -116,7 +150,8 @@ pub async fn machine_offers(
     region_id: String,
     spot: bool,
 ) -> RegaResult<Vec<MachineOffer>> {
-    let provider = registry::entry(&provider_id)?.provider();
+    let entry = registry::entry(&provider_id)?;
+    let provider = entry.provider();
     let types = provider.machine_types();
     let prices = try_join_all(
         types
@@ -178,18 +213,145 @@ fn choices_view(candidates: region::Candidates) -> RegionChoices {
 }
 
 pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary>> {
-    let provider = registry::entry(&provider_id)?.provider();
-    let (machines, regions) = futures::try_join!(provider.list_machines(), provider.regions())?;
-    let region_name = |id: &str| {
-        regions
-            .iter()
-            .find(|r| r.id == id)
-            .map_or_else(|| id.to_string(), |r| r.display_name.clone())
-    };
+    let entry = registry::entry(&provider_id)?;
+    let provider = entry.provider();
+    let (machines, regions) = futures::join!(provider.list_machines(), provider.regions());
+    // Region names are only for display; ids do when they can't be read.
+    let (machines, regions) = (machines?, regions.unwrap_or_default());
+    let types = provider.machine_types();
     Ok(machines
         .into_iter()
-        .map(|m| summary(m, region_name))
+        .map(|m| summary(m, &types, |id| region_name(&regions, id)))
         .collect())
+}
+
+fn region_name(regions: &[Region], id: &str) -> String {
+    regions
+        .iter()
+        .find(|r| r.id == id)
+        .map_or_else(|| id.to_string(), |r| r.display_name.clone())
+}
+
+/// One machine as the UI shows it, after an action changed it. The action
+/// already happened, so a region list that can't be read only costs the
+/// region's display name.
+async fn view(provider: &dyn CloudProvider, m: Machine) -> RegaResult<MachineSummary> {
+    let regions = provider.regions().await.unwrap_or_default();
+    Ok(summary(m, &provider.machine_types(), |id| {
+        region_name(&regions, id)
+    }))
+}
+
+/// Creates a machine and starts it. Takes several minutes: Windows has to
+/// boot and make its Administrator password first.
+pub async fn launch_machine(
+    provider_id: String,
+    name: String,
+    region_id: String,
+    type_name: String,
+    spot: bool,
+    wireguard: bool,
+) -> RegaResult<MachineSummary> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("give the machine a name".into());
+    }
+    let entry = registry::entry(&provider_id)?;
+    let provider = entry.provider();
+    let machine = provider
+        .launch(&LaunchRequest {
+            name,
+            region_id,
+            type_name,
+            disk_gib: DEFAULT_DISK_GIB,
+            spot,
+            wireguard,
+        })
+        .await?;
+    view(provider, machine).await
+}
+
+pub async fn start_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
+    let entry = registry::entry(&provider_id)?;
+    let machine = entry.provider().start(&machine_id).await?;
+    view(entry.provider(), machine).await
+}
+
+pub async fn stop_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
+    let entry = registry::entry(&provider_id)?;
+    let machine = entry.provider().stop(&machine_id).await?;
+    view(entry.provider(), machine).await
+}
+
+/// Changes a stopped machine's type (Switch to GPU / Switch to CPU).
+pub async fn resize_machine(
+    provider_id: String,
+    machine_id: String,
+    type_name: String,
+) -> RegaResult<MachineSummary> {
+    let entry = registry::entry(&provider_id)?;
+    let machine = entry.provider().resize(&machine_id, &type_name).await?;
+    view(entry.provider(), machine).await
+}
+
+/// Deletes the machine and its disks. The game library in object storage
+/// stays.
+pub async fn destroy_machine(provider_id: String, machine_id: String) -> RegaResult<()> {
+    let entry = registry::entry(&provider_id)?;
+    Ok(entry.provider().destroy(&machine_id).await?)
+}
+
+/// Leftover resources in the account that belong to no machine.
+pub async fn list_orphans(provider_id: String) -> RegaResult<Vec<OrphanSummary>> {
+    let entry = registry::entry(&provider_id)?;
+    let provider = entry.provider();
+    let (orphans, regions) = futures::join!(provider.orphans(), provider.regions());
+    let (orphans, regions) = (orphans?, regions.unwrap_or_default());
+    Ok(orphans
+        .into_iter()
+        .map(|o| orphan_view(o, &regions))
+        .collect())
+}
+
+/// Deletes the given leftovers, skipping any that a machine has claimed
+/// since they were listed.
+pub async fn delete_orphans(provider_id: String, orphans: Vec<OrphanSummary>) -> RegaResult<()> {
+    let entry = registry::entry(&provider_id)?;
+    let orphans: Vec<Orphan> = orphans.into_iter().map(orphan_from).collect();
+    Ok(entry.provider().delete_orphans(&orphans).await?)
+}
+
+fn orphan_view(o: Orphan, regions: &[Region]) -> OrphanSummary {
+    OrphanSummary {
+        kind: match o.kind {
+            ResourceKind::Instance => OrphanKind::Instance,
+            ResourceKind::Volume => OrphanKind::Volume,
+            ResourceKind::SecurityGroup => OrphanKind::SecurityGroup,
+            ResourceKind::KeyPair => OrphanKind::KeyPair,
+            ResourceKind::Alarm => OrphanKind::Alarm,
+        },
+        region_name: region_name(regions, &o.region_id),
+        id: o.id,
+        region_id: o.region_id,
+        machine_id: o.machine_id,
+        name: o.name,
+    }
+}
+
+fn orphan_from(o: OrphanSummary) -> Orphan {
+    Orphan {
+        kind: match o.kind {
+            OrphanKind::Instance => ResourceKind::Instance,
+            OrphanKind::Volume => ResourceKind::Volume,
+            OrphanKind::SecurityGroup => ResourceKind::SecurityGroup,
+            OrphanKind::KeyPair => ResourceKind::KeyPair,
+            OrphanKind::Alarm => ResourceKind::Alarm,
+        },
+        id: o.id,
+        region_id: o.region_id,
+        machine_id: o.machine_id,
+        name: o.name,
+    }
 }
 
 fn offer(t: &MachineType, price_per_hour: Option<f64>) -> MachineOffer {
@@ -214,10 +376,32 @@ fn option(c: RegionCandidate) -> RegionOption {
     }
 }
 
-fn summary(m: Machine, region_name: impl Fn(&str) -> String) -> MachineSummary {
+/// Where "Switch to GPU/CPU" goes: a CPU machine to the first GPU type, a
+/// GPU machine to the smallest CPU type that runs Windows comfortably.
+fn switch_type(m: &Machine, types: &[MachineType]) -> Option<String> {
+    if m.spot {
+        return None;
+    }
+    let target = if m.machine_type.is_gpu() {
+        types
+            .iter()
+            .filter(|t| !t.is_gpu() && t.spec.ram_gib >= 4.0)
+            .min_by(|a, b| a.spec.ram_gib.total_cmp(&b.spec.ram_gib))
+    } else {
+        types.iter().find(|t| t.is_gpu())
+    };
+    target.map(|t| t.type_name.clone())
+}
+
+fn summary(
+    m: Machine,
+    types: &[MachineType],
+    region_name: impl Fn(&str) -> String,
+) -> MachineSummary {
     let mut o = offer(&m.machine_type, None);
     o.disk_gib = m.disk_gib;
     MachineSummary {
+        switch_type: switch_type(&m, types),
         offer: o,
         status: match m.state {
             MachineState::Pending => MachineStatus::Pending,
@@ -227,6 +411,8 @@ fn summary(m: Machine, region_name: impl Fn(&str) -> String) -> MachineSummary {
             MachineState::Terminated => MachineStatus::Terminated,
         },
         region_name: region_name(&m.region_id),
+        busy: m.busy,
+        starting: m.starting,
         id: m.id,
         name: m.name,
         region_id: m.region_id,
@@ -237,16 +423,26 @@ fn summary(m: Machine, region_name: impl Fn(&str) -> String) -> MachineSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    /// Every test runs on the same demo provider.
+    fn demo() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| registry::set(vec![registry::Entry::demo("tests")]));
+    }
 
     #[test]
-    fn aws_is_listed() {
-        let providers = list_providers();
-        assert_eq!(providers[0].id, "aws");
-        assert_eq!(providers[0].name, "AWS");
+    fn demo_entries_say_why() {
+        let p = info(&registry::Entry::demo("No AWS credentials found."));
+        assert_eq!(p.id, "aws");
+        assert_eq!(p.name, "AWS");
+        assert!(p.demo);
+        assert_eq!(p.notice.as_deref(), Some("No AWS credentials found."));
     }
 
     #[tokio::test]
     async fn spot_offers_only_gpu_types() {
+        demo();
         let all = machine_offers("aws".into(), "eu-north-1".into(), false)
             .await
             .unwrap();
@@ -264,6 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn region_choices_are_filled() {
+        demo();
         let c = region_choices("aws".into(), None, false).await.unwrap();
         assert!(c.recommended.is_some());
         assert!(c.unreachable.is_empty());
@@ -287,31 +484,124 @@ mod tests {
         assert_eq!(view.unreachable, vec!["Asia Pacific (Tokyo)".to_string()]);
     }
 
-    #[test]
-    fn machines_carry_their_region_name() {
-        let m = Machine {
+    fn machine(type_index: usize, spot: bool) -> Machine {
+        Machine {
             id: "i-1".into(),
             name: "Gaming".into(),
             region_id: "us-east-1".into(),
-            machine_type: rega_core::aws::catalog().remove(0),
+            machine_type: rega_core::aws::catalog().remove(type_index),
             disk_gib: 128,
-            spot: false,
+            spot,
             state: MachineState::Running,
-        };
+            busy: false,
+            starting: false,
+        }
+    }
+
+    #[test]
+    fn machines_carry_their_region_name() {
         let names = |id: &str| format!("name of {id}");
-        let s = summary(m, names);
+        let s = summary(machine(0, false), &[], names);
         assert_eq!(s.region_name, "name of us-east-1");
         assert!(matches!(s.status, MachineStatus::Running));
     }
 
+    #[test]
+    fn switching_goes_between_gpu_and_a_roomy_cpu_type() {
+        let types = rega_core::aws::catalog();
+        let gpu = machine(0, false);
+        assert_eq!(switch_type(&gpu, &types).as_deref(), Some("t3.medium"));
+        let cpu = machine(1, false);
+        assert_eq!(switch_type(&cpu, &types).as_deref(), Some("g4dn.xlarge"));
+        assert_eq!(switch_type(&machine(0, true), &types), None);
+    }
+
+    #[tokio::test]
+    async fn machine_actions_go_through_the_provider() {
+        demo();
+        let m = launch_machine(
+            "aws".into(),
+            " Bridge test ".into(),
+            "eu-north-1".into(),
+            "t3.medium".into(),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(m.name, "Bridge test");
+        assert_eq!(m.region_name, "Europe (Stockholm)");
+        assert_eq!(m.switch_type.as_deref(), Some("g4dn.xlarge"));
+        let m = stop_machine("aws".into(), m.id).await.unwrap();
+        assert!(matches!(m.status, MachineStatus::Stopped));
+        let m = resize_machine("aws".into(), m.id, "g4dn.xlarge".into())
+            .await
+            .unwrap();
+        assert_eq!(m.offer.gpu_model.as_deref(), Some("NVIDIA T4"));
+        let m = start_machine("aws".into(), m.id).await.unwrap();
+        assert!(matches!(m.status, MachineStatus::Running));
+        destroy_machine("aws".into(), m.id.clone()).await.unwrap();
+        let left = list_machines("aws".into()).await.unwrap();
+        assert!(left.iter().all(|x| x.id != m.id));
+    }
+
+    #[tokio::test]
+    async fn a_machine_needs_a_name() {
+        demo();
+        let err = launch_machine(
+            "aws".into(),
+            "  ".into(),
+            "eu-north-1".into(),
+            "t3.medium".into(),
+            false,
+            true,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(err.message, "give the machine a name");
+    }
+
+    #[test]
+    fn orphans_round_trip_through_the_view() {
+        let regions = [rega_core::aws::region("eu-north-1", "Europe (Stockholm)")];
+        for kind in [
+            ResourceKind::Instance,
+            ResourceKind::Volume,
+            ResourceKind::SecurityGroup,
+            ResourceKind::KeyPair,
+            ResourceKind::Alarm,
+        ] {
+            let o = Orphan {
+                kind,
+                id: "x-1".into(),
+                region_id: "eu-north-1".into(),
+                machine_id: Some("m".into()),
+                name: Some("rega-m".into()),
+            };
+            let view = orphan_view(o.clone(), &regions);
+            assert_eq!(view.region_name, "Europe (Stockholm)");
+            assert_eq!(orphan_from(view), o);
+        }
+    }
+
+    #[tokio::test]
+    async fn demo_has_no_orphans() {
+        demo();
+        assert!(list_orphans("aws".into()).await.unwrap().is_empty());
+        delete_orphans("aws".into(), vec![]).await.unwrap();
+    }
+
     #[tokio::test]
     async fn errors_are_plain_messages() {
+        demo();
         let err = list_machines("nope".into()).await.err().unwrap();
         assert_eq!(err.message, "unknown provider nope");
     }
 
     #[tokio::test]
     async fn demo_latency_never_changes() {
+        demo();
         assert!(!probe_latency("aws".into()).await.unwrap());
     }
 }

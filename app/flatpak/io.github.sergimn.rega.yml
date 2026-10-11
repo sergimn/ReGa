@@ -11,7 +11,25 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
+  # AWS credentials and profiles, read by the app and by Terraform. The SSO
+  # token cache is writable so an SSO sign-in can refresh its token.
+  - --filesystem=~/.aws:ro
+  - --filesystem=~/.aws/sso/cache:create
 modules:
+  # The app runs Terraform to create, change and destroy machines. Keep the
+  # version in step with .github/workflows/terraform.yml.
+  - name: terraform
+    buildsystem: simple
+    only-arches:
+      - x86_64
+    build-commands:
+      - install -Dm755 terraform /app/bin/terraform
+    sources:
+      - type: archive
+        url: https://releases.hashicorp.com/terraform/1.16.5/terraform_1.16.5_linux_amd64.zip
+        sha256: 2bc2fcfff033265c9e02ca0351f01794eb122f62a9b2a49a3294b9e49eaab5e4
+        # The zip has the binary at its root, with no folder to strip.
+        strip-components: 0
   - name: rega
     buildsystem: simple
     build-commands:

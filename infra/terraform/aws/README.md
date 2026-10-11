@@ -4,6 +4,10 @@ One Terraform root module = one ReGa machine: a Windows Server 2022 instance,
 its security group, key pair, a separate D: game library volume and an idle
 backstop alarm. The app runs one state per machine.
 
+The desktop app compiles this module in (`app/core/src/terraform.rs` lists
+every file, and a test fails when one is missing), so a change here ships
+with the next app build and runs the app's CI too.
+
 ## State
 
 State is kept in `rega-tfstate-<account-id>` (eu-north-1), which the app

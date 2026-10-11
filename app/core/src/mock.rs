@@ -10,7 +10,7 @@ use async_trait::async_trait;
 
 use crate::aws;
 use crate::model::{
-    LaunchRequest, Machine, MachineState, MachineType, Price, Region, StorageLocation,
+    LaunchRequest, Machine, MachineState, MachineType, Orphan, Price, Region, StorageLocation,
 };
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 
@@ -32,6 +32,7 @@ pub struct MockProvider {
     types: Vec<MachineType>,
     regions: Vec<MockRegion>,
     machines: Mutex<Vec<Machine>>,
+    orphans: Mutex<Vec<Orphan>>,
     next_id: Mutex<u32>,
 }
 
@@ -48,8 +49,15 @@ impl MockProvider {
             types,
             regions,
             machines: Mutex::new(Vec::new()),
+            orphans: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
         }
+    }
+
+    /// Pretends these resources were left behind in the account.
+    pub fn with_orphans(self, orphans: Vec<Orphan>) -> Self {
+        *self.orphans.lock().unwrap() = orphans;
+        self
     }
 
     /// AWS-shaped sample data. Prices are illustrative, not live.
@@ -254,6 +262,8 @@ impl CloudProvider for MockProvider {
             disk_gib: request.disk_gib,
             spot: request.spot,
             state: MachineState::Running,
+            busy: false,
+            starting: false,
         };
         *next_id += 1;
         self.machines.lock().unwrap().push(machine.clone());
@@ -319,6 +329,18 @@ impl CloudProvider for MockProvider {
         if machines.len() == before {
             return Err(ProviderError::UnknownMachine(machine_id.into()));
         }
+        Ok(())
+    }
+
+    async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {
+        Ok(self.orphans.lock().unwrap().clone())
+    }
+
+    async fn delete_orphans(&self, orphans: &[Orphan]) -> ProviderResult<()> {
+        self.orphans
+            .lock()
+            .unwrap()
+            .retain(|o| !orphans.contains(o));
         Ok(())
     }
 }

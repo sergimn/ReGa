@@ -229,19 +229,7 @@ void main() {
   });
 
   testWidgets('existing machines are listed', (tester) async {
-    final backend = FakeBackend(
-      machines: const [
-        MachineSummary(
-          id: 'i-1',
-          name: 'Gaming',
-          regionId: 'eu-north-1',
-          regionName: 'Europe (Stockholm)',
-          offer: gpuOffer,
-          spot: false,
-          status: MachineStatus.stopped,
-        ),
-      ],
-    );
+    final backend = FakeBackend(machines: const [stockholmMachine]);
     await tester.pumpWidget(RegaApp(backend: backend));
     await tester.pumpAndSettle();
 

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::model::{LaunchRequest, Machine, MachineType, Price, Region, StorageLocation};
+use crate::model::{LaunchRequest, Machine, MachineType, Orphan, Price, Region, StorageLocation};
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ProviderError {
@@ -72,4 +72,11 @@ pub trait CloudProvider: Send + Sync {
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine>;
 
     async fn destroy(&self, machine_id: &str) -> ProviderResult<()>;
+
+    /// Resources tagged `Project=ReGa`, in every region, that belong to no
+    /// machine in the state store.
+    async fn orphans(&self) -> ProviderResult<Vec<Orphan>>;
+
+    /// Deletes those of `orphans` that are still orphans, instances first.
+    async fn delete_orphans(&self, orphans: &[Orphan]) -> ProviderResult<()>;
 }

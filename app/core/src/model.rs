@@ -77,6 +77,12 @@ pub struct Machine {
     pub disk_gib: u32,
     pub spot: bool,
     pub state: MachineState,
+    /// A change to it is running, on this device or another one. The UI
+    /// leaves it alone until that ends.
+    pub busy: bool,
+    /// That change is bringing it up, though its instance may still read
+    /// stopped. ReGa brings up one machine at a time, so no other starts.
+    pub starting: bool,
 }
 
 /// What the user asked for when launching a machine.
@@ -96,6 +102,31 @@ pub struct StorageLocation {
     pub state_bucket: String,
     pub library_bucket: String,
     pub region_id: String,
+}
+
+/// Kinds of tagged resources the app looks after, in the order they are
+/// deleted: an instance holds its volumes and security group until it's gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ResourceKind {
+    Instance,
+    Volume,
+    SecurityGroup,
+    KeyPair,
+    Alarm,
+}
+
+/// A resource tagged `Project=ReGa` that no machine accounts for, such as
+/// the leftovers of a failed launch or of a machine whose state was lost.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Orphan {
+    pub kind: ResourceKind,
+    /// The provider's id, such as `i-0abc` or a key pair name.
+    pub id: String,
+    pub region_id: String,
+    /// The machine it was made for (the `ReGaMachine` tag), when tagged.
+    pub machine_id: Option<String>,
+    /// Its `Name` tag, for display.
+    pub name: Option<String>,
 }
 
 /// System disk (C:) size offered by default, in GiB. The game library lives

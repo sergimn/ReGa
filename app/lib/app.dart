@@ -31,22 +31,68 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  late final List<ProviderInfo> _providers = widget.backend.listProviders();
+  late Future<List<ProviderInfo>> _providers = widget.backend
+      .connectProviders();
   int _selected = 0;
+
+  void _reconnect() {
+    final providers = widget.backend.connectProviders();
+    setState(() {
+      _providers = providers;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (_providers.isEmpty) {
+    return FutureBuilder<List<ProviderInfo>>(
+      future: _providers,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${snapshot.error}'),
+                  TextButton(onPressed: _reconnect, child: const Text('Retry')),
+                ],
+              ),
+            ),
+          );
+        }
+        final providers = snapshot.data;
+        if (providers == null) {
+          return const Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Signing in…'),
+                ],
+              ),
+            ),
+          );
+        }
+        return _shell(providers);
+      },
+    );
+  }
+
+  Widget _shell(List<ProviderInfo> providers) {
+    if (providers.isEmpty) {
       return const Scaffold(
         body: Center(child: Text('No platforms available')),
       );
     }
-    final provider = _providers[_selected];
+    final selected = _selected.clamp(0, providers.length - 1);
+    final provider = providers[selected];
     return Scaffold(
       body: Row(
         children: [
           NavigationRail(
-            selectedIndex: _selected,
+            selectedIndex: selected,
             labelType: NavigationRailLabelType.all,
             leading: Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -64,7 +110,7 @@ class _HomeShellState extends State<HomeShell> {
               ),
             ),
             destinations: [
-              for (final p in _providers)
+              for (final p in providers)
                 NavigationRailDestination(
                   icon: const Icon(Icons.cloud_outlined),
                   selectedIcon: const Icon(Icons.cloud),
@@ -76,9 +122,11 @@ class _HomeShellState extends State<HomeShell> {
           const VerticalDivider(width: 1),
           Expanded(
             child: ProviderPage(
-              key: ValueKey(provider.id),
+              // A reconnect can turn demo data into a real account.
+              key: ValueKey('${provider.id}-${provider.demo}'),
               backend: widget.backend,
               provider: provider,
+              onReconnect: _reconnect,
             ),
           ),
         ],
