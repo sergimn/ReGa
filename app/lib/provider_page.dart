@@ -279,6 +279,7 @@ class _ProviderPageState extends State<ProviderPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return ListView(
+      key: const ValueKey('provider-page'),
       padding: const EdgeInsets.all(24),
       children: [
         Text(widget.provider.name, style: theme.textTheme.headlineMedium),
