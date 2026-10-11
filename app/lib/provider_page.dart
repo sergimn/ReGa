@@ -136,7 +136,10 @@ class _ProviderPageState extends State<ProviderPage> {
       final generation = _generation;
       final machines = await _backend.listMachines(_id);
       if (!mounted || generation != _generation) return;
-      setState(() => _machines = machines);
+      setState(() {
+        _machines = machines;
+        _machinesError = null;
+      });
       _pollWhileBusy();
       if (!machines.any((m) => m.busy)) {
         // Done: quotas and leftovers may have changed with it.
