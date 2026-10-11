@@ -187,4 +187,3 @@ variable "idle_cpu_percent" {
   type        = number
   default     = 5
 }
-

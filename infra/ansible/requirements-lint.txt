@@ -1,0 +1,5 @@
+# CI's lint job: the controller packages plus ansible-lint. CI installs
+# requirements-lint.lock, generated from this file with hashes: see
+# CONTRIBUTING.md at the top of the repo.
+-r requirements.txt
+ansible-lint==26.8.0

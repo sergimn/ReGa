@@ -16,23 +16,31 @@ on:
 permissions:
   contents: read
 
+env:
+  # renovate: datasource=nuget depName=Pester registryUrl=https://www.powershellgallery.com/api/v2/
+  PESTER_VERSION: 5.7.1
+  # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
+  PSSCRIPTANALYZER_VERSION: 1.24.0
+
 jobs:
   lint:
     name: Lint and unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: infra/ansible
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.12"
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12.14"
 
       - name: Install Ansible
         run: |
-          pip install -r requirements.txt ansible-lint==26.9.0
+          pip install -r requirements-lint.lock
           ansible-galaxy collection install -r requirements.yml
 
       - name: ansible-lint
@@ -45,8 +53,8 @@ jobs:
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Force
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force
 
       - name: PSScriptAnalyzer
         shell: pwsh
@@ -70,14 +78,16 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Pester (Windows PowerShell 5.1)
         shell: powershell
         run: |
           Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck -Scope CurrentUser
-          Import-Module Pester -RequiredVersion 5.7.1
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
           $result = Invoke-Pester infra/ansible/tests/pester -Output Detailed -PassThru
           if ($result.FailedCount -gt 0) { exit 1 }
 
@@ -106,7 +116,7 @@ jobs:
 
       # Hosted runners have no nested virtualisation, so WSL 1, which shares
       # the host's network: 127.0.0.1:5986 is the runner's WinRM listener.
-      - uses: Vampire/setup-wsl@v4
+      - uses: Vampire/setup-wsl@79d85ead05e70e4ba1e1e83367db6e0ccb89b578 # v4.1.1
         with:
           distribution: Ubuntu-24.04
           wsl-version: 1
@@ -118,7 +128,7 @@ jobs:
           set -euo pipefail
           cp -r infra/ansible ~/ansible
           python3 -m venv ~/venv
-          ~/venv/bin/pip install --quiet -r ~/ansible/requirements.txt
+          ~/venv/bin/pip install --quiet -r ~/ansible/requirements.lock
           ~/venv/bin/ansible-galaxy collection install -r ~/ansible/requirements.yml
           cat > ~/ansible/inventory.yml <<INVENTORY
           rega:

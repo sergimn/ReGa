@@ -19,6 +19,8 @@ you with Moonlight and Sunshine, and stops it when you stop playing.
 | `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak ([how to install it](app/flatpak/README.md#install)). See [app/README.md](app/README.md). |
 | `infra/` | Terraform (and later Ansible) that creates and configures the cloud machine. |
 
+Checks, pinned versions and dependency updates: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Colour palette
 
 Cool tones only: teal for actions, indigo and violet for accents, on navy.
