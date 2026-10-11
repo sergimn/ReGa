@@ -74,7 +74,7 @@ jobs:
           name: rega-linux-x64
           path: app
       - run: mkdir -p build/linux/x64/release && tar -C build/linux/x64/release -xzf rega-linux-x64.tar.gz
-      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@v6.8
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6.8
         with:
           bundle: rega.flatpak
           manifest-path: app/flatpak/io.github.sergimn.rega.yml
