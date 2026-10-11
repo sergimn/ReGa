@@ -1,6 +1,8 @@
 ---
-rega_sunshine_version: 2026.914.233613
-rega_sunshine_msi_url: https://github.com/LizardByte/Sunshine/releases/download/v{{ rega_sunshine_version }}/Sunshine-Windows-AMD64-installer.msi
+# The release tag. Renovate updates the tag and the SHA-256 together.
+# renovate: datasource=github-release-attachments depName=LizardByte/Sunshine
+rega_sunshine_version: v2026.914.233613
+rega_sunshine_msi_url: https://github.com/LizardByte/Sunshine/releases/download/{{ rega_sunshine_version }}/Sunshine-Windows-AMD64-installer.msi
 rega_sunshine_msi_sha256: 1d7fed8beecd5889dc7ff14cf9f42d6d38f37c3066c13c6c2a5f4e91847e0ccf
 rega_sunshine_path: C:\Program Files\Sunshine
 
