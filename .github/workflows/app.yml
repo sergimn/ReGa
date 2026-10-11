@@ -22,6 +22,8 @@ defaults:
 env:
   # renovate: datasource=flutter-version depName=flutter
   FLUTTER_VERSION: 3.47.7
+  # renovate: datasource=rust-version depName=rust
+  RUST_VERSION: 1.98.1
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -33,10 +35,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
-        with:
-          toolchain: 1.98.1
-          components: rustfmt, clippy
+      # rustup comes with the runner image.
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy --no-self-update
+          rustup default "$RUST_VERSION"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app
@@ -58,9 +61,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
-        with:
-          toolchain: 1.98.1
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
       # cargokit builds the Rust core inside Flutter's build folder.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
