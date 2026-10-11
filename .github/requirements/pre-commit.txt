@@ -1,0 +1,3 @@
+# pre-commit for CI (.github/workflows/pre-commit.yml). CI installs
+# pre-commit.lock, generated from this file with hashes: see CONTRIBUTING.md.
+pre-commit==4.6.2

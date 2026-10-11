@@ -20,11 +20,15 @@ app runs it as soon as EC2 has the Windows password. By hand:
 
 ```sh
 cd infra/ansible
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements.lock
 .venv/bin/ansible-galaxy collection install -r requirements.yml
 cp inventory.example.yml inventory.yml   # fill in the IP and password
 .venv/bin/ansible-playbook -i inventory.yml site.yml
 ```
+
+`requirements.lock` pins every Python package Ansible needs, with its hashes.
+It's generated from `requirements.txt`; see `CONTRIBUTING.md` at the top of
+the repo to change a version.
 
 From Terraform it needs:
 

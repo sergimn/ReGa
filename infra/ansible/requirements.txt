@@ -1,3 +1,5 @@
 # Controller side (the desktop app bundles these; CI installs them).
-ansible-core==2.21.5
+# pip installs requirements.lock, generated from this file with hashes: see
+# CONTRIBUTING.md at the top of the repo.
+ansible-core==2.21.4
 pywinrm==0.5.0
