@@ -305,7 +305,9 @@ Describe 'Invoke-LibraryUpload' {
     $snapshot.apps['620'] = 'Portal 2'
     $snapshot.stamps['620'] = '1:1'
     $snapshot.builds['620'] = '200'
-    Write-JsonFile $marker ([pscustomobject]@{ restored_utc = '2026-10-11T10:00:00Z'; apps = $snapshot.apps; stamps = $snapshot.stamps; builds = $snapshot.builds })
+    Start-Sleep -Milliseconds 20
+    $restoredUtc = ConvertTo-IsoString ([datetime]::UtcNow)
+    Write-JsonFile $marker ([pscustomobject]@{ restored_utc = $restoredUtc; apps = $snapshot.apps; stamps = $snapshot.stamps; builds = $snapshot.builds })
     # Then Portal updates to build 101 and Portal 2 is uninstalled.
     Start-Sleep -Milliseconds 20
     New-Manifest (Join-Path $apps 'appmanifest_400.acf') '400' 'Portal' '101'
@@ -320,18 +322,15 @@ Describe 'Invoke-LibraryUpload' {
     }
   }
 
-  It 'never deletes across the whole library' {
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @('steamapps/downloading/*')).Ok | Should -BeTrue
-    $root = @($calls | Where-Object { $_ -like "s3 sync $library s3://b/steam-library/ *" })
-    $root.Count | Should -Be 1
-    $root[0] | Should -Not -Match '--delete'
-    foreach ($pattern in @('steamapps/common/\*', 'steamapps/appmanifest_\*', 'steamapps/workshop/\*', 'steamapps/downloading/\*')) {
-      $root[0] | Should -Match "--exclude $pattern"
-    }
+  It 'never syncs or deletes across the whole library' {
+    Set-Content -LiteralPath (Join-Path $library 'libraryfolder.vdf') -Value 'vdf'
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match ' s3://b/steam-library/ ' -or $_ -match ' s3://b/steam-library/$' }).Count | Should -Be 0
+    $calls | Should -Contain "s3 cp $(Join-Path $library 'libraryfolder.vdf') s3://b/steam-library/libraryfolder.vdf --region eu-north-1 --only-show-errors"
   }
 
   It 'uploads only the changed game, its files before its manifest' {
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
     $folder = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match 'steamapps/common/Portal/ .*--delete$' })
     $manifest = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match '^s3 cp .*appmanifest_400\.acf s3://b/steam-library/steamapps/appmanifest_400\.acf' })
     $folder | Should -BeGreaterOrEqual 0
@@ -340,26 +339,26 @@ Describe 'Invoke-LibraryUpload' {
   }
 
   It 'deletes the uninstalled game, manifest first' {
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target | Out-Null
     $removals = @($calls | Where-Object { $_ -match '^s3 rm .*(620|Portal 2)' })
     $removals[0] | Should -Be 's3 rm s3://b/steam-library/steamapps/appmanifest_620.acf --region eu-north-1 --only-show-errors'
     $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
   }
 
   It 'records what it uploaded so the next run does nothing' {
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target | Out-Null
     $saved = Read-JsonFile $marker
     (ConvertTo-AppTable $saved.apps).Keys | Sort-Object | Should -Be @('400', '70')
     (ConvertTo-AppTable $saved.builds)['400'] | Should -Be '101'
     $saved.restored_utc | Should -Not -BeNullOrEmpty
     $calls.Clear()
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
-    @($calls | Where-Object { $_ -notlike "s3 sync $library *" }).Count | Should -Be 0
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
+    $calls.Count | Should -Be 0
   }
 
   It 'skips a game another machine uploaded a different build of' {
     $script:s3Build = '102'
-    $result = Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()
+    $result = Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target
     $result.Ok | Should -BeTrue
     $result.Skipped | Should -Be @('400')
     @($calls | Where-Object { $_ -match 'Portal/|appmanifest_400' }).Count | Should -Be 0
@@ -367,35 +366,54 @@ Describe 'Invoke-LibraryUpload' {
 
   It 'keeps the manifest back and retries when the folder upload fails' {
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); if ($Arguments -contains '--delete') { return 1 } ; return 0 }
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeFalse
     @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_400' }).Count | Should -Be 0
     (ConvertTo-AppTable (Read-JsonFile $marker).builds)['400'] | Should -Be '100'
   }
 
   It 'keeps a removal to retry when it fails' {
     Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments[1] -eq 'rm') { return 1 } ; return 0 }
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeFalse
     (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeTrue
   }
 
   It 'uploads nothing from a disk that was not restored' {
     Remove-Item -LiteralPath $marker
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeFalse
     $calls.Count | Should -Be 0
   }
 
-  It 'uploads every game before a stop, changed or not' {
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() -All).Ok | Should -BeTrue
+  It 'uploads a game this disk wrote into before a stop, even with the same manifest' {
+    Set-Content -LiteralPath (Join-Path $apps 'common/Half-Life/save.dat') -Value 'progress'
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
     @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_70\.acf' }).Count | Should -Be 1
   }
 
+  It 'leaves a game this disk never touched alone, even before a stop' {
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'Half-Life|appmanifest_70' }).Count | Should -Be 0
+  }
+
+  It 'does not upload a game whose manifest Steam merely rewrote' {
+    (Get-Item -LiteralPath (Join-Path $apps 'appmanifest_70.acf')).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(1)
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'Half-Life|appmanifest_70' }).Count | Should -Be 0
+  }
+
+  It 'reports the games that failed' {
+    Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments -contains '--delete') { return 2 } ; return 0 }
+    $result = Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target
+    $result.Ok | Should -BeFalse
+    $result.Failed | Should -Be @('400')
+  }
+
   It 'sees a workshop change as a change' {
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
     New-Item -ItemType Directory -Path (Join-Path $apps 'workshop/content/70/123') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $apps 'workshop/appworkshop_70.acf') -Value 'items'
     $calls.Clear()
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -match 'steamapps/workshop/content/70/ .*--delete$' }).Count | Should -Be 1
     @($calls | Where-Object { $_ -match '^s3 cp .*appworkshop_70\.acf' }).Count | Should -Be 1
   }
@@ -405,7 +423,7 @@ Describe 'Invoke-LibraryUpload' {
       $build = if ($Uri -like '*appmanifest_620.acf') { '201' } else { $script:s3Build }
       [pscustomobject]@{ Ok = $true; Found = $true; Text = "`"buildid`"`t`t`"$build`"" }
     }
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeTrue
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -match '^s3 rm .*(620|Portal 2)' }).Count | Should -Be 0
     (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeFalse
   }
@@ -415,11 +433,11 @@ Describe 'Invoke-LibraryUpload' {
     New-Manifest (Join-Path $apps 'appmanifest_900.acf') '900' 'New Game' '1'
     Mock Get-S3Text -ModuleName ReGa.Agent { [pscustomobject]@{ Ok = $true; Found = $false; Text = '' } }
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); if ($Arguments -contains '--delete') { return 1 } ; return 0 }
-    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @()).Ok | Should -BeFalse
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeFalse
     Remove-Item -LiteralPath (Join-Path $apps 'appmanifest_900.acf')
     $calls.Clear()
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); return 0 }
-    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target | Out-Null
     $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/New Game/ --recursive --region eu-north-1 --only-show-errors'
   }
 }

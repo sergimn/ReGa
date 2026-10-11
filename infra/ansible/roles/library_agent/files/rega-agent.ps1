@@ -79,7 +79,7 @@ function Initialize-LibraryFolder {
 function Invoke-Upload {
   param([switch]$All)
   return Invoke-LibraryUpload -AwsPath $config.aws_path -LibraryPath $libraryPath -MarkerPath $marker `
-    -Target (Get-Target) -Excludes @($config.library.excludes) -All:$All
+    -Target (Get-Target) -All:$All
 }
 
 function Invoke-FinalSync {
@@ -88,10 +88,12 @@ function Invoke-FinalSync {
   # was written after the machine's last start.
   $synced = $false
   $skipped = @()
+  $failed = @()
   try {
     $upload = Invoke-Upload -All
     $synced = $upload.Ok
     $skipped = @($upload.Skipped)
+    $failed = @($upload.Failed)
   } catch {
     Write-ReGaLog "Final upload failed: $_" 'error'
   }
@@ -106,6 +108,8 @@ function Invoke-FinalSync {
       synced       = $synced
       # Games this disk didn't upload because S3 has another machine's build.
       skipped_apps = $skipped
+      # Games that didn't upload; the disk must be kept.
+      failed_apps  = $failed
       library_uri  = $target.Uri
     }
     $file = Join-Path $stateDir 'final-sync.json'
@@ -257,6 +261,20 @@ switch ($Action) {
       }
       Write-ReGaLog "No stream, download or remote session for $($decision.IdleMinutes) minutes; syncing and stopping."
       $synced = Invoke-FinalSync
+      if ((Get-Signals).Active) {
+        # Someone connected during the upload, which can take minutes.
+        Write-ReGaLog 'Activity during the final upload; not stopping.'
+        Save-State @{ last_active_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) }
+        # The record would vouch for a disk that keeps changing, for example
+        # if the CloudWatch alarm stops the machine later.
+        try {
+          $target = Get-Target
+          Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'rm', (Get-FinalSyncKey $target), '--region', $target.Region, '--only-show-errors') | Out-Null
+        } catch {
+          Write-ReGaLog "Could not remove the final-sync record: $_" 'warning'
+        }
+        return
+      }
       if (-not $synced) { Write-ReGaLog 'Stopping without a final upload; the app keeps the library disk.' 'warning' }
       Save-State @{ stopped_utc = (ConvertTo-IsoString ([datetime]::UtcNow)); final_sync = $synced }
       # An OS shutdown stops an on-demand instance (and ends a spot one).

@@ -91,25 +91,35 @@ Any WinRM shell keeps the machine up, so the app should not poll the agent
 over WinRM while waiting for the idle stop.
 
 Every machine in the account shares the one library, so an upload never
-mirrors deletes across the whole library. During a session it handles the
-games whose Steam manifests changed since the restore or the last upload;
-before a stop it handles every installed game, so saves and mods inside game
-folders are kept. For each one it mirrors the game's folder and workshop
-content (so files an update removed go away) and only then uploads the
-manifest, so S3 never has a manifest ahead of its files. It deletes from S3
-only the games whose manifest this disk had and lost. A game is left alone,
-both ways, when S3 holds a build another machine uploaded since. Nothing is
-uploaded from a disk that wasn't restored from S3 this session. Two machines
-uploading the same game at the same moment can still interleave; the last
-manifest wins.
+mirrors deletes across the whole library, and it uploads a game only when
+this disk installed it, updated it or wrote files into its folders since the
+restore or the game's last upload. During a session it looks at the games
+whose Steam manifests changed; before a stop it looks at all of them, so
+saves and mods written into game folders are kept. For each one it mirrors
+the game's folder and workshop content (so files an update removed go away)
+and only then uploads the manifest, so S3 never has a manifest ahead of its
+files. It deletes from S3 only the games whose manifest this disk had and
+lost. A game is left alone, both ways, when S3 holds a build another machine
+uploaded since. Only `steamapps/common`, the workshop and the manifests are
+kept; soundtracks in `steamapps/music` are not.
+
+With more than one machine: an uninstall sticks only if no other machine
+still has the game, because a machine that has it uploads it again at its
+next stop. Two machines changing the same game in the same session can still
+overwrite each other's files; the last upload wins.
+
+Nothing is uploaded from a disk that wasn't restored from S3 this session.
 
 Before a stop, the agent uploads once more and writes
 `s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json` with
-`synced`, `boot_utc`, `finished_utc` and `skipped_apps` (games left alone
-for another machine's build), whether the upload worked or not.
+`synced`, `boot_utc`, `finished_utc`, `skipped_apps` (games left alone for
+another machine's build) and `failed_apps`, whether the upload worked or
+not. Before a stop it walks every game folder, so the app should allow
+FinalSync 15 minutes or more over WinRM.
 The restore deletes that record. The app may delete the library disk only
 when the record says `"synced": true` and `finished_utc` is later than the
-instance's last start. The idle stop then shuts Windows down, which EC2
+instance's last start. If someone connects during that upload, the agent
+deletes the record and doesn't stop. Otherwise the idle stop shuts Windows down, which EC2
 turns into a stop (only on EC2), and the app applies
 `instance_state = "stopped"` and `library_volume_enabled = false` as for any
 stop.
