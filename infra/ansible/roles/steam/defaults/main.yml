@@ -1,0 +1,5 @@
+---
+# Valve's bootstrapper always fetches the current client, so it can't be
+# pinned by hash; win_package checks Valve's Authenticode signature instead.
+rega_steam_setup_url: https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
+rega_steam_path: C:\Program Files (x86)\Steam

@@ -1,0 +1,8 @@
+---
+profile: production
+exclude_paths:
+  - tests/
+skip_list:
+  # Every variable is prefixed rega_ (the app's namespace, shared across
+  # roles), not with the role name.
+  - var-naming[no-role-prefix]

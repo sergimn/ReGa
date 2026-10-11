@@ -1,0 +1,29 @@
+---
+rega_wireguard_version: 1.1.1
+rega_wireguard_msi_url: https://download.wireguard.com/windows-client/wireguard-amd64-{{ rega_wireguard_version }}.msi
+# Matches the BLAKE2b hash in WireGuard's signed release manifest (latest.sig).
+rega_wireguard_msi_sha256: 7bfed60ad61b785c914b38b61555a975488e1d3ec472dbfb2fcdf498fca75242
+rega_wireguard_path: C:\Program Files\WireGuard
+
+# Must match the Terraform variable wireguard_port. The security group opens
+# it only while WireGuard is on; the tunnel itself always runs, so the app's
+# WireGuard toggle is a Terraform change only.
+rega_wireguard_port: 51820
+
+# An uncommon private subnet, so it doesn't clash with home networks or
+# other VPNs. The client routes only the server's /32 through the tunnel.
+rega_wireguard_server_address: 10.213.37.1
+rega_wireguard_prefix_length: 24
+rega_wireguard_client_address: 10.213.37.2/32
+
+# EC2 public addresses are IPv4, so the tunnel costs 60 bytes per packet.
+# 1400 fits paths down to 1460 bytes (PPPoE, DS-Lite) without fragmenting
+# the outer packets.
+rega_wireguard_mtu: 1400
+
+# The app's public key. Empty: the machine makes a client key pair and the
+# playbook writes a ready-to-import client config to the secrets folder.
+rega_wireguard_client_public_key: ""
+
+# Server keys and config; only SYSTEM and administrators can read it.
+rega_wireguard_config_dir: "{{ rega_root_dir }}\\wireguard"

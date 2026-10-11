@@ -1,0 +1,202 @@
+name: Ansible
+
+on:
+  pull_request:
+    paths:
+      - "infra/ansible/**"
+      - "infra/terraform/aws/templates/**"
+      - ".github/workflows/ansible.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/ansible/**"
+      - "infra/terraform/aws/templates/**"
+      - ".github/workflows/ansible.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/ansible
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible
+        run: |
+          pip install -r requirements.txt ansible-lint==26.9.0
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: ansible-lint
+        run: ansible-lint
+
+      - name: Syntax check
+        run: ansible-playbook -i inventory.example.yml site.yml --syntax-check
+
+      - name: Install PowerShell modules
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Force
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = Get-ChildItem roles -Recurse -Include *.ps1, *.psm1 |
+            ForEach-Object { Invoke-ScriptAnalyzer -Path $_.FullName -Settings tests/PSScriptAnalyzerSettings.psd1 }
+          $results | Format-Table -AutoSize ScriptName, Line, RuleName, Message | Out-String -Width 300
+          if ($results) { exit 1 }
+
+      - name: Pester (PowerShell 7)
+        shell: pwsh
+        run: |
+          $result = Invoke-Pester tests/pester -Output Detailed -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+  windows:
+    name: Playbook on Windows Server 2022
+    # Runs the real playbook against the runner itself, from Ansible inside
+    # WSL, over WinRM HTTPS set up by Terraform's boot script. No AWS: the
+    # NVIDIA driver and the S3 sync can't be exercised here.
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pester (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Install-Module Pester -RequiredVersion 5.7.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.7.1
+          $result = Invoke-Pester infra/ansible/tests/pester -Output Detailed -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+      - name: Enable WinRM HTTPS with Terraform's boot script
+        shell: powershell
+        run: |
+          # EC2 Windows AMIs ship with WinRM running; the runner may not.
+          Enable-PSRemoting -SkipNetworkProfileCheck -Force | Out-Null
+          $template = Get-Content infra/terraform/aws/templates/user_data.ps1.tftpl -Raw
+          $script = [regex]::Match($template, '(?s)<powershell>(.*)</powershell>').Groups[1].Value
+          Set-Content -Path "$env:RUNNER_TEMP\user_data.ps1" -Value $script
+          & "$env:RUNNER_TEMP\user_data.ps1"
+          Get-ChildItem WSMan:\localhost\Listener | Format-List Keys
+
+      - name: Create the admin account Ansible logs in with
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Web
+          $password = [Web.Security.Membership]::GeneratePassword(24, 4) + 'aA1'
+          Set-Content -Path "$env:GITHUB_WORKSPACE\ci-password" -Value $password -NoNewline
+          New-LocalUser -Name regaci -Password (ConvertTo-SecureString $password -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group Administrators -Member regaci
+          # EC2 uses the built-in Administrator; other local admins need this
+          # to get an elevated token over WinRM.
+          New-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force | Out-Null
+
+      # Hosted runners have no nested virtualisation, so WSL 1, which shares
+      # the host's network: 127.0.0.1:5986 is the runner's WinRM listener.
+      - uses: Vampire/setup-wsl@v4
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 1
+          additional-packages: python3-venv python3-pip
+
+      - name: Install Ansible in WSL
+        shell: wsl-bash {0}
+        run: |
+          set -eu
+          cp -r infra/ansible ~/ansible
+          python3 -m venv ~/venv
+          ~/venv/bin/pip install --quiet -r ~/ansible/requirements.txt
+          ~/venv/bin/ansible-galaxy collection install -r ~/ansible/requirements.yml
+          cat > ~/ansible/inventory.yml <<INVENTORY
+          rega:
+            hosts:
+              ci:
+                ansible_host: 127.0.0.1
+                ansible_user: regaci
+                ansible_password: "$(cat ci-password)"
+          INVENTORY
+
+      - name: Run the playbook
+        shell: wsl-bash {0}
+        run: |
+          set -eu
+          cd ~/ansible
+          ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false
+
+      - name: Run it again; nothing should change
+        shell: wsl-bash {0}
+        run: |
+          set -eu
+          workspace=$PWD
+          cd ~/ansible
+          ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false | tee second-run.log
+          grep -Eq 'ci +: ok=[0-9]+ +changed=0 ' second-run.log
+          # For the checks below, which run on the Windows side.
+          cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
+
+      - name: Check the machine
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert($condition, $message) { if (-not $condition) { throw $message } ; "ok: $message" }
+
+          foreach ($name in @('SunshineService', 'WireGuardTunnel$rega', 'Audiosrv')) {
+            Assert ((Get-Service $name).Status -eq 'Running') "$name is running"
+          }
+          foreach ($task in @('ReGa-Agent', 'ReGa-LibraryRestore', 'ReGa-SteamLaunch', 'ReGa-GpuSetup', 'ReGa-LibraryDisk')) {
+            Assert ([bool](Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) "task $task exists"
+          }
+          Assert (Test-Path 'C:\Program Files (x86)\Steam\steam.exe') 'Steam is installed'
+          Assert (Test-Path 'C:\Program Files\Amazon\AWSCLIV2\aws.exe') 'the AWS CLI is installed'
+
+          $wg = & 'C:\Program Files\WireGuard\wg.exe' show rega allowed-ips
+          Assert ($wg -match '10\.213\.37\.2/32') "the tunnel has the client peer ($wg)"
+
+          $acl = (Get-Acl 'C:\ProgramData\ReGa\wireguard').Access | ForEach-Object { $_.IdentityReference.Value }
+          Assert (-not ($acl -match 'Users')) "only SYSTEM and administrators can read the WireGuard keys ($($acl -join ', '))"
+
+          $password = Get-Content sunshine-password -Raw
+          $code = & curl.exe -sk -o NUL -w '%{http_code}' -u "rega:$($password.Trim())" https://localhost:47990/api/config
+          Assert ($code -eq '200') "the Sunshine API accepts the generated login (HTTP $code)"
+          $code = & curl.exe -sk -o NUL -w '%{http_code}' -u 'rega:wrong' https://localhost:47990/api/config
+          Assert ($code -eq '401') "the Sunshine API rejects a wrong password (HTTP $code)"
+
+          $status = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status | ConvertFrom-Json
+          Assert ($status.clients -eq 0) 'the agent sees no Moonlight client'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Tick
+          Assert ($LASTEXITCODE -eq 0) 'an agent tick off EC2 exits cleanly'
+          Get-Content C:\ProgramData\ReGa\logs\agent.log -ErrorAction SilentlyContinue | Select-Object -Last 20
+
+      - name: Install the virtual display
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-gpu-setup.ps1 -Action VirtualDisplay -NoReboot
+          if ($LASTEXITCODE -ne 0) { throw "GPU setup failed: $out" }
+          $out
+          $vdd = Get-PnpDevice -PresentOnly | Where-Object { $_.HardwareID -contains 'Root\MttVDD' }
+          $vdd | Format-Table -AutoSize Status, Class, FriendlyName, InstanceId | Out-String -Width 200
+          if (-not $vdd -or $vdd.Status -ne 'OK') { throw 'The virtual display is not working.' }
+          Get-Content C:\ProgramData\ReGa\logs\gpu-setup.log
+
+      - name: Logs
+        if: always()
+        shell: powershell
+        run: |
+          Get-ChildItem C:\ProgramData\ReGa\logs -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.FullName)"; Get-Content $_.FullName -Tail 50 }
+          Get-Content 'C:\Program Files\Sunshine\config\sunshine.log' -Tail 40 -ErrorAction SilentlyContinue

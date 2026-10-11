@@ -1,0 +1,34 @@
+---
+# The include's loop items are all expanded up front, so each pass checks
+# whether an earlier one already finished.
+- name: Set up the GPU (pass {{ rega_gpu_pass }})
+  when: not (rega_gpu_done | default(false))
+  block:
+    - name: Run the GPU setup (pass {{ rega_gpu_pass }})
+      ansible.windows.win_command:
+        argv:
+          - powershell.exe
+          - -NoProfile
+          - -ExecutionPolicy
+          - Bypass
+          - -File
+          - "{{ rega_agent_dir }}\\rega-gpu-setup.ps1"
+          - -NoReboot
+      register: rega_gpu_setup
+      changed_when: (rega_gpu_setup.stdout_lines | last | from_json).changed
+
+    - name: Read the GPU setup result
+      ansible.builtin.set_fact:
+        rega_gpu_result: "{{ rega_gpu_setup.stdout_lines | last | from_json }}"
+
+    - name: Reboot to load the new driver
+      ansible.windows.win_reboot:
+        reboot_timeout: 1200
+      when: rega_gpu_result.reboot_required and (rega_reboot_allowed | bool)
+
+    - name: Note that the GPU setup is complete
+      ansible.builtin.set_fact:
+        rega_gpu_done: >-
+          {{ not rega_gpu_result.gpu
+             or not (rega_reboot_allowed | bool)
+             or (rega_gpu_result.virtual_display and not rega_gpu_result.reboot_required) }}

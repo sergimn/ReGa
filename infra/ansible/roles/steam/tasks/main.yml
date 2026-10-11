@@ -1,0 +1,11 @@
+---
+# Steam installs to C:, which is kept between sessions. Games go to the
+# library disk (D:), which the agent restores from S3 and registers with
+# Steam at logon. The user signs in to Steam once, inside the first
+# Moonlight session; the app never handles Steam credentials.
+- name: Install Steam
+  ansible.windows.win_package:
+    path: "{{ rega_steam_setup_url }}"
+    arguments: /S
+    verify_signature: true
+    creates_path: "{{ rega_steam_path }}\\steam.exe"

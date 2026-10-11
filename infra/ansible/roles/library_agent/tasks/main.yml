@@ -1,0 +1,72 @@
+---
+- name: Copy the agent
+  ansible.windows.win_copy:
+    src: "{{ item }}"
+    dest: "{{ rega_agent_dir }}\\{{ item }}"
+  loop:
+    - ReGa.Agent.psm1
+    - rega-agent.ps1
+
+- name: Write the agent config
+  ansible.windows.win_copy:
+    content: "{{ rega_agent_config | to_nice_json }}"
+    dest: "{{ rega_agent_dir }}\\config.json"
+
+- name: Restore the game library from S3 at boot
+  community.windows.win_scheduled_task:
+    name: ReGa-LibraryRestore
+    description: Copies the Steam library from S3 to the library disk.
+    actions:
+      - path: powershell.exe
+        arguments: "{{ rega_agent_command }} -Action Restore"
+    triggers:
+      - type: boot
+    username: SYSTEM
+    logon_type: service_account
+    run_level: highest
+    execution_time_limit: PT12H
+    multiple_instances: 2
+    state: present
+    enabled: true
+
+# A registration trigger as well as the boot one, so the agent keeps running
+# after Ansible updates the task without a reboot.
+- name: Run the agent every minute
+  community.windows.win_scheduled_task:
+    name: ReGa-Agent
+    description: Uploads finished downloads and stops the machine when idle.
+    actions:
+      - path: powershell.exe
+        arguments: "{{ rega_agent_command }} -Action Tick"
+    triggers:
+      - type: boot
+        repetition:
+          interval: PT1M
+      - type: registration
+        repetition:
+          interval: PT1M
+    username: SYSTEM
+    logon_type: service_account
+    run_level: highest
+    execution_time_limit: PT12H
+    multiple_instances: 2
+    state: present
+    enabled: true
+
+- name: Start Steam at logon once the library is restored
+  community.windows.win_scheduled_task:
+    name: ReGa-SteamLaunch
+    description: Waits for the library restore, registers it with Steam and starts Steam.
+    actions:
+      - path: powershell.exe
+        arguments: "-WindowStyle Hidden {{ rega_agent_command }} -Action LaunchSteam"
+    triggers:
+      - type: logon
+        user_id: "{{ rega_desktop_user }}"
+    username: "{{ rega_desktop_user }}"
+    logon_type: interactive_token
+    run_level: limited
+    execution_time_limit: PT4H
+    multiple_instances: 2
+    state: present
+    enabled: true

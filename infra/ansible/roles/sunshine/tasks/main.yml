@@ -1,0 +1,34 @@
+---
+# The MSI adds Sunshine's firewall rules and the SunshineService service,
+# which starts Sunshine in the logged-on desktop session.
+- name: Install Sunshine
+  ansible.windows.win_package:
+    path: "{{ rega_sunshine_msi_url }}"
+    checksum: "{{ rega_sunshine_msi_sha256 }}"
+    checksum_algorithm: sha256
+    creates_path: "{{ rega_sunshine_path }}\\sunshine.exe"
+
+- name: Configure Sunshine
+  community.windows.win_lineinfile:
+    path: "{{ rega_sunshine_path }}\\config\\sunshine.conf"
+    regex: '^\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+    create: true
+  loop: "{{ rega_sunshine_config | dict2items }}"
+  notify: Restart Sunshine
+
+- name: Set the Sunshine web UI login
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'set-credentials.ps1') }}"
+    parameters:
+      SunshinePath: "{{ rega_sunshine_path }}"
+      Username: "{{ rega_sunshine_username }}"
+      Password: "{{ rega_sunshine_password }}"
+  no_log: true
+  notify: Restart Sunshine
+
+- name: Run Sunshine at boot
+  ansible.windows.win_service:
+    name: SunshineService
+    start_mode: auto
+    state: started

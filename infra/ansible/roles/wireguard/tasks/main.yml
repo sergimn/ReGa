@@ -1,0 +1,47 @@
+---
+- name: Install WireGuard
+  ansible.windows.win_package:
+    path: "{{ rega_wireguard_msi_url }}"
+    checksum: "{{ rega_wireguard_msi_sha256 }}"
+    checksum_algorithm: sha256
+    # Don't start the WireGuard UI; there is nobody to see it.
+    arguments: DO_NOT_LAUNCH=1
+    creates_path: "{{ rega_wireguard_path }}\\wireguard.exe"
+
+- name: Configure and start the WireGuard tunnel
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'configure-tunnel.ps1') }}"
+    parameters:
+      WireGuardPath: "{{ rega_wireguard_path }}"
+      ConfigDir: "{{ rega_wireguard_config_dir }}"
+      ListenPort: "{{ rega_wireguard_port }}"
+      Address: "{{ rega_wireguard_server_address }}/{{ rega_wireguard_prefix_length }}"
+      Mtu: "{{ rega_wireguard_mtu }}"
+      ClientAddress: "{{ rega_wireguard_client_address }}"
+      ClientPublicKey: "{{ rega_wireguard_client_public_key }}"
+  register: rega_wireguard_tunnel
+  no_log: true
+
+- name: Remember the server's public key
+  ansible.builtin.set_fact:
+    rega_wireguard_server_public_key: "{{ rega_wireguard_tunnel.result.server_public_key }}"
+
+- name: Allow WireGuard through the Windows firewall
+  community.windows.win_firewall_rule:
+    name: ReGa WireGuard
+    direction: in
+    action: allow
+    protocol: udp
+    localport: "{{ rega_wireguard_port }}"
+    profiles: [domain, private, public]
+    state: present
+    enabled: true
+
+- name: Write a client config for manual testing
+  ansible.builtin.template:
+    src: wireguard-client.conf.j2
+    dest: "{{ rega_secrets_dir }}/wireguard-client.conf"
+    mode: "0600"
+  delegate_to: localhost
+  when: not rega_wireguard_client_public_key
+  no_log: true

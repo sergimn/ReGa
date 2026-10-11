@@ -1,0 +1,50 @@
+---
+# Sets up a ReGa machine (Windows Server 2022 on EC2) for game streaming.
+# Run it after Terraform creates the machine, during the cheap CPU phase:
+#   ansible-playbook -i inventory.yml site.yml
+# Run it again after the first switch to the GPU type to install the NVIDIA
+# driver right away; otherwise a boot task installs it on the first GPU boot.
+- name: Set up a ReGa machine
+  hosts: rega
+  gather_facts: false
+  roles:
+    - role: base
+    - role: steam
+    - role: sunshine
+    - role: wireguard
+    - role: library_agent
+    - role: gpu
+  post_tasks:
+    - name: Write the connection details for the app
+      ansible.builtin.copy:
+        dest: "{{ rega_secrets_dir }}/connection.json"
+        mode: "0600"
+        content: "{{ rega_connection | to_nice_json }}\n"
+      delegate_to: localhost
+      vars:
+        rega_connection:
+          machine_id: "{{ rega_machine_id }}"
+          desktop_user: "{{ rega_desktop_user }}"
+          sunshine:
+            username: "{{ rega_sunshine_username }}"
+            web_ui_port: 47990
+          wireguard:
+            port: "{{ rega_wireguard_port }}"
+            server_public_key: "{{ rega_wireguard_server_public_key }}"
+            server_address: "{{ rega_wireguard_server_address }}"
+            client_address: "{{ rega_wireguard_client_address }}"
+            mtu: "{{ rega_wireguard_mtu }}"
+          secrets_dir: "{{ rega_secrets_dir }}"
+
+    - name: Restart the idle clock so the user gets the full idle time to connect
+      ansible.windows.win_command:
+        argv:
+          - powershell.exe
+          - -NoProfile
+          - -ExecutionPolicy
+          - Bypass
+          - -File
+          - "{{ rega_agent_dir }}\\rega-agent.ps1"
+          - -Action
+          - ResetIdle
+      changed_when: false
