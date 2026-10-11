@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ReGa
+Comment=Play games on a cloud machine you own
+Exec=rega
+Icon=io.github.sergimn.rega
+Categories=Game;
+Terminal=false

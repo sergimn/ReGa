@@ -1,0 +1,205 @@
+import 'package:flutter/material.dart';
+
+import 'backend.dart';
+import 'widgets/format.dart';
+import 'widgets/machine_card.dart';
+import 'widgets/region_picker.dart';
+
+/// One provider: purchase toggles, region picker, machine types and the
+/// machines that already exist.
+class ProviderPage extends StatefulWidget {
+  const ProviderPage({
+    super.key,
+    required this.backend,
+    required this.provider,
+  });
+
+  final RegaBackend backend;
+  final ProviderInfo provider;
+
+  @override
+  State<ProviderPage> createState() => _ProviderPageState();
+}
+
+class _ProviderPageState extends State<ProviderPage> {
+  bool _spot = false;
+  bool _wireguard = true;
+  String? _typeName;
+  String? _regionId;
+
+  RegionChoices? _choices;
+  List<MachineOffer> _offers = const [];
+  List<MachineSummary> _machines = const [];
+  Object? _error;
+  bool _loading = true;
+
+  RegaBackend get _backend => widget.backend;
+  String get _id => widget.provider.id;
+
+  @override
+  void initState() {
+    super.initState();
+    _backend.probeLatency(_id);
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    setState(() => _loading = true);
+    try {
+      final choices = await _backend.regionChoices(
+        _id,
+        typeName: _typeName,
+        spot: _spot,
+      );
+      final all = choices.all.map((r) => r.regionId);
+      final regionId = all.contains(_regionId)
+          ? _regionId
+          : choices.recommended?.regionId;
+      final offers = regionId == null
+          ? const <MachineOffer>[]
+          : await _backend.machineOffers(_id, regionId: regionId, spot: _spot);
+      final machines = await _backend.listMachines(_id);
+      if (!mounted) return;
+      setState(() {
+        _choices = choices;
+        _regionId = regionId;
+        _offers = offers;
+        _machines = machines;
+        if (!offers.any((o) => o.typeName == _typeName)) {
+          final gpu = offers.where((o) => o.isGpu);
+          _typeName = gpu.isNotEmpty ? gpu.first.typeName : null;
+        }
+        _error = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e;
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Text(widget.provider.name, style: theme.textTheme.headlineMedium),
+        if (widget.provider.demo)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Chip(
+                avatar: Icon(Icons.science_outlined, size: 18),
+                label: Text('Demo data: prices and latencies are samples'),
+              ),
+            ),
+          ),
+        const SizedBox(height: 16),
+        SwitchListTile(
+          key: const ValueKey('spot-toggle'),
+          title: const Text('Spot'),
+          subtitle: const Text(
+            'Cheaper, but the provider can reclaim the machine. GPU types only.',
+          ),
+          value: _spot,
+          onChanged: (v) {
+            setState(() => _spot = v);
+            _reload();
+          },
+        ),
+        SwitchListTile(
+          key: const ValueKey('wireguard-toggle'),
+          title: const Text('WireGuard tunnel'),
+          subtitle: Text(
+            _wireguard
+                ? 'Streams through an encrypted tunnel and survives IP changes.'
+                : 'Opens the streaming ports to your current IP only.',
+          ),
+          value: _wireguard,
+          onChanged: (v) => setState(() => _wireguard = v),
+        ),
+        if (_error != null)
+          ListTile(
+            leading: Icon(Icons.error_outline, color: theme.colorScheme.error),
+            title: Text('$_error'),
+            trailing: TextButton(
+              onPressed: _reload,
+              child: const Text('Retry'),
+            ),
+          ),
+        if (_loading && _choices == null)
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        if (_choices != null) ...[
+          _Section('Region'),
+          RegionPicker(
+            choices: _choices!,
+            selectedRegionId: _regionId,
+            onSelected: (r) {
+              setState(() => _regionId = r.regionId);
+              _reload();
+            },
+          ),
+          _Section('Machine'),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final offer in _offers)
+                SizedBox(
+                  width: 260,
+                  child: MachineCard(
+                    key: ValueKey('offer-${offer.typeName}'),
+                    offer: offer,
+                    selected: offer.typeName == _typeName,
+                    onTap: () {
+                      setState(() => _typeName = offer.typeName);
+                      _reload();
+                    },
+                  ),
+                ),
+            ],
+          ),
+          _Section('Your machines'),
+          if (_machines.isEmpty)
+            const ListTile(
+              leading: Icon(Icons.computer),
+              title: Text('No machines yet'),
+            )
+          else
+            for (final m in _machines)
+              ListTile(
+                leading: const Icon(Icons.computer),
+                title: Text(m.name),
+                subtitle: Text(
+                  '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
+                  '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionId}',
+                ),
+                trailing: Text(m.status.name),
+              ),
+        ],
+      ],
+    );
+  }
+}
+
+class _Section extends StatelessWidget {
+  const _Section(this.title);
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 24, bottom: 8),
+      child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+    );
+  }
+}

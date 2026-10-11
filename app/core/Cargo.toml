@@ -1,0 +1,13 @@
+[package]
+name = "rega_core"
+version = "0.1.0"
+edition = "2021"
+description = "Provider-agnostic core of the ReGa desktop app"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
