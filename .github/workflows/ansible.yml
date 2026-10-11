@@ -18,7 +18,7 @@ permissions:
 
 env:
   # renovate: datasource=nuget depName=Pester registryUrl=https://www.powershellgallery.com/api/v2/
-  PESTER_VERSION: 5.7.1
+  PESTER_VERSION: 5.9.1
   # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
   PSSCRIPTANALYZER_VERSION: 1.24.0
 
