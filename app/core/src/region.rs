@@ -5,8 +5,10 @@
 
 use std::time::Duration;
 
+use futures::future::try_join_all;
+
 use crate::model::Region;
-use crate::provider::{CloudProvider, ProviderResult};
+use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 
 /// A region is "close enough" for Recommended when its RTT is within this
 /// margin of the closest region.
@@ -76,8 +78,28 @@ pub fn choose(mut candidates: Vec<RegionCandidate>) -> RegionChoices {
     }
 }
 
+/// GPU vCPUs of quota a machine of `type_name` needs. CPU types count as the
+/// smallest GPU type, because the CPU phase ends with a resize to GPU.
+fn gpu_vcpus_needed(provider: &dyn CloudProvider, type_name: &str) -> ProviderResult<u32> {
+    let types = provider.machine_types();
+    let t = types
+        .iter()
+        .find(|t| t.type_name == type_name)
+        .ok_or_else(|| ProviderError::UnknownMachineType(type_name.into()))?;
+    if t.is_gpu() {
+        return Ok(t.spec.vcpus);
+    }
+    Ok(types
+        .iter()
+        .filter(|t| t.is_gpu())
+        .map(|t| t.spec.vcpus)
+        .min()
+        .unwrap_or(0))
+}
+
 /// Builds candidates for `type_name` from a provider, skipping regions where
-/// the GPU quota is 0 or the purchase option (spot or on-demand) isn't offered.
+/// the GPU quota doesn't cover the machine, or where the type isn't sold the
+/// chosen way (spot or on-demand). Regions are queried concurrently.
 ///
 /// `rtt_of` looks up the cached measurement for a region id.
 pub async fn candidates(
@@ -86,24 +108,33 @@ pub async fn candidates(
     spot: bool,
     rtt_of: impl Fn(&str) -> Option<Duration>,
 ) -> ProviderResult<Vec<RegionCandidate>> {
-    let mut out = Vec::new();
-    for region in provider.regions().await? {
-        if provider.gpu_quota(&region.id).await? == 0 {
-            continue;
-        }
-        let Some(price_per_hour) = provider.price(&region.id, type_name).await?.per_hour(spot)
-        else {
-            continue;
-        };
-        let one_off_cost = provider.library_copy_cost(&region.id).await?;
-        out.push(RegionCandidate {
+    let needed = gpu_vcpus_needed(provider, type_name)?;
+    let regions = provider.regions().await?;
+    let found = try_join_all(regions.into_iter().map(|region| async move {
+        let (quota, price, one_off_cost) = futures::try_join!(
+            provider.gpu_quota_vcpus(&region.id, spot),
+            provider.price(&region.id, type_name),
+            provider.library_copy_cost(&region.id),
+        )?;
+        let price_per_hour = price.and_then(|p| p.per_hour(spot));
+        Ok::<_, ProviderError>(match price_per_hour {
+            Some(price_per_hour) if quota >= needed && quota > 0 => {
+                Some((region, price_per_hour, one_off_cost))
+            }
+            _ => None,
+        })
+    }))
+    .await?;
+    Ok(found
+        .into_iter()
+        .flatten()
+        .map(|(region, price_per_hour, one_off_cost)| RegionCandidate {
             rtt: rtt_of(&region.id),
             region,
             price_per_hour,
             one_off_cost,
-        });
-    }
-    Ok(out)
+        })
+        .collect())
 }
 
 #[cfg(test)]

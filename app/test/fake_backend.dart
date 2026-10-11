@@ -42,6 +42,13 @@ const virginia = RegionOption(
   oneOffCost: 4,
 );
 
+const unmeasured = RegionOption(
+  regionId: 'sa-east-1',
+  displayName: 'South America (São Paulo)',
+  pricePerHour: 0.9,
+  oneOffCost: 4,
+);
+
 /// In-memory backend for widget tests; records what the UI asked for.
 class FakeBackend implements RegaBackend {
   FakeBackend({this.machines = const [], this.onDemandDelay = Duration.zero});
@@ -53,14 +60,27 @@ class FakeBackend implements RegaBackend {
   final List<String> calls = [];
   bool? lastSpot;
 
+  /// What the core currently calls Recommended; tests change it mid-way.
+  RegionOption recommended = stockholm;
+
+  /// What `probeLatency` reports; `true` makes the page reload.
+  bool latencyChanges = false;
+
+  /// When set, `regionChoices` throws it.
+  Object? regionsError;
+
+  int get regionCalls => calls.where((c) => c.startsWith('regions')).length;
+
   @override
   List<ProviderInfo> listProviders() => const [
     ProviderInfo(id: 'aws', name: 'AWS', demo: true),
   ];
 
   @override
-  Future<void> probeLatency(String providerId) async =>
-      calls.add('probe $providerId');
+  Future<bool> probeLatency(String providerId) async {
+    calls.add('probe $providerId');
+    return latencyChanges;
+  }
 
   @override
   Future<RegionChoices> regionChoices(
@@ -69,15 +89,16 @@ class FakeBackend implements RegaBackend {
     required bool spot,
   }) async {
     calls.add('regions $typeName');
+    if (regionsError case final e?) throw e;
     // Like the real core: CPU types have no spot price anywhere.
     if (spot && typeName == cpuOffer.typeName) {
       return const RegionChoices(all: []);
     }
-    return const RegionChoices(
-      recommended: stockholm,
+    return RegionChoices(
+      recommended: recommended,
       lowestLatency: frankfurt,
       cheapest: virginia,
-      all: [frankfurt, stockholm, virginia],
+      all: const [frankfurt, stockholm, virginia, unmeasured],
     );
   }
 

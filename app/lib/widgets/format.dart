@@ -12,4 +12,9 @@ String formatGb(num gib) => gib == gib.roundToDouble()
     ? '${gib.round()} GB'
     : '${gib.toStringAsFixed(1)} GB';
 
-String formatRtt(int? ms) => ms == null ? 'Measuring…' : '$ms ms';
+/// `measuring` says whether a probe is still running for missing values.
+String formatRtt(int? ms, {bool measuring = true}) => ms != null
+    ? '$ms ms'
+    : measuring
+    ? 'Measuring…'
+    : 'Latency unknown';

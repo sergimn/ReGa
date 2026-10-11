@@ -17,6 +17,8 @@ void main() {
     expect(light.primary, RegaColors.deepTeal);
     expect(dark.primary, RegaColors.aqua);
     expect(dark.surface, RegaColors.night);
+    expect(light.error, RegaColors.error);
+    expect(dark.error, RegaColors.errorOnDark);
     expect(light.brightness, Brightness.light);
     expect(dark.brightness, Brightness.dark);
   });

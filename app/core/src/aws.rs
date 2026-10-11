@@ -14,9 +14,6 @@ use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 /// Region holding the state and library buckets (also the development region).
 pub const HOME_REGION: &str = "eu-north-1";
 
-/// Copying data between AWS regions costs about this much per GB.
-pub const INTER_REGION_COPY_PER_GB: f64 = 0.02;
-
 /// Machine types the IAM policy allows the app to use.
 pub fn catalog() -> Vec<MachineType> {
     let cpu = |name: &str, vcpus, ram_gib| MachineType {
@@ -104,7 +101,7 @@ impl CloudProvider for AwsProvider {
         Err(ProviderError::NotImplemented("AWS region discovery"))
     }
 
-    async fn gpu_quota(&self, _region_id: &str) -> ProviderResult<u32> {
+    async fn gpu_quota_vcpus(&self, _region_id: &str, _spot: bool) -> ProviderResult<u32> {
         Err(ProviderError::NotImplemented("AWS service quotas"))
     }
 
@@ -112,7 +109,7 @@ impl CloudProvider for AwsProvider {
         catalog()
     }
 
-    async fn price(&self, _region_id: &str, _type_name: &str) -> ProviderResult<Price> {
+    async fn price(&self, _region_id: &str, _type_name: &str) -> ProviderResult<Option<Price>> {
         Err(ProviderError::NotImplemented("AWS pricing"))
     }
 

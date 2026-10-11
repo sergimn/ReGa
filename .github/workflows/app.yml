@@ -7,6 +7,13 @@ on:
   pull_request:
     paths: ['app/**', '.github/workflows/app.yml']
 
+permissions:
+  contents: read
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: app
@@ -19,6 +26,7 @@ jobs:
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -34,6 +42,7 @@ jobs:
   flutter:
     name: Flutter (analyze, test, Linux build)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: Install Linux build dependencies
@@ -55,7 +64,7 @@ jobs:
         run: xvfb-run -a flutter test integration_test -d linux
       # Artifacts drop file permissions, so ship the bundle as a tarball.
       - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rega-linux-x64
           path: app/rega-linux-x64.tar.gz
@@ -64,12 +73,13 @@ jobs:
     name: Flatpak
     needs: flutter
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rega-linux-x64
           path: app

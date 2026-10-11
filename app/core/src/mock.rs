@@ -17,7 +17,9 @@ use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 #[derive(Debug, Clone)]
 pub struct MockRegion {
     pub region: Region,
-    pub gpu_quota: u32,
+    /// GPU vCPU quotas for on-demand and spot.
+    pub gpu_quota_on_demand: u32,
+    pub gpu_quota_spot: u32,
     pub prices: HashMap<String, Price>,
     pub library_copy_cost: f64,
     /// Latency the demo pretends to have measured.
@@ -52,54 +54,73 @@ impl MockProvider {
 
     /// AWS-shaped sample data. Prices are illustrative, not live.
     pub fn demo_aws() -> Self {
-        let region = |id: &str, name: &str, quota, gpu: f64, spot: f64, copy, rtt: u64| {
-            let mut prices = HashMap::new();
-            prices.insert(
-                "g4dn.xlarge".to_string(),
-                Price {
-                    on_demand_per_hour: gpu,
-                    spot_per_hour: Some(spot),
-                },
-            );
-            for (t, p) in [
-                ("t3.micro", 0.011),
-                ("t3.medium", 0.045),
-                ("t3.large", 0.09),
-            ] {
+        let region =
+            |id: &str, name: &str, quotas: (u32, u32), gpu: f64, spot: f64, copy, rtt: u64| {
+                let mut prices = HashMap::new();
                 prices.insert(
-                    t.to_string(),
+                    "g4dn.xlarge".to_string(),
                     Price {
-                        on_demand_per_hour: p,
-                        spot_per_hour: None,
+                        on_demand_per_hour: gpu,
+                        spot_per_hour: Some(spot),
                     },
                 );
-            }
-            MockRegion {
-                region: aws::region(id, name),
-                gpu_quota: quota,
-                prices,
-                library_copy_cost: copy,
-                simulated_rtt: Some(Duration::from_millis(rtt)),
-            }
-        };
+                for (t, p) in [
+                    ("t3.micro", 0.011),
+                    ("t3.medium", 0.045),
+                    ("t3.large", 0.09),
+                ] {
+                    prices.insert(
+                        t.to_string(),
+                        Price {
+                            on_demand_per_hour: p,
+                            spot_per_hour: None,
+                        },
+                    );
+                }
+                MockRegion {
+                    region: aws::region(id, name),
+                    gpu_quota_on_demand: quotas.0,
+                    gpu_quota_spot: quotas.1,
+                    prices,
+                    library_copy_cost: copy,
+                    simulated_rtt: Some(Duration::from_millis(rtt)),
+                }
+            };
         Self::new(
             "aws",
             "AWS",
             aws::catalog(),
             vec![
-                region("eu-north-1", "Europe (Stockholm)", 4, 0.56, 0.21, 0.0, 38),
-                region("eu-central-1", "Europe (Frankfurt)", 4, 0.66, 0.25, 4.0, 31),
-                region("eu-west-1", "Europe (Ireland)", 4, 0.59, 0.19, 4.0, 45),
+                region(
+                    "eu-north-1",
+                    "Europe (Stockholm)",
+                    (4, 4),
+                    0.56,
+                    0.21,
+                    0.0,
+                    38,
+                ),
+                region(
+                    "eu-central-1",
+                    "Europe (Frankfurt)",
+                    (4, 4),
+                    0.66,
+                    0.25,
+                    4.0,
+                    31,
+                ),
+                // On-demand quota only, so it drops out when Spot is on.
+                region("eu-west-1", "Europe (Ireland)", (4, 0), 0.59, 0.19, 4.0, 45),
                 region(
                     "us-east-1",
                     "US East (N. Virginia)",
-                    4,
+                    (8, 8),
                     0.53,
                     0.18,
                     4.0,
                     110,
                 ),
-                region("eu-south-1", "Europe (Milan)", 0, 0.62, 0.24, 4.0, 28),
+                region("eu-south-1", "Europe (Milan)", (0, 0), 0.62, 0.24, 4.0, 28),
             ],
         )
     }
@@ -121,6 +142,20 @@ impl MockProvider {
             .find(|t| t.type_name == type_name)
             .cloned()
             .ok_or_else(|| ProviderError::UnknownMachineType(type_name.into()))
+    }
+
+    async fn check_gpu_quota(
+        &self,
+        region_id: &str,
+        machine_type: &MachineType,
+        spot: bool,
+    ) -> ProviderResult<()> {
+        if machine_type.is_gpu()
+            && self.gpu_quota_vcpus(region_id, spot).await? < machine_type.spec.vcpus
+        {
+            return Err(ProviderError::Cloud(format!("no GPU quota in {region_id}")));
+        }
+        Ok(())
     }
 
     fn update(
@@ -160,20 +195,21 @@ impl CloudProvider for MockProvider {
         Ok(self.regions.iter().map(|r| r.region.clone()).collect())
     }
 
-    async fn gpu_quota(&self, region_id: &str) -> ProviderResult<u32> {
-        Ok(self.region(region_id)?.gpu_quota)
+    async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> ProviderResult<u32> {
+        let r = self.region(region_id)?;
+        Ok(if spot {
+            r.gpu_quota_spot
+        } else {
+            r.gpu_quota_on_demand
+        })
     }
 
     fn machine_types(&self) -> Vec<MachineType> {
         self.types.clone()
     }
 
-    async fn price(&self, region_id: &str, type_name: &str) -> ProviderResult<Price> {
-        self.region(region_id)?
-            .prices
-            .get(type_name)
-            .copied()
-            .ok_or_else(|| ProviderError::UnknownMachineType(type_name.into()))
+    async fn price(&self, region_id: &str, type_name: &str) -> ProviderResult<Option<Price>> {
+        Ok(self.region(region_id)?.prices.get(type_name).copied())
     }
 
     async fn library_copy_cost(&self, region_id: &str) -> ProviderResult<f64> {
@@ -189,12 +225,15 @@ impl CloudProvider for MockProvider {
         if request.spot && !machine_type.is_gpu() {
             return Err(ProviderError::SpotNeedsGpu);
         }
-        if machine_type.is_gpu() && self.gpu_quota(&request.region_id).await? == 0 {
+        let price = self.price(&request.region_id, &request.type_name).await?;
+        if price.and_then(|p| p.per_hour(request.spot)).is_none() {
             return Err(ProviderError::Cloud(format!(
-                "no GPU quota in {}",
-                request.region_id
+                "{} isn't sold that way in {}",
+                request.type_name, request.region_id
             )));
         }
+        self.check_gpu_quota(&request.region_id, &machine_type, request.spot)
+            .await?;
         let mut next_id = self.next_id.lock().unwrap();
         let machine = Machine {
             id: format!("mock-{}", *next_id),
@@ -212,6 +251,16 @@ impl CloudProvider for MockProvider {
 
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
         let machine_type = self.machine_type(type_name)?;
+        let region_id = self
+            .machines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.id == machine_id)
+            .map(|m| m.region_id.clone())
+            .ok_or_else(|| ProviderError::UnknownMachine(machine_id.into()))?;
+        self.check_gpu_quota(&region_id, &machine_type, false)
+            .await?;
         self.update(machine_id, |m| {
             if m.spot {
                 return Err(ProviderError::SpotResize);

@@ -66,6 +66,31 @@ void main() {
     expect(find.text('Lowest latency'), findsOneWidget);
   });
 
+  testWidgets('a pick from the full list stays visible when collapsed', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: RegionPicker(
+              choices: const RegionChoices(
+                recommended: stockholm,
+                lowestLatency: frankfurt,
+                cheapest: stockholm,
+                all: [frankfurt, stockholm, unmeasured],
+              ),
+              selectedRegionId: 'sa-east-1',
+              onSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Your pick'), findsOneWidget);
+    expect(find.textContaining('Measuring…'), findsOneWidget);
+  });
+
   testWidgets('explains when no region has GPU quota', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

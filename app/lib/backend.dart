@@ -8,6 +8,7 @@ export 'src/rust/api/rega.dart'
         MachineStatus,
         MachineSummary,
         ProviderInfo,
+        RegaError,
         RegionChoices,
         RegionOption;
 
@@ -16,7 +17,8 @@ export 'src/rust/api/rega.dart'
 abstract class RegaBackend {
   List<ProviderInfo> listProviders();
 
-  Future<void> probeLatency(String providerId);
+  /// Measures latency to every region; `true` when results changed.
+  Future<bool> probeLatency(String providerId);
 
   Future<RegionChoices> regionChoices(
     String providerId, {
@@ -39,7 +41,7 @@ class RustBackend implements RegaBackend {
   List<ProviderInfo> listProviders() => rust.listProviders();
 
   @override
-  Future<void> probeLatency(String providerId) =>
+  Future<bool> probeLatency(String providerId) =>
       rust.probeLatency(providerId: providerId);
 
   @override

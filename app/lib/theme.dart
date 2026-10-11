@@ -20,7 +20,9 @@ abstract final class RegaColors {
 
   // Status
   static const success = Color(0xFF22C55E);
-  static const error = Color(0xFFE5484D);
+  // Each error red keeps at least 4.5:1 contrast on its theme's surface.
+  static const error = Color(0xFFCE2C31);
+  static const errorOnDark = Color(0xFFF87171);
 
   static const all = [
     aqua,
@@ -37,6 +39,7 @@ abstract final class RegaColors {
     mist,
     success,
     error,
+    errorOnDark,
   ];
 }
 
@@ -53,7 +56,8 @@ ThemeData regaTheme(Brightness brightness) {
         onSecondary: dark ? RegaColors.night : Colors.white,
         tertiary: dark ? RegaColors.violet : RegaColors.deepViolet,
         onTertiary: dark ? RegaColors.night : Colors.white,
-        error: RegaColors.error,
+        error: dark ? RegaColors.errorOnDark : RegaColors.error,
+        onError: dark ? RegaColors.night : Colors.white,
         surface: dark ? RegaColors.night : RegaColors.mist,
         onSurface: dark ? RegaColors.cloud : RegaColors.night,
         surfaceContainerLow: dark ? RegaColors.navy : Colors.white,

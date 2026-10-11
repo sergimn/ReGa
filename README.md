@@ -33,4 +33,4 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 | Tertiary | Deep violet `#7C3AED` | Violet `#A78BFA` |
 | Surface | Mist `#F4F7FB` | Night `#0B1220` |
 | Cards | White | Navy `#1C2A4A` |
-| Error | `#E5484D` | `#E5484D` |
+| Error | `#CE2C31` | `#F87171` |

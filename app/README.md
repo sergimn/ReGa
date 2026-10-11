@@ -27,7 +27,8 @@ the AWS SDK return `NotImplemented` for now, so the app runs AWS on demo data
 ## Develop
 
 Needs Flutter 3.47.7, a stable Rust toolchain and the GTK build deps
-(`sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev`).
+(`sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev`,
+plus `xvfb` for the integration test).
 
 ```sh
 cd app

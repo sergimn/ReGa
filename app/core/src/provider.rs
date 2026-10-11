@@ -44,14 +44,16 @@ pub trait CloudProvider: Send + Sync {
     /// Every region that offers at least one of [`Self::machine_types`].
     async fn regions(&self) -> ProviderResult<Vec<Region>>;
 
-    /// How many GPU instances the account may run in `region_id`.
-    /// Regions with a quota of 0 are never offered for launch.
-    async fn gpu_quota(&self, region_id: &str) -> ProviderResult<u32>;
+    /// How many GPU vCPUs the account may run in `region_id`, for spot or
+    /// on-demand (clouds keep separate quotas for each). A region is only
+    /// offered when this covers the GPU type's vCPUs.
+    async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> ProviderResult<u32>;
 
     /// The machine types the app offers, CPU and GPU.
     fn machine_types(&self) -> Vec<MachineType>;
 
-    async fn price(&self, region_id: &str, type_name: &str) -> ProviderResult<Price>;
+    /// `None` when `type_name` isn't sold in `region_id`.
+    async fn price(&self, region_id: &str, type_name: &str) -> ProviderResult<Option<Price>>;
 
     /// One-off cost in USD of copying the game library to `region_id`.
     async fn library_copy_cost(&self, region_id: &str) -> ProviderResult<f64>;

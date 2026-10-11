@@ -27,6 +27,11 @@ class _ProviderPageState extends State<ProviderPage> {
   String? _typeName;
   String? _regionId;
 
+  /// False while the region is our pick (Recommended), so it follows
+  /// Recommended as prices and latencies change; true once the user taps one.
+  bool _userPickedRegion = false;
+  bool _measuring = true;
+
   RegionChoices? _choices;
   List<MachineOffer> _offers = const [];
   List<MachineSummary> _machines = const [];
@@ -43,24 +48,39 @@ class _ProviderPageState extends State<ProviderPage> {
   @override
   void initState() {
     super.initState();
-    _backend.probeLatency(_id);
     _reload();
+    _probeLatency();
   }
 
-  Future<void> _reload() async {
+  Future<void> _probeLatency() async {
+    var changed = false;
+    try {
+      changed = await _backend.probeLatency(_id);
+    } catch (_) {
+      // Latency is a hint; regions still show with "Latency unknown".
+    }
+    if (!mounted) return;
+    setState(() => _measuring = false);
+    if (changed) _reload();
+  }
+
+  String _errorText(Object e) => e is RegaError ? e.message : '$e';
+
+  /// Reloads regions, offers and machines. With `regions: false` (the user
+  /// only picked another region) the region list is kept as is.
+  Future<void> _reload({bool regions = true}) async {
     final generation = ++_generation;
     final spot = _spot;
     final typeName = _typeName;
-    final wantedRegionId = _regionId;
+    final wantedRegionId = _userPickedRegion ? _regionId : null;
+    final currentChoices = _choices;
     bool stale() => !mounted || generation != _generation;
 
     setState(() => _loading = true);
     try {
-      final choices = await _backend.regionChoices(
-        _id,
-        typeName: typeName,
-        spot: spot,
-      );
+      final choices = regions || currentChoices == null
+          ? await _backend.regionChoices(_id, typeName: typeName, spot: spot)
+          : currentChoices;
       final all = choices.all.map((r) => r.regionId);
       final regionId = all.contains(wantedRegionId)
           ? wantedRegionId
@@ -144,7 +164,7 @@ class _ProviderPageState extends State<ProviderPage> {
         if (_error != null)
           ListTile(
             leading: Icon(Icons.error_outline, color: theme.colorScheme.error),
-            title: Text('$_error'),
+            title: Text(_errorText(_error!)),
             trailing: TextButton(
               onPressed: _reload,
               child: const Text('Retry'),
@@ -160,9 +180,13 @@ class _ProviderPageState extends State<ProviderPage> {
           RegionPicker(
             choices: _choices!,
             selectedRegionId: _regionId,
+            measuring: _measuring,
             onSelected: (r) {
-              setState(() => _regionId = r.regionId);
-              _reload();
+              setState(() {
+                _regionId = r.regionId;
+                _userPickedRegion = true;
+              });
+              _reload(regions: false);
             },
           ),
           _Section('Machine'),

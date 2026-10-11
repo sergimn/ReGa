@@ -95,7 +95,7 @@ abstract class RustLibApi extends BaseApi {
     required bool spot,
   });
 
-  Future<void> crateApiRegaProbeLatency({required String providerId});
+  Future<bool> crateApiRegaProbeLatency({required String providerId});
 
   Future<RegionChoices> crateApiRegaRegionChoices({
     required String providerId,
@@ -157,7 +157,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_machine_summary,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_rega_error,
         ),
         constMeta: kCrateApiRegaListMachinesConstMeta,
         argValues: [providerId],
@@ -213,7 +213,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_machine_offer,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_rega_error,
         ),
         constMeta: kCrateApiRegaMachineOffersConstMeta,
         argValues: [providerId, regionId, spot],
@@ -228,7 +228,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<void> crateApiRegaProbeLatency({required String providerId}) {
+  Future<bool> crateApiRegaProbeLatency({required String providerId}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -242,8 +242,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_rega_error,
         ),
         constMeta: kCrateApiRegaProbeLatencyConstMeta,
         argValues: [providerId],
@@ -277,7 +277,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_region_choices,
-          decodeErrorData: sse_decode_AnyhowException,
+          decodeErrorData: sse_decode_rega_error,
         ),
         constMeta: kCrateApiRegaRegionChoicesConstMeta,
         argValues: [providerId, typeName, spot],
@@ -290,12 +290,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     debugName: "region_choices",
     argNames: ["providerId", "typeName", "spot"],
   );
-
-  @protected
-  AnyhowException dco_decode_AnyhowException(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return AnyhowException(raw as String);
-  }
 
   @protected
   String dco_decode_String(dynamic raw) {
@@ -452,6 +446,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegaError dco_decode_rega_error(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return RegaError(message: dco_decode_String(arr[0]));
+  }
+
+  @protected
   RegionChoices dco_decode_region_choices(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -496,13 +499,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void dco_decode_unit(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return;
-  }
-
-  @protected
-  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_String(deserializer);
-    return AnyhowException(inner);
   }
 
   @protected
@@ -722,6 +718,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RegaError sse_decode_rega_error(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_message = sse_decode_String(deserializer);
+    return RegaError(message: var_message);
+  }
+
+  @protected
   RegionChoices sse_decode_region_choices(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_recommended = sse_decode_opt_box_autoadd_region_option(
@@ -772,15 +775,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_decode_unit(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  void sse_encode_AnyhowException(
-    AnyhowException self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.message, serializer);
   }
 
   @protected
@@ -973,6 +967,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_String(self.name, serializer);
     sse_encode_bool(self.demo, serializer);
+  }
+
+  @protected
+  void sse_encode_rega_error(RegaError self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.message, serializer);
   }
 
   @protected

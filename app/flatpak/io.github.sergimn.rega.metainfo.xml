@@ -9,10 +9,10 @@
   </developer>
   <description>
     <p>
-      ReGa sets up a Windows gaming machine in your own cloud account and
-      streams it to your desktop with Moonlight. It picks a region by latency
-      and price, starts on a cheap machine to download games, and stops
-      itself when you stop playing.
+      ReGa is an early preview of an app that sets up a Windows gaming
+      machine in your own cloud account and streams it to your desktop with
+      Moonlight. This version shows machine types, prices and regions from
+      sample data; launching machines comes in a later release.
     </p>
   </description>
   <url type="homepage">https://github.com/sergimn/ReGa</url>

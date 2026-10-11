@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="888" height="200" viewBox="0 0 888 200" font-family="DejaVu Sans, Verdana, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1016" height="200" viewBox="0 0 1016 200" font-family="DejaVu Sans, Verdana, sans-serif">
 <rect x="0" y="0" width="120" height="96" rx="12" fill="#5EEAD4"/>
 <text x="12" y="62" font-size="14" font-weight="bold" fill="#0B1220">Aqua</text>
 <text x="12" y="82" font-size="12" fill="#0B1220">#5EEAD4</text>
@@ -20,6 +20,9 @@
 <rect x="768" y="0" width="120" height="96" rx="12" fill="#7C3AED"/>
 <text x="780" y="62" font-size="14" font-weight="bold" fill="#FFFFFF">Deep violet</text>
 <text x="780" y="82" font-size="12" fill="#FFFFFF">#7C3AED</text>
+<rect x="896" y="0" width="120" height="96" rx="12" fill="#22C55E"/>
+<text x="908" y="62" font-size="14" font-weight="bold" fill="#0B1220">Success</text>
+<text x="908" y="82" font-size="12" fill="#0B1220">#22C55E</text>
 <rect x="0" y="104" width="120" height="96" rx="12" fill="#0B1220"/>
 <text x="12" y="166" font-size="14" font-weight="bold" fill="#E2E8F0">Night</text>
 <text x="12" y="186" font-size="12" fill="#E2E8F0">#0B1220</text>
@@ -35,10 +38,10 @@
 <rect x="512" y="104" width="120" height="96" rx="12" fill="#F4F7FB" stroke="#CBD5E1"/>
 <text x="524" y="166" font-size="14" font-weight="bold" fill="#0B1220">Mist</text>
 <text x="524" y="186" font-size="12" fill="#0B1220">#F4F7FB</text>
-<rect x="640" y="104" width="120" height="96" rx="12" fill="#22C55E"/>
-<text x="652" y="166" font-size="14" font-weight="bold" fill="#0B1220">Success</text>
-<text x="652" y="186" font-size="12" fill="#0B1220">#22C55E</text>
-<rect x="768" y="104" width="120" height="96" rx="12" fill="#E5484D"/>
-<text x="780" y="166" font-size="14" font-weight="bold" fill="#FFFFFF">Error</text>
-<text x="780" y="186" font-size="12" fill="#FFFFFF">#E5484D</text>
+<rect x="640" y="104" width="120" height="96" rx="12" fill="#CE2C31"/>
+<text x="652" y="166" font-size="14" font-weight="bold" fill="#FFFFFF">Error</text>
+<text x="652" y="186" font-size="12" fill="#FFFFFF">#CE2C31</text>
+<rect x="768" y="104" width="120" height="96" rx="12" fill="#F87171"/>
+<text x="780" y="166" font-size="14" font-weight="bold" fill="#0B1220">Error (dark)</text>
+<text x="780" y="186" font-size="12" fill="#0B1220">#F87171</text>
 </svg>

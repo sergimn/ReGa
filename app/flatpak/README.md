@@ -5,7 +5,8 @@ The manifest packages the Flutter release bundle, so build that first.
 ```sh
 cd app
 flutter build linux --release
-flatpak-builder --user --install --force-clean build/flatpak flatpak/io.github.sergimn.rega.yml
+flatpak-builder --user --install --install-deps-from=flathub --force-clean \
+  build/flatpak flatpak/io.github.sergimn.rega.yml
 flatpak run io.github.sergimn.rega
 ```
 

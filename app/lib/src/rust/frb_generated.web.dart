@@ -24,9 +24,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   @protected
-  AnyhowException dco_decode_AnyhowException(dynamic raw);
-
-  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -90,6 +87,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProviderInfo dco_decode_provider_info(dynamic raw);
 
   @protected
+  RegaError dco_decode_rega_error(dynamic raw);
+
+  @protected
   RegionChoices dco_decode_region_choices(dynamic raw);
 
   @protected
@@ -103,9 +103,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void dco_decode_unit(dynamic raw);
-
-  @protected
-  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
@@ -183,6 +180,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ProviderInfo sse_decode_provider_info(SseDeserializer deserializer);
 
   @protected
+  RegaError sse_decode_rega_error(SseDeserializer deserializer);
+
+  @protected
   RegionChoices sse_decode_region_choices(SseDeserializer deserializer);
 
   @protected
@@ -196,12 +196,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_decode_unit(SseDeserializer deserializer);
-
-  @protected
-  void sse_encode_AnyhowException(
-    AnyhowException self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
@@ -289,6 +283,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_provider_info(ProviderInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_rega_error(RegaError self, SseSerializer serializer);
 
   @protected
   void sse_encode_region_choices(RegionChoices self, SseSerializer serializer);

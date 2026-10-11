@@ -17,5 +17,6 @@ void main() {
   test('latency shows a placeholder until measured', () {
     expect(formatRtt(38), '38 ms');
     expect(formatRtt(null), 'Measuring…');
+    expect(formatRtt(null, measuring: false), 'Latency unknown');
   });
 }

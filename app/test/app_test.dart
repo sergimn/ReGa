@@ -86,6 +86,68 @@ void main() {
     expect(backend.calls, contains('regions t3.medium'));
   });
 
+  testWidgets('picking a region reprices machines without reloading regions', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    final before = backend.regionCalls;
+
+    await tester.tap(find.text('Lowest latency'));
+    await tester.pumpAndSettle();
+
+    expect(backend.calls.last, 'offers eu-central-1');
+    expect(backend.regionCalls, before);
+  });
+
+  testWidgets('our pick follows Recommended; a user pick sticks', (
+    tester,
+  ) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    expect(backend.calls, contains('offers eu-north-1'));
+
+    backend.recommended = virginia;
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers us-east-1');
+
+    await tester.tap(find.text('Lowest latency'));
+    await tester.pumpAndSettle();
+    backend.recommended = stockholm;
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers eu-central-1');
+  });
+
+  testWidgets('new latency results refresh the regions', (tester) async {
+    final backend = FakeBackend()..latencyChanges = true;
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    expect(backend.regionCalls, 2);
+
+    await tester.tap(find.text('Show all regions'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Latency unknown'), findsOneWidget);
+    expect(find.textContaining('Measuring'), findsNothing);
+  });
+
+  testWidgets('errors show their message and Retry recovers', (tester) async {
+    final backend = FakeBackend()
+      ..regionsError = const RegaError(message: 'AWS said no');
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    expect(find.text('AWS said no'), findsOneWidget);
+
+    backend.regionsError = null;
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+    expect(find.text('AWS said no'), findsNothing);
+    expect(find.textContaining('Recommended'), findsOneWidget);
+  });
+
   testWidgets('existing machines are listed', (tester) async {
     final backend = FakeBackend(
       machines: const [

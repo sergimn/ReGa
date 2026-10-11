@@ -6,11 +6,11 @@ description = "flutter_rust_bridge layer between the Flutter UI and rega_core"
 publish = false
 
 [lib]
-crate-type = ["cdylib", "staticlib", "lib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
-anyhow = "1"
 flutter_rust_bridge = "=2.13.0"
+futures = "0.3"
 rega_core = { path = "../core" }
 
 [dev-dependencies]

@@ -1,10 +1,29 @@
 //! Everything the Flutter UI can call. Types here are flat views of the core
 //! model, shaped for display.
 
+use std::fmt::Display;
+
+use futures::future::try_join_all;
 use rega_core::region::{self, RegionCandidate};
 use rega_core::{Machine, MachineState, MachineType, DEFAULT_DISK_GIB};
 
 use crate::registry;
+
+/// An error the UI shows as is: a plain message, never a backtrace.
+#[derive(Debug)]
+pub struct RegaError {
+    pub message: String,
+}
+
+impl<E: Display> From<E> for RegaError {
+    fn from(e: E) -> Self {
+        Self {
+            message: e.to_string(),
+        }
+    }
+}
+
+pub type RegaResult<T> = Result<T, RegaError>;
 
 pub struct ProviderInfo {
     pub id: String,
@@ -82,29 +101,35 @@ pub fn list_providers() -> Vec<ProviderInfo> {
         .collect()
 }
 
-/// Machine types priced for `region_id`. With `spot` on, only GPU types.
+/// Machine types sold in `region_id` the chosen way, priced. With `spot` on
+/// that means GPU types only.
 pub async fn machine_offers(
     provider_id: String,
     region_id: String,
     spot: bool,
-) -> anyhow::Result<Vec<MachineOffer>> {
+) -> RegaResult<Vec<MachineOffer>> {
     let provider = registry::entry(&provider_id)?.provider();
-    let mut offers = Vec::new();
-    for t in provider.machine_types() {
-        if spot && !t.is_gpu() {
-            continue;
-        }
-        let price = provider.price(&region_id, &t.type_name).await?;
-        offers.push(offer(&t, price.per_hour(spot)));
-    }
-    Ok(offers)
+    let types = provider.machine_types();
+    let prices = try_join_all(
+        types
+            .iter()
+            .map(|t| provider.price(&region_id, &t.type_name)),
+    )
+    .await?;
+    Ok(types
+        .iter()
+        .zip(prices)
+        .filter(|(t, _)| !spot || t.is_gpu())
+        .filter_map(|(t, p)| Some(offer(t, Some(p?.per_hour(spot)?))))
+        .collect())
 }
 
-/// Starts background latency measurement to every region (cached).
-pub async fn probe_latency(provider_id: String) -> anyhow::Result<()> {
+/// Measures latency to every region and caches it. Resolves when done, with
+/// `true` if any measurement changed (so the UI knows to refresh).
+pub async fn probe_latency(provider_id: String) -> RegaResult<bool> {
     let entry = registry::entry(&provider_id)?;
-    entry.probe(entry.provider().regions().await?);
-    Ok(())
+    let regions = entry.provider().regions().await?;
+    Ok(entry.probe(regions).await)
 }
 
 /// Recommended, Lowest latency and Cheapest regions for `type_name`, or for
@@ -113,7 +138,7 @@ pub async fn region_choices(
     provider_id: String,
     type_name: Option<String>,
     spot: bool,
-) -> anyhow::Result<RegionChoices> {
+) -> RegaResult<RegionChoices> {
     let entry = registry::entry(&provider_id)?;
     let provider = entry.provider();
     let type_name = match type_name {
@@ -123,7 +148,7 @@ pub async fn region_choices(
             .into_iter()
             .find(|t| t.is_gpu())
             .map(|t| t.type_name)
-            .ok_or_else(|| anyhow::anyhow!("{provider_id} offers no GPU type"))?,
+            .ok_or_else(|| format!("{provider_id} offers no GPU type"))?,
     };
     let candidates = region::candidates(provider, &type_name, spot, |id| entry.rtt(id)).await?;
     let choices = region::choose(candidates);
@@ -135,7 +160,7 @@ pub async fn region_choices(
     })
 }
 
-pub async fn list_machines(provider_id: String) -> anyhow::Result<Vec<MachineSummary>> {
+pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary>> {
     let provider = registry::entry(&provider_id)?.provider();
     let machines = provider.list_machines().await?;
     Ok(machines.into_iter().map(summary).collect())
@@ -222,7 +247,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_provider_is_an_error() {
-        assert!(list_machines("nope".into()).await.is_err());
+    async fn errors_are_plain_messages() {
+        let err = list_machines("nope".into()).await.err().unwrap();
+        assert_eq!(err.message, "unknown provider nope");
+    }
+
+    #[tokio::test]
+    async fn demo_latency_never_changes() {
+        assert!(!probe_latency("aws".into()).await.unwrap());
     }
 }

@@ -8,13 +8,15 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `offer`, `option`, `summary`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `is_gpu`
 
 /// Providers for the side menu.
 List<ProviderInfo> listProviders() =>
     RustLib.instance.api.crateApiRegaListProviders();
 
-/// Machine types priced for `region_id`. With `spot` on, only GPU types.
+/// Machine types sold in `region_id` the chosen way, priced. With `spot` on
+/// that means GPU types only.
 Future<List<MachineOffer>> machineOffers({
   required String providerId,
   required String regionId,
@@ -25,8 +27,9 @@ Future<List<MachineOffer>> machineOffers({
   spot: spot,
 );
 
-/// Starts background latency measurement to every region (cached).
-Future<void> probeLatency({required String providerId}) =>
+/// Measures latency to every region and caches it. Resolves when done, with
+/// `true` if any measurement changed (so the UI knows to refresh).
+Future<bool> probeLatency({required String providerId}) =>
     RustLib.instance.api.crateApiRegaProbeLatency(providerId: providerId);
 
 /// Recommended, Lowest latency and Cheapest regions for `type_name`, or for
@@ -154,6 +157,23 @@ class ProviderInfo {
           id == other.id &&
           name == other.name &&
           demo == other.demo;
+}
+
+/// An error the UI shows as is: a plain message, never a backtrace.
+class RegaError implements FrbException {
+  final String message;
+
+  const RegaError({required this.message});
+
+  @override
+  int get hashCode => message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RegaError &&
+          runtimeType == other.runtimeType &&
+          message == other.message;
 }
 
 class RegionChoices {

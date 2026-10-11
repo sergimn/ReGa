@@ -106,7 +106,7 @@ fn wire__crate__api__rega__list_machines_impl(
             let api_provider_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                transform_result_sse::<_, crate::api::rega::RegaError>(
                     (move || async move {
                         let output_ok = crate::api::rega::list_machines(api_provider_id).await?;
                         std::result::Result::Ok(output_ok)
@@ -173,7 +173,7 @@ fn wire__crate__api__rega__machine_offers_impl(
             let api_spot = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                transform_result_sse::<_, crate::api::rega::RegaError>(
                     (move || async move {
                         let output_ok = crate::api::rega::machine_offers(
                             api_provider_id,
@@ -214,7 +214,7 @@ fn wire__crate__api__rega__probe_latency_impl(
             let api_provider_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                transform_result_sse::<_, crate::api::rega::RegaError>(
                     (move || async move {
                         let output_ok = crate::api::rega::probe_latency(api_provider_id).await?;
                         std::result::Result::Ok(output_ok)
@@ -252,7 +252,7 @@ fn wire__crate__api__rega__region_choices_impl(
             let api_spot = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
-                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                transform_result_sse::<_, crate::api::rega::RegaError>(
                     (move || async move {
                         let output_ok = crate::api::rega::region_choices(
                             api_provider_id,
@@ -270,14 +270,6 @@ fn wire__crate__api__rega__region_choices_impl(
 }
 
 // Section: dart2rust
-
-impl SseDecode for flutter_rust_bridge::for_generated::anyhow::Error {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut inner = <String>::sse_decode(deserializer);
-        return flutter_rust_bridge::for_generated::anyhow::anyhow!("{}", inner);
-    }
-}
 
 impl SseDecode for String {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -490,6 +482,16 @@ impl SseDecode for crate::api::rega::ProviderInfo {
     }
 }
 
+impl SseDecode for crate::api::rega::RegaError {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_message = <String>::sse_decode(deserializer);
+        return crate::api::rega::RegaError {
+            message: var_message,
+        };
+    }
+}
+
 impl SseDecode for crate::api::rega::RegionChoices {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -676,6 +678,20 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::ProviderInfo>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::rega::RegaError {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.message.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::rega::RegaError {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::RegaError>
+    for crate::api::rega::RegaError
+{
+    fn into_into_dart(self) -> crate::api::rega::RegaError {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::rega::RegionChoices {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -720,13 +736,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::RegionOption>
 {
     fn into_into_dart(self) -> crate::api::rega::RegionOption {
         self
-    }
-}
-
-impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(format!("{:?}", self), serializer);
     }
 }
 
@@ -905,6 +914,13 @@ impl SseEncode for crate::api::rega::ProviderInfo {
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.name, serializer);
         <bool>::sse_encode(self.demo, serializer);
+    }
+}
+
+impl SseEncode for crate::api::rega::RegaError {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.message, serializer);
     }
 }
 

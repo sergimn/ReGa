@@ -11,11 +11,15 @@ class RegionPicker extends StatefulWidget {
     required this.choices,
     required this.selectedRegionId,
     required this.onSelected,
+    this.measuring = true,
   });
 
   final RegionChoices choices;
   final String? selectedRegionId;
   final ValueChanged<RegionOption> onSelected;
+
+  /// True while latency probes are still running.
+  final bool measuring;
 
   @override
   State<RegionPicker> createState() => _RegionPickerState();
@@ -45,9 +49,15 @@ class _RegionPickerState extends State<RegionPicker> {
       labels.putIfAbsent(option.regionId, () => []).add(label);
       options[option.regionId] = option;
     }
+    // Keep a region picked from the full list visible when it's collapsed.
+    final picked = c.all
+        .where((r) => r.regionId == widget.selectedRegionId)
+        .firstOrNull;
     final tiles = <Widget>[
       for (final MapEntry(key: id, value: names) in labels.entries)
         _tile(options[id]!, label: names.join(' · ')),
+      if (!_showAll && picked != null && !labels.containsKey(picked.regionId))
+        _tile(picked, label: 'Your pick'),
       Align(
         alignment: Alignment.centerLeft,
         child: TextButton.icon(
@@ -76,7 +86,8 @@ class _RegionPickerState extends State<RegionPicker> {
       title: Text(label ?? option.displayName),
       subtitle: Text(
         '${label == null ? '' : '${option.displayName} · '}'
-        '${formatRtt(option.rttMs)} · ${formatPrice(option.pricePerHour)}$copy',
+        '${formatRtt(option.rttMs, measuring: widget.measuring)} · '
+        '${formatPrice(option.pricePerHour)}$copy',
       ),
       onTap: () => widget.onSelected(option),
     );
