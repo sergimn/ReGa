@@ -51,6 +51,14 @@ after Windows has booted.
 Spot uses one-time requests, so a spot machine can't be stopped or resized.
 The idle alarm terminates it instead of stopping it.
 
+The first spot launch in an account needs the service-linked role
+`AWSServiceRoleForEC2Spot`, which `rega-claude` can't create. If the account
+has never launched a spot instance, create it once as an admin:
+
+```sh
+aws iam create-service-linked-role --aws-service-name spot.amazonaws.com
+```
+
 On destroy, the AWS provider cancels the spot request before terminating the
 instance, and that needs `ec2:CancelSpotInstanceRequests`, which the
 `rega-claude` policy doesn't grant yet. Until it does, end a spot session by
@@ -68,8 +76,9 @@ a bad request fails at plan time, not halfway through an apply.
 
 `aws_cloudwatch_metric_alarm.idle_stop` stops the instance when CPU stays
 below `idle_cpu_percent` for `idle_alarm_minutes` (120 by default). EC2
-actions only run on single-metric alarms, so it can't combine CPU and network. It terminates spot machines instead.
-A stop by the alarm leaves D: attached until the app's next apply.
+actions only run on single-metric alarms, so it can't combine CPU and
+network. It terminates spot machines instead. A stop by the alarm leaves D:
+attached until the app's next apply.
 CloudWatch needs the service-linked role `AWSServiceRoleForCloudWatchEvents`
 for EC2 stop actions, and `rega-claude` can't create it. Create it once per
 account as an admin:
