@@ -24,7 +24,7 @@
           param([string]$Path, [string]$Signer)
           $Ansible.Changed = $false
           $signature = Get-AuthenticodeSignature -LiteralPath $Path
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch ('O="?' + [regex]::Escape($Signer))) {
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch ('(^|, )O="?' + [regex]::Escape($Signer) + '"?(,|$)')) {
             throw "Unexpected signature on ${Path}: $($signature.Status), $($signature.SignerCertificate.Subject)"
           }
         parameters:

@@ -114,6 +114,9 @@ function Set-GamingLicense {
 
 function Install-NvidiaDriver {
   param([hashtable]$State)
+  if ([int]$State.driver_attempts -ge 2) {
+    throw 'The NVIDIA driver failed to install twice; see gpu-setup.log. Delete gpu-setup.json in the state folder to try again.'
+  }
   $work = Join-Path $config.work_dir 'nvidia'
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
   New-Item -ItemType Directory -Path $work -Force | Out-Null
@@ -131,14 +134,12 @@ function Install-NvidiaDriver {
   $installer = Get-ChildItem -LiteralPath $work -Recurse -Filter *.exe | Sort-Object Length -Descending | Select-Object -First 1
   if (-not $installer) { throw "No driver installer found under $work." }
   $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
-  if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O="?NVIDIA Corporation') {
+  if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|, )O="?NVIDIA Corporation"?(,|$)') {
     throw "Refusing $($installer.Name): signature $($signature.Status) by $($signature.SignerCertificate.Subject)."
   }
   # Count only real install attempts: a download that failed, for example
   # before the IAM policy was fixed, is retried at every boot.
-  $attempts = [int]$State.driver_attempts
-  if ($attempts -ge 2) { throw 'The NVIDIA driver failed to install twice; see gpu-setup.log. Delete gpu-setup.json in the state folder to try again.' }
-  $State.driver_attempts = $attempts + 1
+  $State.driver_attempts = [int]$State.driver_attempts + 1
   Save-State $State
   Write-GpuLog "Installing $($installer.Name)"
   $process = Start-Process -FilePath $installer.FullName -ArgumentList @('-s', '-noreboot', '-noeula', '-clean') -Wait -PassThru

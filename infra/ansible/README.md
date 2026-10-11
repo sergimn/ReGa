@@ -91,11 +91,13 @@ Any WinRM shell keeps the machine up, so the app should not poll the agent
 over WinRM while waiting for the idle stop.
 
 Every machine in the account shares the one library, so an upload never
-mirrors deletes across the whole library. It uploads new and changed files,
-mirrors each installed game's folder under `steamapps/common` (so files an
-update removed go away), and deletes from S3 only the games this disk had
-when it was restored or last uploaded and has since uninstalled. Nothing is
-uploaded from a disk that wasn't restored from S3 this session.
+mirrors deletes across the whole library. For each game whose Steam
+manifest changed since the restore or the last upload, it mirrors the game's
+folder and workshop content (so files an update removed go away) and only
+then uploads the manifest, so S3 never has a manifest ahead of its files. It
+skips a game when S3 already holds a build another machine uploaded, and
+deletes from S3 only the games whose manifest this disk had and lost.
+Nothing is uploaded from a disk that wasn't restored from S3 this session.
 
 Before a stop, the agent uploads once more and writes
 `s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json` with

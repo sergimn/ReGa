@@ -2,5 +2,5 @@
 # Valve's bootstrapper always fetches the current client, so it can't be
 # pinned by hash. The playbook checks that Valve signed it instead.
 rega_steam_setup_url: https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
-rega_steam_signer: Valve Corp
+rega_steam_signer: Valve Corp.
 rega_steam_path: C:\Program Files (x86)\Steam

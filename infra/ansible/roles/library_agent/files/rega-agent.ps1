@@ -188,10 +188,13 @@ switch ($Action) {
         }
         if ($code -eq 0) {
           Initialize-LibraryFolder
+          $snapshot = Get-LibrarySnapshot $steamApps
           Write-JsonFile $marker ([pscustomobject]@{
             restored_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
             source       = $target.Uri
-            apps         = (Get-SteamApps $steamApps)
+            apps         = $snapshot.apps
+            stamps       = $snapshot.stamps
+            builds       = $snapshot.builds
           })
           Write-ReGaLog "Restored $($target.Uri) to $libraryPath."
           Save-State @{ synced_fingerprint = (Get-LibraryFingerprint $steamApps) }
@@ -275,6 +278,8 @@ switch ($Action) {
     $startBy = [datetime]::UtcNow.AddMinutes(5)
     $deadline = [datetime]::UtcNow.AddMinutes(180)
     while ([datetime]::UtcNow -lt $deadline) {
+      # Explorer may still start Steam from the Run key after the check above.
+      Stop-Steam $steamExe
       $restore = Read-JsonFile $restorePath
       $sameBoot = Test-SameBoot (Get-PropertyValue $restore 'boot_utc') $boot
       if ($sameBoot -and (Get-PropertyValue $restore 'status') -ne 'running') { break }

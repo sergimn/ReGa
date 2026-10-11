@@ -240,15 +240,38 @@ Describe 'Steam apps' {
   It 'finds uninstalled apps and keeps folders still in use' {
     $known = @{ '10' = 'Counter-Strike'; '20' = 'Shared'; '30' = 'Portal' }
     $current = @{ '10' = 'Counter-Strike'; '21' = 'shared' }
-    $removed = Get-RemovedApps -Known $known -Current $current
+    $removed = Get-RemovedApps -Known $known -Current $current -Present @('10', '21')
     $removed.Count | Should -Be 2
     ($removed | Where-Object AppId -eq '20').DeleteFolder | Should -BeFalse
     ($removed | Where-Object AppId -eq '30').DeleteFolder | Should -BeTrue
   }
 
-  It 'removes nothing when nothing was known' {
-    $removed = Get-RemovedApps -Known @{} -Current @{ '10' = 'Counter-Strike' }
+  It 'does not count a manifest that fails to parse as removed' {
+    $known = @{ '10' = 'Counter-Strike' }
+    $removed = Get-RemovedApps -Known $known -Current @{} -Present @('10')
     $removed.Count | Should -Be 0
+  }
+
+  It 'removes nothing when nothing was known' {
+    $removed = Get-RemovedApps -Known @{} -Current @{ '10' = 'Counter-Strike' } -Present @('10')
+    $removed.Count | Should -Be 0
+  }
+
+  It 'stamps manifests whether they parse or not' {
+    $apps = Join-Path $TestDrive 'stamps'
+    New-Item -ItemType Directory -Path $apps -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $apps 'appmanifest_7.acf') -Value 'half a file'
+    $stamps = Get-ManifestStamps $apps
+    $stamps.Keys | Should -Be @('7')
+    $stamps['7'] | Should -Match '^\d+:\d+$'
+  }
+
+  It 'never overwrites a build another machine uploaded' {
+    Test-UploadAllowed -S3Build '' -BaseBuild '' -LocalBuild '5' | Should -BeTrue
+    Test-UploadAllowed -S3Build '4' -BaseBuild '4' -LocalBuild '5' | Should -BeTrue
+    Test-UploadAllowed -S3Build '5' -BaseBuild '4' -LocalBuild '5' | Should -BeTrue
+    Test-UploadAllowed -S3Build '6' -BaseBuild '4' -LocalBuild '4' | Should -BeFalse
+    Test-UploadAllowed -S3Build '6' -BaseBuild '' -LocalBuild '5' | Should -BeFalse
   }
 }
 
@@ -262,16 +285,34 @@ Describe 'Write-JsonFile' {
 }
 
 Describe 'Invoke-LibraryUpload' {
+  BeforeAll {
+    function New-Manifest([string]$Path, [string]$Id, [string]$Dir, [string]$Build) {
+      Set-Content -LiteralPath $Path -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"$Id`"`n`t`"installdir`"`t`t`"$Dir`"`n`t`"buildid`"`t`t`"$Build`"`n}"
+    }
+  }
+
   BeforeEach {
     $script:library = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
     $script:apps = Join-Path $library 'steamapps'
-    $script:marker = Join-Path $TestDrive 'marker.json'
+    $script:marker = Join-Path $library 'marker.json'
     $script:target = [pscustomobject]@{ Bucket = 'b'; Region = 'eu-north-1'; Uri = 's3://b/steam-library/' }
     New-Item -ItemType Directory -Path (Join-Path $apps 'common/Portal') -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $apps 'appmanifest_400.acf') -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"400`"`n`t`"installdir`"`t`t`"Portal`"`n}"
-    Write-JsonFile $marker ([pscustomobject]@{ restored_utc = '2026-10-11T10:00:00Z'; apps = @{ '400' = 'Portal'; '620' = 'Portal 2' } })
+    New-Item -ItemType Directory -Path (Join-Path $apps 'common/Half-Life') -Force | Out-Null
+    New-Manifest (Join-Path $apps 'appmanifest_400.acf') '400' 'Portal' '100'
+    New-Manifest (Join-Path $apps 'appmanifest_70.acf') '70' 'Half-Life' '7'
+    # As the restore records it: Portal, Half-Life and Portal 2.
+    $snapshot = Get-LibrarySnapshot $apps
+    $snapshot.apps['620'] = 'Portal 2'
+    $snapshot.stamps['620'] = '1:1'
+    $snapshot.builds['620'] = '200'
+    Write-JsonFile $marker ([pscustomobject]@{ restored_utc = '2026-10-11T10:00:00Z'; apps = $snapshot.apps; stamps = $snapshot.stamps; builds = $snapshot.builds })
+    # Then Portal updates to build 101 and Portal 2 is uninstalled.
+    Start-Sleep -Milliseconds 20
+    New-Manifest (Join-Path $apps 'appmanifest_400.acf') '400' 'Portal' '101'
     $script:calls = [Collections.ArrayList]::new()
+    $script:s3Build = '100'
     Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); return 0 }
+    Mock Get-S3Text -ModuleName ReGa.Agent { [pscustomobject]@{ Ok = $true; Found = $true; Text = "`"buildid`"`t`t`"$script:s3Build`"" } }
   }
 
   It 'never deletes across the whole library' {
@@ -279,26 +320,52 @@ Describe 'Invoke-LibraryUpload' {
     $root = @($calls | Where-Object { $_ -like "s3 sync $library s3://b/steam-library/ *" })
     $root.Count | Should -Be 1
     $root[0] | Should -Not -Match '--delete'
-    $root[0] | Should -Match '--exclude steamapps/common/\*'
-    $root[0] | Should -Match '--exclude steamapps/downloading/\*'
+    foreach ($pattern in @('steamapps/common/\*', 'steamapps/appmanifest_\*', 'steamapps/workshop/\*', 'steamapps/downloading/\*')) {
+      $root[0] | Should -Match "--exclude $pattern"
+    }
   }
 
-  It 'mirrors each installed game and deletes only uninstalled ones' {
+  It 'uploads only the changed game, its files before its manifest' {
     Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
-    @($calls | Where-Object { $_ -match 's3://b/steam-library/steamapps/common/Portal/ .*--delete$' }).Count | Should -Be 1
-    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/appmanifest_620.acf --region eu-north-1 --only-show-errors'
-    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
-    @($calls | Where-Object { $_ -match 'appmanifest_400' }).Count | Should -Be 0
+    $folder = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match 'steamapps/common/Portal/ .*--delete$' })
+    $manifest = [array]::FindIndex([string[]]$calls, [Predicate[string]]{ param($c) $c -match '^s3 cp .*appmanifest_400\.acf s3://b/steam-library/steamapps/appmanifest_400\.acf' })
+    $folder | Should -BeGreaterOrEqual 0
+    $manifest | Should -BeGreaterThan $folder
+    @($calls | Where-Object { $_ -match 'Half-Life|appmanifest_70' }).Count | Should -Be 0
   }
 
-  It 'remembers the uploaded apps so a removal happens once' {
+  It 'deletes the uninstalled game, manifest first' {
     Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
-    $saved = ConvertTo-AppTable (Read-JsonFile $marker).apps
-    $saved.Keys | Should -Be @('400')
-    (Read-JsonFile $marker).restored_utc | Should -Not -BeNullOrEmpty
+    $removals = @($calls | Where-Object { $_ -match '^s3 rm .*(620|Portal 2)' })
+    $removals[0] | Should -Be 's3 rm s3://b/steam-library/steamapps/appmanifest_620.acf --region eu-north-1 --only-show-errors'
+    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
   }
 
-  It 'keeps the old app list when a step fails' {
+  It 'records what it uploaded so the next run does nothing' {
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    $saved = Read-JsonFile $marker
+    (ConvertTo-AppTable $saved.apps).Keys | Sort-Object | Should -Be @('400', '70')
+    (ConvertTo-AppTable $saved.builds)['400'] | Should -Be '101'
+    $saved.restored_utc | Should -Not -BeNullOrEmpty
+    $calls.Clear()
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    @($calls | Where-Object { $_ -notlike "s3 sync $library *" }).Count | Should -Be 0
+  }
+
+  It 'skips a game another machine uploaded a different build of' {
+    $script:s3Build = '102'
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'Portal/|appmanifest_400' }).Count | Should -Be 0
+  }
+
+  It 'keeps the manifest back and retries when the folder upload fails' {
+    Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); if ($Arguments -contains '--delete') { return 1 } ; return 0 }
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_400' }).Count | Should -Be 0
+    (ConvertTo-AppTable (Read-JsonFile $marker).builds)['400'] | Should -Be '100'
+  }
+
+  It 'keeps a removal to retry when it fails' {
     Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments[1] -eq 'rm') { return 1 } ; return 0 }
     Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
     (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeTrue

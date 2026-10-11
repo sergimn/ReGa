@@ -287,29 +287,57 @@ function ConvertTo-AppTable {
   return $table
 }
 
+function Get-ManifestValues {
+  # appid -> the value of Key, for every app manifest that parses.
+  param([string]$SteamAppsPath, [string]$Key)
+  $values = @{}
+  if (-not (Test-Path -LiteralPath $SteamAppsPath)) { return $values }
+  foreach ($file in @(Get-ChildItem -LiteralPath $SteamAppsPath -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
+    try { $text = [IO.File]::ReadAllText($file.FullName) } catch { continue }
+    $id = Get-AcfValue $text 'appid'
+    $value = Get-AcfValue $text $Key
+    if ($id -and $null -ne $value) { $values[$id] = $value }
+  }
+  return $values
+}
+
 function Get-SteamApps {
   # appid -> installdir for every app manifest in a steamapps folder.
   param([string]$SteamAppsPath)
   $apps = @{}
-  if (-not (Test-Path -LiteralPath $SteamAppsPath)) { return $apps }
-  foreach ($file in @(Get-ChildItem -LiteralPath $SteamAppsPath -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
-    $text = [IO.File]::ReadAllText($file.FullName)
-    $id = Get-AcfValue $text 'appid'
-    $dir = Get-AcfValue $text 'installdir'
-    if ($id -and (Test-SafeFolderName $dir)) { $apps[$id] = $dir }
+  $dirs = Get-ManifestValues $SteamAppsPath 'installdir'
+  foreach ($id in $dirs.Keys) {
+    if (Test-SafeFolderName $dirs[$id]) { $apps[$id] = $dirs[$id] }
   }
   return $apps
 }
 
+function Get-ManifestStamps {
+  # appid -> size and write time of each app manifest file, whether it
+  # parses or not. Steam rewrites a manifest whenever the app changes.
+  param([string]$SteamAppsPath)
+  $stamps = @{}
+  if (-not (Test-Path -LiteralPath $SteamAppsPath)) { return $stamps }
+  foreach ($file in @(Get-ChildItem -LiteralPath $SteamAppsPath -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
+    if ($file.Name -match '^appmanifest_(\d+)\.acf$') {
+      $stamps[$Matches[1]] = '{0}:{1}' -f $file.Length, $file.LastWriteTimeUtc.Ticks
+    }
+  }
+  return $stamps
+}
+
 function Get-RemovedApps {
-  # Pure: apps this disk knew (restored or uploaded) that are no longer
-  # installed. DeleteFolder is false when an installed app still uses the
-  # same folder.
-  param([hashtable]$Known, [hashtable]$Current)
-  $inUse = @($Current.Values | ForEach-Object { "$_".ToLowerInvariant() })
+  # Pure: apps this disk knew (restored or uploaded) whose manifest file is
+  # gone. A manifest that exists but doesn't parse (Steam may be rewriting
+  # it) is not a removal. DeleteFolder is false when an app still on disk
+  # uses the same folder.
+  param([hashtable]$Known, [hashtable]$Current, [string[]]$Present)
+  $inUse = @()
+  foreach ($id in $Current.Keys) { $inUse += "$($Current[$id])".ToLowerInvariant() }
+  foreach ($id in @($Present)) { if ($Known.ContainsKey($id)) { $inUse += "$($Known[$id])".ToLowerInvariant() } }
   $removed = @()
   foreach ($id in @($Known.Keys | Sort-Object)) {
-    if ($Current.ContainsKey($id)) { continue }
+    if (@($Present) -contains $id) { continue }
     $dir = $Known[$id]
     $removed += [pscustomobject]@{
       AppId        = $id
@@ -320,61 +348,148 @@ function Get-RemovedApps {
   return , $removed
 }
 
+function Test-UploadAllowed {
+  # Pure: whether this disk may overwrite an app's copy in S3. Not when S3
+  # holds a build this disk neither started from nor has now: another
+  # machine uploaded it since, and mirroring would mix the two builds.
+  param([string]$S3Build, [string]$BaseBuild, [string]$LocalBuild)
+  if (-not $S3Build) { return $true }
+  return ($S3Build -eq $BaseBuild -or $S3Build -eq $LocalBuild)
+}
+
+function Get-S3Text {
+  # A small S3 object as text. Found is false when it doesn't exist; Ok is
+  # false when S3 couldn't be asked.
+  param([string]$AwsPath, [string]$Uri, [string]$Region)
+  $ErrorActionPreference = 'Continue'
+  $output = & $AwsPath s3 cp $Uri - --region $Region --only-show-errors 2>&1
+  $code = $LASTEXITCODE
+  $lines = @($output | ForEach-Object { "$_" })
+  if ($code -eq 0) { return [pscustomobject]@{ Ok = $true; Found = $true; Text = ($lines -join "`n") } }
+  $message = $lines -join ' '
+  if ($message -match '\(404\)|NoSuchKey|Not Found') { return [pscustomobject]@{ Ok = $true; Found = $false; Text = '' } }
+  Write-ReGaLog "Could not read ${Uri}: $message" 'error'
+  return [pscustomobject]@{ Ok = $false; Found = $false; Text = '' }
+}
+
+function Get-LibrarySnapshot {
+  # What the marker records about the games on a disk.
+  param([string]$SteamAppsPath)
+  return [pscustomobject]@{
+    apps   = (Get-SteamApps $SteamAppsPath)
+    stamps = (Get-ManifestStamps $SteamAppsPath)
+    builds = (Get-ManifestValues $SteamAppsPath 'buildid')
+  }
+}
+
 function Invoke-LibraryUpload {
-  # Other machines in the account share the library, so a whole-library
-  # "sync --delete" could wipe games they uploaded. Instead:
-  #   1. upload new and changed files everywhere except steamapps/common;
-  #   2. mirror each installed game's folder, so files an update removed go;
-  #   3. delete the games this disk had and has since uninstalled.
-  # Only a disk restored from S3 this session uploads at all: its marker
-  # records which games it started with.
+  # Other machines in the account share the library, so nothing here
+  # mirrors deletes across the whole library. Instead:
+  #   1. upload files outside the games (libraryfolder.vdf and the like);
+  #   2. for each game whose manifest changed since the restore or the last
+  #      upload: mirror its folder and workshop content, then upload its
+  #      manifest, so S3 never has a manifest ahead of its files;
+  #   3. delete the games whose manifest file this disk had and lost.
+  # A game is skipped when S3 already holds a build another machine
+  # uploaded. Only a disk restored from S3 this session uploads at all: its
+  # marker records the games it started with.
   param([string]$AwsPath, [string]$LibraryPath, [string]$MarkerPath, $Target, [string[]]$Excludes)
   if (-not (Test-Path -LiteralPath $MarkerPath)) {
     Write-ReGaLog "Skipping upload: $LibraryPath was not restored from S3 this session." 'warning'
     return $false
   }
   $steamApps = Join-Path $LibraryPath 'steamapps'
+  $workshop = Join-Path $steamApps 'workshop'
+  $uri = $Target.Uri
+  $region = $Target.Region
   $restored = Read-JsonFile $MarkerPath
   $known = ConvertTo-AppTable (Get-PropertyValue $restored 'apps')
+  $knownStamps = ConvertTo-AppTable (Get-PropertyValue $restored 'stamps')
+  $knownBuilds = ConvertTo-AppTable (Get-PropertyValue $restored 'builds')
   $current = Get-SteamApps $steamApps
+  $stamps = Get-ManifestStamps $steamApps
   $ok = $true
 
-  $arguments = Get-SyncArguments -Source $LibraryPath -Destination $Target.Uri -Region $Target.Region `
-    -Excludes (@($Excludes) + 'steamapps/common/*')
+  $outside = @($Excludes) + @('steamapps/common/*', 'steamapps/appmanifest_*', 'steamapps/workshop/*')
+  $arguments = Get-SyncArguments -Source $LibraryPath -Destination $uri -Region $region -Excludes $outside
   if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
 
   foreach ($id in @($current.Keys | Sort-Object)) {
+    if ($stamps[$id] -eq $knownStamps[$id]) { continue }
     $dir = $current[$id]
-    $local = Join-Path (Join-Path $steamApps 'common') $dir
-    if (-not (Test-Path -LiteralPath $local)) { continue }
-    $arguments = Get-SyncArguments -Source $local -Destination "$($Target.Uri)steamapps/common/$dir/" `
-      -Region $Target.Region -Excludes @() -Delete
-    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
-  }
-
-  foreach ($app in (Get-RemovedApps -Known $known -Current $current)) {
-    Write-ReGaLog "Removing uninstalled app $($app.AppId) ($($app.InstallDir)) from $($Target.Uri)."
-    $arguments = @('s3', 'rm', "$($Target.Uri)steamapps/appmanifest_$($app.AppId).acf",
-      '--region', $Target.Region, '--only-show-errors')
-    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
-    if ($app.DeleteFolder) {
-      $arguments = @('s3', 'rm', "$($Target.Uri)steamapps/common/$($app.InstallDir)/", '--recursive',
-        '--region', $Target.Region, '--only-show-errors')
-      if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+    $manifest = Join-Path $steamApps "appmanifest_$id.acf"
+    try { $localBuild = Get-AcfValue ([IO.File]::ReadAllText($manifest)) 'buildid' } catch { $ok = $false; continue }
+    $remote = Get-S3Text -AwsPath $AwsPath -Uri "${uri}steamapps/appmanifest_$id.acf" -Region $region
+    if (-not $remote.Ok) { $ok = $false; continue }
+    $s3Build = Get-AcfValue $remote.Text 'buildid'
+    if (-not (Test-UploadAllowed -S3Build $s3Build -BaseBuild $knownBuilds[$id] -LocalBuild $localBuild)) {
+      Write-ReGaLog "Not uploading app $id ($dir): S3 has build $s3Build from another machine, this disk has $localBuild." 'warning'
+      continue
+    }
+    $appOk = $true
+    $folders = @(
+      @((Join-Path (Join-Path $steamApps 'common') $dir), "${uri}steamapps/common/$dir/"),
+      @((Join-Path (Join-Path $workshop 'content') $id), "${uri}steamapps/workshop/content/$id/")
+    )
+    foreach ($pair in $folders) {
+      if (-not (Test-Path -LiteralPath $pair[0])) { continue }
+      $arguments = Get-SyncArguments -Source $pair[0] -Destination $pair[1] -Region $region -Excludes @() -Delete
+      if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $appOk = $false }
+    }
+    # A leading comma keeps a single pair from being flattened.
+    $files = @(, @($manifest, "${uri}steamapps/appmanifest_$id.acf"))
+    $workshopManifest = Join-Path $workshop "appworkshop_$id.acf"
+    if (Test-Path -LiteralPath $workshopManifest) { $files += , @($workshopManifest, "${uri}steamapps/workshop/appworkshop_$id.acf") }
+    foreach ($pair in $files) {
+      if (-not $appOk) { break }
+      $arguments = @('s3', 'cp', $pair[0], $pair[1], '--region', $region, '--only-show-errors')
+      if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $appOk = $false }
+    }
+    if ($appOk) {
+      $known[$id] = $dir
+      $knownStamps[$id] = $stamps[$id]
+      $knownBuilds[$id] = $localBuild
+    } else {
+      $ok = $false
     }
   }
 
-  if (-not $ok) {
-    Write-ReGaLog "Upload to $($Target.Uri) failed; it is retried at the next change or stop." 'error'
-    return $false
+  foreach ($app in (Get-RemovedApps -Known $known -Current $current -Present @($stamps.Keys))) {
+    $id = $app.AppId
+    Write-ReGaLog "Removing uninstalled app $id ($($app.InstallDir)) from $uri."
+    # The manifest goes first: a half-finished removal reads as uninstalled.
+    $deletes = @(
+      @('s3', 'rm', "${uri}steamapps/appmanifest_$id.acf"),
+      @('s3', 'rm', "${uri}steamapps/workshop/appworkshop_$id.acf"),
+      @('s3', 'rm', "${uri}steamapps/workshop/content/$id/", '--recursive')
+    )
+    if ($app.DeleteFolder) { $deletes += , @('s3', 'rm', "${uri}steamapps/common/$($app.InstallDir)/", '--recursive') }
+    $appOk = $true
+    foreach ($delete in $deletes) {
+      if ((Invoke-Aws -AwsPath $AwsPath -Arguments (@($delete) + @('--region', $region, '--only-show-errors'))) -ne 0) { $appOk = $false }
+    }
+    if ($appOk) {
+      $known.Remove($id)
+      $knownStamps.Remove($id)
+      $knownBuilds.Remove($id)
+    } else {
+      $ok = $false
+    }
   }
+
   Write-JsonFile $MarkerPath ([pscustomobject]@{
     restored_utc = (Get-PropertyValue $restored 'restored_utc')
-    source       = $Target.Uri
-    apps         = $current
+    source       = $uri
+    apps         = $known
+    stamps       = $knownStamps
+    builds       = $knownBuilds
     uploaded_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
   })
-  Write-ReGaLog "Uploaded $LibraryPath to $($Target.Uri)."
+  if (-not $ok) {
+    Write-ReGaLog "Upload to $uri was incomplete; the rest is retried at the next change or stop." 'error'
+    return $false
+  }
+  Write-ReGaLog "Uploaded $LibraryPath to $uri."
   return $true
 }
 
