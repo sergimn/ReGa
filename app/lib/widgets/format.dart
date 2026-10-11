@@ -28,3 +28,11 @@ String formatStatus(MachineStatus status) => switch (status) {
   MachineStatus.stopped => 'Stopped',
   MachineStatus.terminated => 'Destroyed',
 };
+
+String formatKind(OrphanKind kind) => switch (kind) {
+  OrphanKind.instance => 'Instance',
+  OrphanKind.volume => 'Disk',
+  OrphanKind.securityGroup => 'Firewall',
+  OrphanKind.keyPair => 'Key pair',
+  OrphanKind.alarm => 'Idle alarm',
+};

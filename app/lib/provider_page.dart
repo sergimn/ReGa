@@ -3,19 +3,24 @@ import 'package:flutter/material.dart';
 import 'backend.dart';
 import 'widgets/format.dart';
 import 'widgets/machine_card.dart';
+import 'widgets/machine_tile.dart';
 import 'widgets/region_picker.dart';
 
-/// One provider: purchase toggles, region picker, machine types and the
-/// machines that already exist.
+/// One provider: purchase toggles, region picker, machine types, launch,
+/// the machines that already exist and any leftovers to clean up.
 class ProviderPage extends StatefulWidget {
   const ProviderPage({
     super.key,
     required this.backend,
     required this.provider,
+    this.onReconnect,
   });
 
   final RegaBackend backend;
   final ProviderInfo provider;
+
+  /// Signs in again, for example after adding credentials.
+  final VoidCallback? onReconnect;
 
   @override
   State<ProviderPage> createState() => _ProviderPageState();
@@ -46,6 +51,17 @@ class _ProviderPageState extends State<ProviderPage> {
   Object? _error;
   bool _loading = true;
 
+  final _name = TextEditingController(text: 'Gaming PC');
+  bool _launching = false;
+
+  /// Machines with an action in progress, and what it is.
+  final Map<String, String> _busy = {};
+
+  /// The last failed launch or machine action.
+  Object? _actionError;
+  List<OrphanSummary> _orphans = const [];
+  bool _deletingOrphans = false;
+
   /// Bumped by every reload so a slower, older reload can't overwrite the
   /// results of a newer one.
   int _generation = 0;
@@ -58,6 +74,136 @@ class _ProviderPageState extends State<ProviderPage> {
     super.initState();
     _reload();
     _probeLatency();
+    _loadOrphans();
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reloadMachines() async {
+    try {
+      final machines = await _backend.listMachines(_id);
+      if (mounted) setState(() => _machines = machines);
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+  }
+
+  /// Leftovers are looked for across every region, so only at start and
+  /// after actions that can leave some behind, not on every reload.
+  Future<void> _loadOrphans() async {
+    try {
+      final orphans = await _backend.listOrphans(_id);
+      if (mounted) setState(() => _orphans = orphans);
+    } catch (_) {
+      // Leftovers are a hint; the machines list still works.
+    }
+  }
+
+  Future<void> _launch() async {
+    final regionId = _regionId;
+    final typeName = _typeName;
+    if (regionId == null || typeName == null) return;
+    setState(() {
+      _launching = true;
+      _actionError = null;
+    });
+    try {
+      await _backend.launchMachine(
+        _id,
+        name: _name.text,
+        regionId: regionId,
+        typeName: typeName,
+        spot: _spot,
+        wireguard: _wireguard,
+      );
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+    if (!mounted) return;
+    setState(() => _launching = false);
+    // A failed launch still shows up, so it can be cleaned up.
+    await _reloadMachines();
+    await _loadOrphans();
+  }
+
+  /// Runs one action on a machine, showing `label` until it's done.
+  Future<void> _act(
+    MachineSummary m,
+    String label,
+    Future<void> Function() action,
+  ) async {
+    setState(() {
+      _busy[m.id] = label;
+      _actionError = null;
+    });
+    try {
+      await action();
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+    if (!mounted) return;
+    setState(() => _busy.remove(m.id));
+    await _reloadMachines();
+  }
+
+  Future<bool> _confirm(String title, String body, String action) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
+  Future<void> _destroy(MachineSummary m) async {
+    final ok = await _confirm(
+      'Destroy ${m.name}?',
+      'This deletes the machine and its disks. Games already copied to '
+          'the game library stay there.',
+      'Destroy',
+    );
+    if (!ok || !mounted) return;
+    await _act(m, 'Destroying…', () => _backend.destroyMachine(_id, m.id));
+    await _loadOrphans();
+  }
+
+  Future<void> _deleteOrphans() async {
+    final ok = await _confirm(
+      'Delete ${_orphans.length} leftover resources?',
+      'They are tagged for ReGa but belong to no machine, for example '
+          'after a failed launch. Instances are terminated first.',
+      'Delete',
+    );
+    if (!ok || !mounted) return;
+    setState(() {
+      _deletingOrphans = true;
+      _actionError = null;
+    });
+    try {
+      await _backend.deleteOrphans(_id, _orphans);
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+    if (!mounted) return;
+    setState(() => _deletingOrphans = false);
+    await _loadOrphans();
   }
 
   Future<void> _probeLatency() async {
@@ -136,7 +282,7 @@ class _ProviderPageState extends State<ProviderPage> {
       padding: const EdgeInsets.all(24),
       children: [
         Text(widget.provider.name, style: theme.textTheme.headlineMedium),
-        if (widget.provider.demo)
+        if (widget.provider.demo) ...[
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Align(
@@ -147,6 +293,19 @@ class _ProviderPageState extends State<ProviderPage> {
               ),
             ),
           ),
+          if (widget.provider.notice case final notice?)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(notice),
+              trailing: widget.onReconnect == null
+                  ? null
+                  : TextButton(
+                      key: const ValueKey('reconnect'),
+                      onPressed: widget.onReconnect,
+                      child: const Text('Reconnect'),
+                    ),
+            ),
+        ],
         const SizedBox(height: 16),
         SwitchListTile(
           key: const ValueKey('spot-toggle'),
@@ -229,7 +388,22 @@ class _ProviderPageState extends State<ProviderPage> {
                 ),
             ],
           ),
+          _launchRow(theme),
           _Section('Your machines'),
+          if (_actionError != null)
+            ListTile(
+              key: const ValueKey('action-error'),
+              leading: Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.error,
+              ),
+              title: Text('$_actionError'),
+              trailing: IconButton(
+                tooltip: 'Dismiss',
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() => _actionError = null),
+              ),
+            ),
           if (_machines.isEmpty)
             const ListTile(
               leading: Icon(Icons.computer),
@@ -237,19 +411,104 @@ class _ProviderPageState extends State<ProviderPage> {
             )
           else
             for (final m in _machines)
-              ListTile(
-                leading: const Icon(Icons.computer),
-                title: Text(m.name),
-                subtitle: Text(
-                  '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
-                  '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionName}',
+              MachineTile(
+                key: ValueKey('machine-${m.id}'),
+                machine: m,
+                busy: _busy[m.id],
+                onStart: () => _act(
+                  m,
+                  'Starting…',
+                  () => _backend.startMachine(_id, m.id),
                 ),
-                trailing: Text(formatStatus(m.status)),
+                onStop: () =>
+                    _act(m, 'Stopping…', () => _backend.stopMachine(_id, m.id)),
+                onSwitch: () => _act(
+                  m,
+                  'Switching…',
+                  () => _backend.resizeMachine(_id, m.id, m.switchType!),
+                ),
+                onDestroy: () => _destroy(m),
               ),
+          if (_orphans.isNotEmpty) ..._orphanSection(theme),
         ],
       ],
     );
   }
+
+  Widget _launchRow(ThemeData theme) {
+    final offer = _offers.where((o) => o.typeName == _typeName).firstOrNull;
+    final region = _choices?.all
+        .where((r) => r.regionId == _regionId)
+        .firstOrNull;
+    final ready = offer != null && region != null && !_loading;
+    return Padding(
+      padding: const EdgeInsets.only(top: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              SizedBox(
+                width: 260,
+                child: TextField(
+                  key: const ValueKey('machine-name'),
+                  controller: _name,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.icon(
+                key: const ValueKey('launch'),
+                onPressed: ready && !_launching ? _launch : null,
+                icon: const Icon(Icons.rocket_launch_outlined),
+                label: const Text('Launch'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_launching)
+            const Text(
+              'Launching. Windows takes several minutes to boot and set '
+              'its password.',
+            )
+          else if (ready)
+            Text(
+              '${offer.typeName} in ${region.displayName}, '
+              '${formatPrice(offer.pricePerHour)}${_spot ? ' as spot' : ''}',
+              style: theme.textTheme.bodySmall,
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _orphanSection(ThemeData theme) => [
+    _Section('Leftover resources'),
+    Text(
+      'Tagged for ReGa but part of no machine, for example after a failed '
+      'launch. They may still cost money.',
+      style: theme.textTheme.bodySmall,
+    ),
+    for (final o in _orphans)
+      ListTile(
+        leading: const Icon(Icons.delete_sweep_outlined),
+        title: Text(o.name ?? o.id),
+        subtitle: Text('${formatKind(o.kind)} ${o.id} · ${o.regionName}'),
+      ),
+    Align(
+      alignment: Alignment.centerLeft,
+      child: _deletingOrphans
+          ? const Padding(
+              padding: EdgeInsets.all(8),
+              child: CircularProgressIndicator(),
+            )
+          : FilledButton.tonal(
+              key: const ValueKey('delete-orphans'),
+              onPressed: _deleteOrphans,
+              child: const Text('Delete all'),
+            ),
+    ),
+  ];
 }
 
 class _Section extends StatelessWidget {

@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1328005818;
+  int get rustContentHash => 423469869;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -81,13 +81,36 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<List<ProviderInfo>> crateApiRegaConnectProviders();
+
+  Future<void> crateApiRegaDeleteOrphans({
+    required String providerId,
+    required List<OrphanSummary> orphans,
+  });
+
+  Future<void> crateApiRegaDestroyMachine({
+    required String providerId,
+    required String machineId,
+  });
+
   Future<void> crateApiRegaInitApp();
+
+  Future<MachineSummary> crateApiRegaLaunchMachine({
+    required String providerId,
+    required String name,
+    required String regionId,
+    required String typeName,
+    required bool spot,
+    required bool wireguard,
+  });
 
   Future<List<MachineSummary>> crateApiRegaListMachines({
     required String providerId,
   });
 
-  List<ProviderInfo> crateApiRegaListProviders();
+  Future<List<OrphanSummary>> crateApiRegaListOrphans({
+    required String providerId,
+  });
 
   Future<List<MachineOffer>> crateApiRegaMachineOffers({
     required String providerId,
@@ -102,6 +125,22 @@ abstract class RustLibApi extends BaseApi {
     String? typeName,
     required bool spot,
   });
+
+  Future<MachineSummary> crateApiRegaResizeMachine({
+    required String providerId,
+    required String machineId,
+    required String typeName,
+  });
+
+  Future<MachineSummary> crateApiRegaStartMachine({
+    required String providerId,
+    required String machineId,
+  });
+
+  Future<MachineSummary> crateApiRegaStopMachine({
+    required String providerId,
+    required String machineId,
+  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -113,7 +152,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  Future<void> crateApiRegaInitApp() {
+  Future<List<ProviderInfo>> crateApiRegaConnectProviders() {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -122,6 +161,101 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             generalizedFrbRustBinding,
             serializer,
             funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_provider_info,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiRegaConnectProvidersConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaConnectProvidersConstMeta =>
+      const TaskConstMeta(debugName: "connect_providers", argNames: []);
+
+  @override
+  Future<void> crateApiRegaDeleteOrphans({
+    required String providerId,
+    required List<OrphanSummary> orphans,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_list_orphan_summary(orphans, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaDeleteOrphansConstMeta,
+        argValues: [providerId, orphans],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaDeleteOrphansConstMeta => const TaskConstMeta(
+    debugName: "delete_orphans",
+    argNames: ["providerId", "orphans"],
+  );
+
+  @override
+  Future<void> crateApiRegaDestroyMachine({
+    required String providerId,
+    required String machineId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_String(machineId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaDestroyMachineConstMeta,
+        argValues: [providerId, machineId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaDestroyMachineConstMeta => const TaskConstMeta(
+    debugName: "destroy_machine",
+    argNames: ["providerId", "machineId"],
+  );
+
+  @override
+  Future<void> crateApiRegaInitApp() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
             port: port_,
           );
         },
@@ -140,6 +274,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<MachineSummary> crateApiRegaLaunchMachine({
+    required String providerId,
+    required String name,
+    required String regionId,
+    required String typeName,
+    required bool spot,
+    required bool wireguard,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_String(name, serializer);
+          sse_encode_String(regionId, serializer);
+          sse_encode_String(typeName, serializer);
+          sse_encode_bool(spot, serializer);
+          sse_encode_bool(wireguard, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_machine_summary,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaLaunchMachineConstMeta,
+        argValues: [providerId, name, regionId, typeName, spot, wireguard],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaLaunchMachineConstMeta => const TaskConstMeta(
+    debugName: "launch_machine",
+    argNames: [
+      "providerId",
+      "name",
+      "regionId",
+      "typeName",
+      "spot",
+      "wireguard",
+    ],
+  );
+
+  @override
   Future<List<MachineSummary>> crateApiRegaListMachines({
     required String providerId,
   }) {
@@ -151,7 +334,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 6,
             port: port_,
           );
         },
@@ -170,26 +353,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "list_machines", argNames: ["providerId"]);
 
   @override
-  List<ProviderInfo> crateApiRegaListProviders() {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
+  Future<List<OrphanSummary>> crateApiRegaListOrphans({
+    required String providerId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
+          sse_encode_String(providerId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_provider_info,
-          decodeErrorData: null,
+          decodeSuccessData: sse_decode_list_orphan_summary,
+          decodeErrorData: sse_decode_rega_error,
         ),
-        constMeta: kCrateApiRegaListProvidersConstMeta,
-        argValues: [],
+        constMeta: kCrateApiRegaListOrphansConstMeta,
+        argValues: [providerId],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateApiRegaListProvidersConstMeta =>
-      const TaskConstMeta(debugName: "list_providers", argNames: []);
+  TaskConstMeta get kCrateApiRegaListOrphansConstMeta =>
+      const TaskConstMeta(debugName: "list_orphans", argNames: ["providerId"]);
 
   @override
   Future<List<MachineOffer>> crateApiRegaMachineOffers({
@@ -207,7 +398,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 8,
             port: port_,
           );
         },
@@ -237,7 +428,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 9,
             port: port_,
           );
         },
@@ -271,7 +462,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 10,
             port: port_,
           );
         },
@@ -289,6 +480,110 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiRegaRegionChoicesConstMeta => const TaskConstMeta(
     debugName: "region_choices",
     argNames: ["providerId", "typeName", "spot"],
+  );
+
+  @override
+  Future<MachineSummary> crateApiRegaResizeMachine({
+    required String providerId,
+    required String machineId,
+    required String typeName,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_String(machineId, serializer);
+          sse_encode_String(typeName, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_machine_summary,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaResizeMachineConstMeta,
+        argValues: [providerId, machineId, typeName],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaResizeMachineConstMeta => const TaskConstMeta(
+    debugName: "resize_machine",
+    argNames: ["providerId", "machineId", "typeName"],
+  );
+
+  @override
+  Future<MachineSummary> crateApiRegaStartMachine({
+    required String providerId,
+    required String machineId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_String(machineId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 12,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_machine_summary,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaStartMachineConstMeta,
+        argValues: [providerId, machineId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaStartMachineConstMeta => const TaskConstMeta(
+    debugName: "start_machine",
+    argNames: ["providerId", "machineId"],
+  );
+
+  @override
+  Future<MachineSummary> crateApiRegaStopMachine({
+    required String providerId,
+    required String machineId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(providerId, serializer);
+          sse_encode_String(machineId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_machine_summary,
+          decodeErrorData: sse_decode_rega_error,
+        ),
+        constMeta: kCrateApiRegaStopMachineConstMeta,
+        argValues: [providerId, machineId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRegaStopMachineConstMeta => const TaskConstMeta(
+    debugName: "stop_machine",
+    argNames: ["providerId", "machineId"],
   );
 
   @protected
@@ -358,6 +653,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<OrphanSummary> dco_decode_list_orphan_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_orphan_summary).toList();
+  }
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
@@ -402,8 +703,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MachineSummary dco_decode_machine_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return MachineSummary(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -412,6 +713,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       offer: dco_decode_machine_offer(arr[4]),
       spot: dco_decode_bool(arr[5]),
       status: dco_decode_machine_status(arr[6]),
+      switchType: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -440,15 +742,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OrphanKind dco_decode_orphan_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OrphanKind.values[raw as int];
+  }
+
+  @protected
+  OrphanSummary dco_decode_orphan_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return OrphanSummary(
+      kind: dco_decode_orphan_kind(arr[0]),
+      id: dco_decode_String(arr[1]),
+      regionId: dco_decode_String(arr[2]),
+      regionName: dco_decode_String(arr[3]),
+      machineId: dco_decode_opt_String(arr[4]),
+      name: dco_decode_opt_String(arr[5]),
+    );
+  }
+
+  @protected
   ProviderInfo dco_decode_provider_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return ProviderInfo(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
       demo: dco_decode_bool(arr[2]),
+      notice: dco_decode_opt_String(arr[3]),
     );
   }
 
@@ -601,6 +926,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<OrphanSummary> sse_decode_list_orphan_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <OrphanSummary>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_orphan_summary(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -673,6 +1012,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_offer = sse_decode_machine_offer(deserializer);
     var var_spot = sse_decode_bool(deserializer);
     var var_status = sse_decode_machine_status(deserializer);
+    var var_switchType = sse_decode_opt_String(deserializer);
     return MachineSummary(
       id: var_id,
       name: var_name,
@@ -681,6 +1021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       offer: var_offer,
       spot: var_spot,
       status: var_status,
+      switchType: var_switchType,
     );
   }
 
@@ -731,12 +1072,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OrphanKind sse_decode_orphan_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return OrphanKind.values[inner];
+  }
+
+  @protected
+  OrphanSummary sse_decode_orphan_summary(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_orphan_kind(deserializer);
+    var var_id = sse_decode_String(deserializer);
+    var var_regionId = sse_decode_String(deserializer);
+    var var_regionName = sse_decode_String(deserializer);
+    var var_machineId = sse_decode_opt_String(deserializer);
+    var var_name = sse_decode_opt_String(deserializer);
+    return OrphanSummary(
+      kind: var_kind,
+      id: var_id,
+      regionId: var_regionId,
+      regionName: var_regionName,
+      machineId: var_machineId,
+      name: var_name,
+    );
+  }
+
+  @protected
   ProviderInfo sse_decode_provider_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_String(deserializer);
     var var_name = sse_decode_String(deserializer);
     var var_demo = sse_decode_bool(deserializer);
-    return ProviderInfo(id: var_id, name: var_name, demo: var_demo);
+    var var_notice = sse_decode_opt_String(deserializer);
+    return ProviderInfo(
+      id: var_id,
+      name: var_name,
+      demo: var_demo,
+      notice: var_notice,
+    );
   }
 
   @protected
@@ -886,6 +1259,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_orphan_summary(
+    List<OrphanSummary> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_orphan_summary(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -950,6 +1335,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_machine_offer(self.offer, serializer);
     sse_encode_bool(self.spot, serializer);
     sse_encode_machine_status(self.status, serializer);
+    sse_encode_opt_String(self.switchType, serializer);
   }
 
   @protected
@@ -996,11 +1382,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_orphan_kind(OrphanKind self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_orphan_summary(OrphanSummary self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_orphan_kind(self.kind, serializer);
+    sse_encode_String(self.id, serializer);
+    sse_encode_String(self.regionId, serializer);
+    sse_encode_String(self.regionName, serializer);
+    sse_encode_opt_String(self.machineId, serializer);
+    sse_encode_opt_String(self.name, serializer);
+  }
+
+  @protected
   void sse_encode_provider_info(ProviderInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.id, serializer);
     sse_encode_String(self.name, serializer);
     sse_encode_bool(self.demo, serializer);
+    sse_encode_opt_String(self.notice, serializer);
   }
 
   @protected

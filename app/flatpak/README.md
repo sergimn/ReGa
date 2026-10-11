@@ -12,5 +12,10 @@ flatpak run io.github.sergimn.rega
 
 CI builds the same bundle and uploads `rega.flatpak` as an artifact.
 
-Not bundled yet: Terraform and Ansible. They will be added as modules here
-once the app runs them.
+Terraform is bundled (the `terraform` module in the manifest); the app runs
+it from `/app/bin`. The AWS Terraform provider is downloaded on first use
+into the app's cache. The app reads AWS credentials from `~/.aws`, which
+the manifest shares read-only.
+
+Not bundled yet: Ansible. It will be added as a module here once the app
+runs it.

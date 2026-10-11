@@ -57,6 +57,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<MachineSummary> dco_decode_list_machine_summary(dynamic raw);
 
   @protected
+  List<OrphanSummary> dco_decode_list_orphan_summary(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -85,6 +88,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  OrphanKind dco_decode_orphan_kind(dynamic raw);
+
+  @protected
+  OrphanSummary dco_decode_orphan_summary(dynamic raw);
 
   @protected
   ProviderInfo dco_decode_provider_info(dynamic raw);
@@ -147,6 +156,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<OrphanSummary> sse_decode_list_orphan_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -181,6 +195,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  OrphanKind sse_decode_orphan_kind(SseDeserializer deserializer);
+
+  @protected
+  OrphanSummary sse_decode_orphan_summary(SseDeserializer deserializer);
 
   @protected
   ProviderInfo sse_decode_provider_info(SseDeserializer deserializer);
@@ -246,6 +266,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_orphan_summary(
+    List<OrphanSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
     SseSerializer serializer,
@@ -289,6 +315,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_orphan_kind(OrphanKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_orphan_summary(OrphanSummary self, SseSerializer serializer);
 
   @protected
   void sse_encode_provider_info(ProviderInfo self, SseSerializer serializer);

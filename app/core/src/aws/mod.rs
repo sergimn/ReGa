@@ -1,0 +1,984 @@
+//! AWS implementation of [`CloudProvider`].
+//!
+//! Prices, quotas and regions come from the AWS APIs; machines are created,
+//! changed and destroyed by running the Terraform module in
+//! `infra/terraform/aws`, one state per machine in the account's state
+//! bucket. The S3 bucket is the source of truth, so every device signed in to
+//! the account sees the same machines; each device keeps a local working copy
+//! (module, variables, key and last state) under the app's data folder.
+
+pub mod api;
+mod cache;
+pub mod keys;
+mod pricing;
+pub mod record;
+pub mod sdk;
+
+use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures::future::{join_all, try_join_all};
+
+use crate::model::{
+    Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan, Price, Region,
+    ResourceKind, StorageLocation,
+};
+use crate::provider::{CloudProvider, ProviderError, ProviderResult};
+use crate::setup::{LibrarySync, MachineAccess, MachineSetup, NoSetup};
+use crate::terraform::{self, io_error, Backend, Terraform};
+use api::{AwsApi, Instance};
+use cache::TtlCache;
+use keys::MachineKey;
+use record::{InstanceState, MachineRecord, MachineVars};
+
+/// Region holding the state and library buckets (also the development region).
+pub const HOME_REGION: &str = "eu-north-1";
+
+/// Smallest and largest system disk the module and the IAM policy accept.
+pub const MIN_DISK_GIB: u32 = 30;
+pub const MAX_DISK_GIB: u32 = 256;
+
+/// What copying the game library out of [`HOME_REGION`] costs, per GB.
+pub const LIBRARY_COPY_USD_PER_GB: f64 = 0.02;
+
+/// Machine types the IAM policy allows the app to use.
+pub fn catalog() -> Vec<MachineType> {
+    let cpu = |name: &str, vcpus, ram_gib| MachineType {
+        type_name: name.into(),
+        spec: MachineSpec {
+            vcpus,
+            ram_gib,
+            gpu: None,
+        },
+    };
+    vec![
+        MachineType {
+            type_name: "g4dn.xlarge".into(),
+            spec: MachineSpec {
+                vcpus: 4,
+                ram_gib: 16.0,
+                gpu: Some(Gpu {
+                    model: "NVIDIA T4".into(),
+                    vram_gib: 16,
+                }),
+            },
+        },
+        cpu("t3.micro", 2, 1.0),
+        cpu("t3.medium", 2, 4.0),
+        cpu("t3.large", 2, 8.0),
+    ]
+}
+
+pub fn state_bucket(account_id: &str) -> String {
+    format!("rega-tfstate-{account_id}")
+}
+
+pub fn library_bucket(account_id: &str) -> String {
+    format!("rega-games-{account_id}")
+}
+
+pub fn region(id: &str, display_name: &str) -> Region {
+    Region {
+        id: id.into(),
+        display_name: display_name.into(),
+        latency_probe_host: format!("ec2.{id}.amazonaws.com"),
+    }
+}
+
+/// The console name of a region, or its id when this app version doesn't
+/// know it yet.
+pub fn region_name(id: &str) -> String {
+    let name = match id {
+        "af-south-1" => "Africa (Cape Town)",
+        "ap-east-1" => "Asia Pacific (Hong Kong)",
+        "ap-east-2" => "Asia Pacific (Taipei)",
+        "ap-northeast-1" => "Asia Pacific (Tokyo)",
+        "ap-northeast-2" => "Asia Pacific (Seoul)",
+        "ap-northeast-3" => "Asia Pacific (Osaka)",
+        "ap-south-1" => "Asia Pacific (Mumbai)",
+        "ap-south-2" => "Asia Pacific (Hyderabad)",
+        "ap-southeast-1" => "Asia Pacific (Singapore)",
+        "ap-southeast-2" => "Asia Pacific (Sydney)",
+        "ap-southeast-3" => "Asia Pacific (Jakarta)",
+        "ap-southeast-4" => "Asia Pacific (Melbourne)",
+        "ap-southeast-5" => "Asia Pacific (Malaysia)",
+        "ap-southeast-6" => "Asia Pacific (New Zealand)",
+        "ap-southeast-7" => "Asia Pacific (Thailand)",
+        "ca-central-1" => "Canada (Central)",
+        "ca-west-1" => "Canada West (Calgary)",
+        "eu-central-1" => "Europe (Frankfurt)",
+        "eu-central-2" => "Europe (Zurich)",
+        "eu-north-1" => "Europe (Stockholm)",
+        "eu-south-1" => "Europe (Milan)",
+        "eu-south-2" => "Europe (Spain)",
+        "eu-west-1" => "Europe (Ireland)",
+        "eu-west-2" => "Europe (London)",
+        "eu-west-3" => "Europe (Paris)",
+        "il-central-1" => "Israel (Tel Aviv)",
+        "me-central-1" => "Middle East (UAE)",
+        "me-south-1" => "Middle East (Bahrain)",
+        "mx-central-1" => "Mexico (Central)",
+        "sa-east-1" => "South America (São Paulo)",
+        "us-east-1" => "US East (N. Virginia)",
+        "us-east-2" => "US East (Ohio)",
+        "us-west-1" => "US West (N. California)",
+        "us-west-2" => "US West (Oregon)",
+        _ => id,
+    };
+    name.into()
+}
+
+/// Finds this device's public IP, for the firewall rules that open
+/// Sunshine (WireGuard off) or WinRM to it.
+#[async_trait]
+pub trait IpLookup: Send + Sync {
+    async fn public_ip(&self) -> ProviderResult<String>;
+}
+
+/// Asks `checkip.amazonaws.com`.
+pub struct CheckIp;
+
+#[async_trait]
+impl IpLookup for CheckIp {
+    async fn public_ip(&self) -> ProviderResult<String> {
+        let fail =
+            |e: reqwest::Error| ProviderError::Cloud(format!("couldn't find your public IP: {e}"));
+        let body = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(fail)?
+            .get("https://checkip.amazonaws.com")
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(fail)?
+            .text()
+            .await
+            .map_err(fail)?;
+        let ip = body.trim();
+        ip.parse::<std::net::Ipv4Addr>()
+            .map(|_| ip.to_string())
+            .map_err(|_| ProviderError::Cloud(format!("unexpected public IP answer {ip:?}")))
+    }
+}
+
+/// Where the app keeps its per-device files.
+#[derive(Debug, Clone)]
+pub struct ConnectOptions {
+    /// Per-machine working copies go in `<data_dir>/aws/<account>/`.
+    pub data_dir: PathBuf,
+    /// Terraform provider plugins are cached in `<cache_dir>/terraform-plugins`.
+    pub cache_dir: PathBuf,
+}
+
+impl ConnectOptions {
+    /// `$XDG_DATA_HOME/rega` and `$XDG_CACHE_HOME/rega`, with the usual
+    /// fallbacks under `$HOME`. Flatpak points both inside the sandbox.
+    pub fn from_env() -> Self {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let xdg = |var: &str, fallback: &str| {
+            std::env::var_os(var)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home.join(fallback))
+                .join("rega")
+        };
+        Self {
+            data_dir: xdg("XDG_DATA_HOME", ".local/share"),
+            cache_dir: xdg("XDG_CACHE_HOME", ".cache"),
+        }
+    }
+}
+
+struct Caches {
+    regions: TtlCache<(), Vec<String>>,
+    offered: TtlCache<String, Vec<String>>,
+    quotas: TtlCache<(String, bool), u32>,
+    on_demand: TtlCache<(String, String), Option<f64>>,
+    spot: TtlCache<(String, String), Vec<(String, f64)>>,
+    library_bytes: TtlCache<(), u64>,
+}
+
+impl Caches {
+    fn new() -> Self {
+        let mins = |m: u64| Duration::from_secs(60 * m);
+        Self {
+            regions: TtlCache::new(mins(24 * 60)),
+            offered: TtlCache::new(mins(24 * 60)),
+            quotas: TtlCache::new(mins(10)),
+            on_demand: TtlCache::new(mins(24 * 60)),
+            spot: TtlCache::new(mins(5)),
+            library_bytes: TtlCache::new(mins(10)),
+        }
+    }
+}
+
+pub struct AwsProvider {
+    api: Arc<dyn AwsApi>,
+    account_id: String,
+    terraform: Arc<dyn Terraform>,
+    setup: Arc<dyn MachineSetup>,
+    ip: Arc<dyn IpLookup>,
+    /// One folder per machine: the Terraform working copy and cached files.
+    machines_dir: PathBuf,
+    caches: Caches,
+    storage: tokio::sync::Mutex<Option<StorageLocation>>,
+    /// Terraform runs one at a time: they share the plugin cache, and the
+    /// account's GPU quota only fits one machine anyway.
+    terraform_lock: tokio::sync::Mutex<()>,
+}
+
+impl AwsProvider {
+    pub fn new(
+        api: Arc<dyn AwsApi>,
+        account_id: String,
+        terraform: Arc<dyn Terraform>,
+        machines_dir: PathBuf,
+    ) -> Self {
+        Self {
+            api,
+            account_id,
+            terraform,
+            setup: Arc::new(NoSetup),
+            ip: Arc::new(CheckIp),
+            machines_dir,
+            caches: Caches::new(),
+            storage: tokio::sync::Mutex::new(None),
+            terraform_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Signs in with the default AWS credential chain (environment, then
+    /// `~/.aws` profiles). [`ProviderError::MissingCredentials`] when there
+    /// are none.
+    pub async fn connect(options: ConnectOptions) -> ProviderResult<Self> {
+        let (api, account_id) = sdk::SdkApi::connect().await?;
+        let terraform = terraform::TerraformCli::find(options.cache_dir.join("terraform-plugins"));
+        let machines_dir = options.data_dir.join("aws").join(&account_id);
+        Ok(Self::new(
+            Arc::new(api),
+            account_id,
+            Arc::new(terraform),
+            machines_dir,
+        ))
+    }
+
+    /// Runs `setup` after starts and before stops (Ansible).
+    pub fn with_setup(mut self, setup: Arc<dyn MachineSetup>) -> Self {
+        self.setup = setup;
+        self
+    }
+
+    pub fn with_ip_lookup(mut self, ip: Arc<dyn IpLookup>) -> Self {
+        self.ip = ip;
+        self
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    fn state_bucket(&self) -> String {
+        state_bucket(&self.account_id)
+    }
+
+    fn machine_type(&self, type_name: &str) -> ProviderResult<MachineType> {
+        catalog()
+            .into_iter()
+            .find(|t| t.type_name == type_name)
+            .ok_or_else(|| ProviderError::UnknownMachineType(type_name.into()))
+    }
+
+    async fn enabled_regions(&self) -> ProviderResult<Vec<String>> {
+        self.caches.regions.get_or_try((), self.api.regions()).await
+    }
+
+    async fn offered(&self, region_id: &str) -> ProviderResult<Vec<String>> {
+        let types: Vec<String> = catalog().into_iter().map(|t| t.type_name).collect();
+        self.caches
+            .offered
+            .get_or_try(
+                region_id.to_string(),
+                self.api.offered_types(region_id, &types),
+            )
+            .await
+    }
+
+    async fn check_gpu_quota(
+        &self,
+        region_id: &str,
+        machine_type: &MachineType,
+        spot: bool,
+    ) -> ProviderResult<()> {
+        if machine_type.is_gpu()
+            && self.gpu_quota_vcpus(region_id, spot).await? < machine_type.spec.vcpus
+        {
+            return Err(ProviderError::Cloud(format!(
+                "not enough {} GPU quota in {} for a {}",
+                if spot { "spot" } else { "on-demand" },
+                region_name(region_id),
+                machine_type.type_name
+            )));
+        }
+        Ok(())
+    }
+
+    fn machine_dir(&self, machine_id: &str) -> PathBuf {
+        self.machines_dir.join(machine_id)
+    }
+
+    /// Every machine record in the state bucket.
+    async fn records(&self) -> ProviderResult<Vec<MachineRecord>> {
+        let bucket = self.state_bucket();
+        let objects = self.api.list_objects(&bucket, record::PREFIX).await?;
+        let keys: Vec<String> = objects
+            .iter()
+            .filter(|(key, _)| key.ends_with(".json"))
+            .filter_map(|(key, _)| record::machine_id_of(key))
+            .map(record::record_key)
+            .collect();
+        let bodies = try_join_all(keys.iter().map(|key| self.api.get_object(&bucket, key))).await?;
+        bodies
+            .into_iter()
+            .flatten()
+            .map(|body| MachineRecord::from_json(&body))
+            .collect()
+    }
+
+    async fn record(&self, machine_id: &str) -> ProviderResult<MachineRecord> {
+        let body = self
+            .api
+            .get_object(&self.state_bucket(), &record::record_key(machine_id))
+            .await?
+            .ok_or_else(|| ProviderError::UnknownMachine(machine_id.into()))?;
+        let record = MachineRecord::from_json(&body)?;
+        if record.id() != machine_id {
+            return Err(ProviderError::Cloud(format!(
+                "record of machine {machine_id} names {}",
+                record.id()
+            )));
+        }
+        Ok(record)
+    }
+
+    async fn save_record(&self, record: &MachineRecord) -> ProviderResult<()> {
+        let json = record.to_json();
+        self.api
+            .put_object(
+                &self.state_bucket(),
+                &record::record_key(record.id()),
+                json.clone().into_bytes(),
+            )
+            .await?;
+        self.write_local(record.id(), "record.json", &json).await
+    }
+
+    /// Writes a private file into the machine's local folder.
+    async fn write_local(
+        &self,
+        machine_id: &str,
+        name: &str,
+        contents: &str,
+    ) -> ProviderResult<()> {
+        use tokio::io::AsyncWriteExt;
+        let dir = self.machine_dir(machine_id);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| io_error("create the machine folder", e))?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(dir.join(name))
+            .await
+            .map_err(|e| io_error("save a machine file", e))?;
+        file.write_all(contents.as_bytes())
+            .await
+            .map_err(|e| io_error("save a machine file", e))
+    }
+
+    /// The machine's key: the local copy, else the one in the state bucket.
+    async fn key(&self, machine_id: &str) -> ProviderResult<Option<MachineKey>> {
+        let local = self.machine_dir(machine_id).join("key.pem");
+        if let Ok(pem) = tokio::fs::read_to_string(&local).await {
+            return MachineKey::from_pem(&pem).map(Some);
+        }
+        let Some(pem) = self
+            .api
+            .get_object(&self.state_bucket(), &record::key_key(machine_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let pem = String::from_utf8(pem)
+            .map_err(|_| ProviderError::Cloud(format!("machine {machine_id}: unreadable key")))?;
+        let key = MachineKey::from_pem(&pem)?;
+        self.write_local(machine_id, "key.pem", &pem).await?;
+        Ok(Some(key))
+    }
+
+    async fn terraform_env(&self) -> ProviderResult<Vec<(String, String)>> {
+        self.api.credential_env().await
+    }
+
+    async fn backend(&self, machine_id: &str) -> ProviderResult<Backend> {
+        let storage = self.ensure_storage().await?;
+        Ok(Backend {
+            bucket: storage.state_bucket,
+            key: record::state_key(machine_id),
+            region: storage.region_id,
+        })
+    }
+
+    /// Brings the machine to what its record asks for.
+    async fn apply(&self, record: &MachineRecord) -> ProviderResult<()> {
+        self.run_terraform(record, terraform::apply_args()).await
+    }
+
+    async fn run_terraform(
+        &self,
+        record: &MachineRecord,
+        command: Vec<String>,
+    ) -> ProviderResult<()> {
+        let backend = self.backend(record.id()).await?;
+        let _one_at_a_time = self.terraform_lock.lock().await;
+        let dir = self.machine_dir(record.id());
+        terraform::prepare_workdir(&dir, &record.tfvars_json()).await?;
+        let env = self.terraform_env().await?;
+        self.terraform
+            .run(&dir, &terraform::init_args(&backend), &env)
+            .await?;
+        self.terraform.run(&dir, &command, &env).await?;
+        // The local copy of the state is a cache; the bucket stays the
+        // source of truth, so failing to refresh it doesn't fail the run.
+        if let Ok(state) = self
+            .terraform
+            .run(&dir, &terraform::state_pull_args(), &env)
+            .await
+        {
+            let _ = self.write_local(record.id(), "state.json", &state).await;
+        }
+        Ok(())
+    }
+
+    /// Reads the module outputs after a run (the zone it picked).
+    async fn outputs(
+        &self,
+        record: &MachineRecord,
+    ) -> ProviderResult<std::collections::HashMap<String, String>> {
+        let _one_at_a_time = self.terraform_lock.lock().await;
+        let env = self.terraform_env().await?;
+        let out = self
+            .terraform
+            .run(
+                &self.machine_dir(record.id()),
+                &terraform::output_args(),
+                &env,
+            )
+            .await?;
+        terraform::parse_outputs(&out)
+    }
+
+    async fn instance_of(&self, record: &MachineRecord) -> ProviderResult<Option<Instance>> {
+        let instances = self.api.tagged_instances(&record.vars.region).await?;
+        Ok(pick_instance(instances, record.id()))
+    }
+
+    fn machine_from(&self, record: &MachineRecord, instance: Option<&Instance>) -> Machine {
+        let type_name = instance.map_or(&record.vars.instance_type, |i| &i.type_name);
+        let machine_type = self
+            .machine_type(type_name)
+            .unwrap_or_else(|_| MachineType {
+                type_name: type_name.clone(),
+                spec: MachineSpec {
+                    vcpus: 0,
+                    ram_gib: 0.0,
+                    gpu: None,
+                },
+            });
+        Machine {
+            id: record.id().into(),
+            name: record.name.clone(),
+            region_id: record.vars.region.clone(),
+            machine_type,
+            disk_gib: record.vars.root_volume_size,
+            spot: record.vars.spot,
+            // No instance means it was terminated (a reclaimed spot machine)
+            // or never created (a failed launch); destroy cleans up either.
+            state: instance.map_or(MachineState::Terminated, |i| i.state),
+        }
+    }
+
+    async fn access(
+        &self,
+        record: &MachineRecord,
+        instance: &Instance,
+    ) -> ProviderResult<MachineAccess> {
+        let password = match (
+            self.api
+                .password_data(&instance.region_id, &instance.id)
+                .await?,
+            self.key(record.id()).await?,
+        ) {
+            (Some(data), Some(key)) => Some(key.decrypt_password(&data)?),
+            _ => None,
+        };
+        Ok(MachineAccess {
+            machine_id: record.id().into(),
+            region_id: instance.region_id.clone(),
+            instance_id: instance.id.clone(),
+            type_name: instance.type_name.clone(),
+            public_ip: instance.public_ip.clone(),
+            admin_password: password,
+            wireguard: record.vars.wireguard_enabled,
+        })
+    }
+
+    /// This device's IP as a /32, when Sunshine is opened to it directly.
+    async fn client_cidrs(&self, wireguard: bool) -> ProviderResult<Vec<String>> {
+        if wireguard {
+            return Ok(vec![]);
+        }
+        Ok(vec![format!("{}/32", self.ip.public_ip().await?)])
+    }
+
+    /// The zone with the cheapest spot price right now.
+    async fn cheapest_spot_zone(
+        &self,
+        region_id: &str,
+        type_name: &str,
+    ) -> ProviderResult<Option<String>> {
+        let prices = self.spot_prices(region_id, type_name).await?;
+        Ok(prices
+            .into_iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(zone, _)| zone))
+    }
+
+    async fn spot_prices(
+        &self,
+        region_id: &str,
+        type_name: &str,
+    ) -> ProviderResult<Vec<(String, f64)>> {
+        self.caches
+            .spot
+            .get_or_try(
+                (region_id.into(), type_name.into()),
+                self.api.spot_prices(region_id, type_name),
+            )
+            .await
+    }
+
+    /// Runs after a launch or a start: the machine as it is now, plus the
+    /// setup hook (Ansible) once it's running.
+    async fn after_start(&self, record: &MachineRecord) -> ProviderResult<Machine> {
+        let instance = self.instance_of(record).await?;
+        if let Some(i) = instance
+            .as_ref()
+            .filter(|i| i.state == MachineState::Running)
+        {
+            let access = self.access(record, i).await?;
+            self.setup.after_start(&access).await?;
+        }
+        Ok(self.machine_from(record, instance.as_ref()))
+    }
+}
+
+/// The instance carrying `machine_id`'s tag, live ones first.
+fn pick_instance(instances: Vec<Instance>, machine_id: &str) -> Option<Instance> {
+    instances
+        .into_iter()
+        .filter(|i| i.machine_id.as_deref() == Some(machine_id))
+        .min_by_key(|i| i.state == MachineState::Terminated)
+}
+
+#[async_trait]
+impl CloudProvider for AwsProvider {
+    fn id(&self) -> &str {
+        "aws"
+    }
+
+    fn display_name(&self) -> &str {
+        "AWS"
+    }
+
+    async fn ensure_storage(&self) -> ProviderResult<StorageLocation> {
+        let mut done = self.storage.lock().await;
+        if let Some(location) = done.as_ref() {
+            return Ok(location.clone());
+        }
+        let location = StorageLocation {
+            state_bucket: state_bucket(&self.account_id),
+            library_bucket: library_bucket(&self.account_id),
+            region_id: HOME_REGION.into(),
+        };
+        for (bucket, versioned) in [
+            (&location.state_bucket, true),
+            (&location.library_bucket, false),
+        ] {
+            let info = match self.api.bucket(bucket).await? {
+                Some(info) => info,
+                None => {
+                    self.api.create_bucket(bucket, HOME_REGION).await?;
+                    self.api.bucket(bucket).await?.unwrap_or_default()
+                }
+            };
+            if versioned && !info.versioned {
+                self.api.enable_versioning(bucket).await?;
+            }
+            if !info.encrypted {
+                self.api.enable_encryption(bucket).await?;
+            }
+            if !info.tagged {
+                self.api.tag_bucket(bucket).await?;
+            }
+            // New buckets block public access by default. ReGa only checks
+            // it: the IAM policy denies changing it, on purpose.
+            if !info.public_access_blocked {
+                return Err(ProviderError::Cloud(format!(
+                    "bucket {bucket} doesn't block public access. Turn on all four Block \
+                     Public Access settings for it in the S3 console, then try again."
+                )));
+            }
+        }
+        *done = Some(location.clone());
+        Ok(location)
+    }
+
+    async fn regions(&self) -> ProviderResult<Vec<Region>> {
+        let ids = self.enabled_regions().await?;
+        let offered = join_all(ids.iter().map(|id| self.offered(id))).await;
+        let mut regions: Vec<Region> = ids
+            .iter()
+            .zip(offered)
+            // A region whose offerings can't be read stays listed, so the
+            // region picker reports it as unreachable instead of hiding it.
+            .filter(|(_, offered)| offered.as_ref().map_or(true, |o| !o.is_empty()))
+            .map(|(id, _)| region(id, &region_name(id)))
+            .collect();
+        regions.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(regions)
+    }
+
+    async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> ProviderResult<u32> {
+        let quota = self
+            .caches
+            .quotas
+            .get_or_try(
+                (region_id.into(), spot),
+                self.api.gpu_quota(region_id, spot),
+            )
+            .await?;
+        if quota == 0 {
+            return Ok(0);
+        }
+        let in_use = self.api.gpu_vcpus_in_use(region_id, spot).await?;
+        Ok(quota.saturating_sub(in_use))
+    }
+
+    fn machine_types(&self) -> Vec<MachineType> {
+        catalog()
+    }
+
+    async fn price(&self, region_id: &str, type_name: &str) -> ProviderResult<Option<Price>> {
+        let machine_type = self.machine_type(type_name)?;
+        if !self
+            .offered(region_id)
+            .await?
+            .iter()
+            .any(|t| t == type_name)
+        {
+            return Ok(None);
+        }
+        let on_demand = self
+            .caches
+            .on_demand
+            .get_or_try(
+                (region_id.into(), type_name.into()),
+                self.api.on_demand_price(region_id, type_name),
+            )
+            .await?;
+        let Some(on_demand_per_hour) = on_demand else {
+            return Ok(None);
+        };
+        // Spot only makes sense for GPU types: CPU machines must be resizable.
+        let spot_per_hour = if machine_type.is_gpu() {
+            self.spot_prices(region_id, type_name)
+                .await?
+                .into_iter()
+                .map(|(_, p)| p)
+                .min_by(f64::total_cmp)
+        } else {
+            None
+        };
+        Ok(Some(Price {
+            on_demand_per_hour,
+            spot_per_hour,
+        }))
+    }
+
+    async fn library_copy_cost(&self, region_id: &str) -> ProviderResult<f64> {
+        if region_id == HOME_REGION {
+            return Ok(0.0);
+        }
+        let bytes = self
+            .caches
+            .library_bytes
+            .get_or_try((), async {
+                let objects = self
+                    .api
+                    .list_objects(&library_bucket(&self.account_id), "")
+                    .await?;
+                Ok::<u64, ProviderError>(objects.iter().map(|(_, size)| size).sum())
+            })
+            .await?;
+        Ok(bytes as f64 / 1e9 * LIBRARY_COPY_USD_PER_GB)
+    }
+
+    async fn list_machines(&self) -> ProviderResult<Vec<Machine>> {
+        let mut records = self.records().await?;
+        records.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id().cmp(b.id())));
+        let regions: BTreeSet<&str> = records.iter().map(|r| r.vars.region.as_str()).collect();
+        let instances: Vec<Instance> =
+            try_join_all(regions.iter().map(|r| self.api.tagged_instances(r)))
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
+        Ok(records
+            .iter()
+            .map(|r| {
+                let instance = pick_instance(
+                    instances
+                        .iter()
+                        .filter(|i| i.region_id == r.vars.region)
+                        .cloned()
+                        .collect(),
+                    r.id(),
+                );
+                self.machine_from(r, instance.as_ref())
+            })
+            .collect())
+    }
+
+    async fn launch(&self, request: &LaunchRequest) -> ProviderResult<Machine> {
+        let machine_type = self.machine_type(&request.type_name)?;
+        if request.spot && !machine_type.is_gpu() {
+            return Err(ProviderError::SpotNeedsGpu);
+        }
+        if !(MIN_DISK_GIB..=MAX_DISK_GIB).contains(&request.disk_gib) {
+            return Err(ProviderError::InvalidState(format!(
+                "the system disk must be {MIN_DISK_GIB} to {MAX_DISK_GIB} GB"
+            )));
+        }
+        let price = self.price(&request.region_id, &request.type_name).await?;
+        if price.and_then(|p| p.per_hour(request.spot)).is_none() {
+            return Err(ProviderError::Cloud(format!(
+                "{} isn't sold {} in {}",
+                request.type_name,
+                if request.spot { "as spot" } else { "on demand" },
+                region_name(&request.region_id)
+            )));
+        }
+        self.check_gpu_quota(&request.region_id, &machine_type, request.spot)
+            .await?;
+
+        let machine_id = record::new_machine_id(&request.name);
+        let key = MachineKey::generate()?;
+        let availability_zone = if request.spot {
+            self.cheapest_spot_zone(&request.region_id, &request.type_name)
+                .await?
+        } else {
+            None
+        };
+        let mut record = MachineRecord::new(
+            request.name.clone(),
+            MachineVars {
+                region: request.region_id.clone(),
+                machine_id: machine_id.clone(),
+                instance_type: request.type_name.clone(),
+                spot: request.spot,
+                instance_state: InstanceState::Running,
+                availability_zone,
+                public_key: key.openssh_public(&format!("rega-{machine_id}")),
+                root_volume_size: request.disk_gib,
+                library_volume_enabled: true,
+                wireguard_enabled: request.wireguard,
+                client_cidrs: self.client_cidrs(request.wireguard).await?,
+                admin_cidrs: vec![],
+            },
+        );
+
+        // Save the key and the record before anything exists in EC2, so a
+        // failed or interrupted launch leaves a machine to destroy, not
+        // orphans.
+        self.ensure_storage().await?;
+        let pem = key.to_pem();
+        self.api
+            .put_object(
+                &self.state_bucket(),
+                &record::key_key(&machine_id),
+                pem.clone().into_bytes(),
+            )
+            .await?;
+        self.write_local(&machine_id, "key.pem", &pem).await?;
+        self.save_record(&record).await?;
+
+        self.apply(&record).await?;
+        if record.vars.availability_zone.is_none() {
+            if let Some(zone) = self.outputs(&record).await?.remove("availability_zone") {
+                record.vars.availability_zone = Some(zone);
+                self.save_record(&record).await?;
+            }
+        }
+        self.after_start(&record).await
+    }
+
+    async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
+        let machine_type = self.machine_type(type_name)?;
+        let mut record = self.record(machine_id).await?;
+        if record.vars.spot {
+            return Err(ProviderError::SpotResize);
+        }
+        let instance = self.instance_of(&record).await?;
+        if instance.as_ref().map(|i| i.state) != Some(MachineState::Stopped) {
+            return Err(ProviderError::InvalidState(
+                "stop the machine before changing its type".into(),
+            ));
+        }
+        // AWS boots the machine briefly after a resize (Terraform stops it
+        // again), so the new type needs quota too.
+        self.check_gpu_quota(&record.vars.region, &machine_type, false)
+            .await?;
+        record.vars.instance_type = type_name.into();
+        record.vars.instance_state = InstanceState::Stopped;
+        self.save_record(&record).await?;
+        self.apply(&record).await?;
+        let instance = self.instance_of(&record).await?;
+        Ok(self.machine_from(&record, instance.as_ref()))
+    }
+
+    async fn start(&self, machine_id: &str) -> ProviderResult<Machine> {
+        let mut record = self.record(machine_id).await?;
+        let instance = self.instance_of(&record).await?;
+        if instance.as_ref().map(|i| i.state) == Some(MachineState::Stopped) {
+            let machine_type = self.machine_type(&record.vars.instance_type)?;
+            self.check_gpu_quota(&record.vars.region, &machine_type, record.vars.spot)
+                .await?;
+        }
+        record.vars.instance_state = InstanceState::Running;
+        record.vars.library_volume_enabled = true;
+        record.vars.client_cidrs = self.client_cidrs(record.vars.wireguard_enabled).await?;
+        self.save_record(&record).await?;
+        self.apply(&record).await?;
+        self.after_start(&record).await
+    }
+
+    async fn stop(&self, machine_id: &str) -> ProviderResult<Machine> {
+        let mut record = self.record(machine_id).await?;
+        if record.vars.spot {
+            return Err(ProviderError::InvalidState(
+                "spot machines can't be stopped; destroy it instead".into(),
+            ));
+        }
+        let instance = self.instance_of(&record).await?;
+        let sync = match instance
+            .as_ref()
+            .filter(|i| i.state == MachineState::Running)
+        {
+            Some(i) => {
+                let access = self.access(&record, i).await?;
+                self.setup.before_stop(&access).await?
+            }
+            None => LibrarySync::NotSynced,
+        };
+        record.vars.instance_state = InstanceState::Stopped;
+        // D: only goes away once its games are safe in S3.
+        if sync == LibrarySync::Synced {
+            record.vars.library_volume_enabled = false;
+        }
+        self.save_record(&record).await?;
+        self.apply(&record).await?;
+        let instance = self.instance_of(&record).await?;
+        Ok(self.machine_from(&record, instance.as_ref()))
+    }
+
+    async fn destroy(&self, machine_id: &str) -> ProviderResult<()> {
+        let record = self.record(machine_id).await?;
+        // The AWS provider cancels the spot request before terminating, and
+        // the IAM policy doesn't allow that; terminating first leaves
+        // Terraform nothing to cancel.
+        if record.vars.spot {
+            if let Some(i) = self
+                .instance_of(&record)
+                .await?
+                .filter(|i| i.state != MachineState::Terminated)
+            {
+                self.api
+                    .delete_resource(&Orphan {
+                        kind: ResourceKind::Instance,
+                        id: i.id,
+                        region_id: i.region_id,
+                        machine_id: Some(machine_id.into()),
+                        name: None,
+                    })
+                    .await?;
+            }
+        }
+        self.run_terraform(&record, terraform::destroy_args())
+            .await?;
+        let bucket = self.state_bucket();
+        for key in record::all_keys(machine_id) {
+            self.api.delete_object(&bucket, &key).await?;
+        }
+        match tokio::fs::remove_dir_all(self.machine_dir(machine_id)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(io_error("remove the machine folder", e))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {
+        let known: HashSet<String> = self
+            .api
+            .list_objects(&self.state_bucket(), record::PREFIX)
+            .await?
+            .iter()
+            .filter_map(|(key, _)| record::machine_id_of(key))
+            .map(String::from)
+            .collect();
+        let regions = self.enabled_regions().await?;
+        let mut orphans: Vec<Orphan> =
+            try_join_all(regions.iter().map(|r| self.api.tagged_resources(r)))
+                .await?
+                .into_iter()
+                .flatten()
+                .filter(|o| o.machine_id.as_ref().is_none_or(|m| !known.contains(m)))
+                .collect();
+        orphans.sort_by(|a, b| (a.kind, &a.region_id, &a.id).cmp(&(b.kind, &b.region_id, &b.id)));
+        Ok(orphans)
+    }
+
+    async fn delete_orphans(&self, orphans: &[Orphan]) -> ProviderResult<()> {
+        // Only what is still an orphan: a machine may have claimed it since.
+        let current: HashSet<Orphan> = self.orphans().await?.into_iter().collect();
+        let mut doomed: Vec<&Orphan> = orphans.iter().filter(|o| current.contains(*o)).collect();
+        doomed.sort_by_key(|o| o.kind);
+        for orphan in doomed {
+            self.api.delete_resource(orphan).await?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod tests;

@@ -98,6 +98,31 @@ pub struct StorageLocation {
     pub region_id: String,
 }
 
+/// Kinds of tagged resources the app looks after, in the order they are
+/// deleted: an instance holds its volumes and security group until it's gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ResourceKind {
+    Instance,
+    Volume,
+    SecurityGroup,
+    KeyPair,
+    Alarm,
+}
+
+/// A resource tagged `Project=ReGa` that no machine accounts for, such as
+/// the leftovers of a failed launch or of a machine whose state was lost.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Orphan {
+    pub kind: ResourceKind,
+    /// The provider's id, such as `i-0abc` or a key pair name.
+    pub id: String,
+    pub region_id: String,
+    /// The machine it was made for (the `ReGaMachine` tag), when tagged.
+    pub machine_id: Option<String>,
+    /// Its `Name` tag, for display.
+    pub name: Option<String>,
+}
+
 /// System disk (C:) size offered by default, in GiB. The game library lives
 /// on a separate disk that is restored from object storage at each start.
 pub const DEFAULT_DISK_GIB: u32 = 128;

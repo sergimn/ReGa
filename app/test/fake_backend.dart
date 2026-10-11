@@ -49,11 +49,47 @@ const unmeasured = RegionOption(
   oneOffCost: 4,
 );
 
+const stockholmMachine = MachineSummary(
+  id: 'gaming-1',
+  name: 'Gaming',
+  regionId: 'eu-north-1',
+  regionName: 'Europe (Stockholm)',
+  offer: gpuOffer,
+  spot: false,
+  status: MachineStatus.stopped,
+  switchType: 't3.medium',
+);
+
+const leftoverVolume = OrphanSummary(
+  kind: OrphanKind.volume,
+  id: 'vol-1',
+  regionId: 'eu-north-1',
+  regionName: 'Europe (Stockholm)',
+  name: 'rega-old-library',
+);
+
 /// In-memory backend for widget tests; records what the UI asked for.
 class FakeBackend implements RegaBackend {
-  FakeBackend({this.machines = const [], this.onDemandDelay = Duration.zero});
+  FakeBackend({
+    List<MachineSummary> machines = const [],
+    this.onDemandDelay = Duration.zero,
+  }) : machines = [...machines];
 
   final List<MachineSummary> machines;
+  List<OrphanSummary> orphans = [];
+
+  ProviderInfo provider = const ProviderInfo(
+    id: 'aws',
+    name: 'AWS',
+    demo: true,
+    notice: 'No AWS credentials found.',
+  );
+
+  /// When set, machine actions and launches throw it.
+  Object? actionError;
+
+  /// Machine actions wait for this before finishing, when set.
+  Future<void>? actionGate;
 
   /// Makes on-demand offers arrive late, to test overlapping reloads.
   final Duration onDemandDelay;
@@ -84,9 +120,10 @@ class FakeBackend implements RegaBackend {
   int get regionCalls => calls.where((c) => c.startsWith('regions')).length;
 
   @override
-  List<ProviderInfo> listProviders() => const [
-    ProviderInfo(id: 'aws', name: 'AWS', demo: true),
-  ];
+  Future<List<ProviderInfo>> connectProviders() async {
+    calls.add('connect');
+    return [provider];
+  }
 
   @override
   Future<bool> probeLatency(String providerId) async {
@@ -143,5 +180,102 @@ class FakeBackend implements RegaBackend {
 
   @override
   Future<List<MachineSummary>> listMachines(String providerId) async =>
-      machines;
+      List.of(machines);
+
+  Future<MachineSummary> _change(
+    String what,
+    String machineId,
+    MachineSummary Function(MachineSummary) f,
+  ) async {
+    calls.add('$what $machineId');
+    await actionGate;
+    if (actionError case final e?) throw e;
+    final i = machines.indexWhere((m) => m.id == machineId);
+    machines[i] = f(machines[i]);
+    return machines[i];
+  }
+
+  @override
+  Future<MachineSummary> launchMachine(
+    String providerId, {
+    required String name,
+    required String regionId,
+    required String typeName,
+    required bool spot,
+    required bool wireguard,
+  }) async {
+    calls.add('launch $name $regionId $typeName spot=$spot wg=$wireguard');
+    await actionGate;
+    if (actionError case final e?) throw e;
+    final m = MachineSummary(
+      id: 'new-${machines.length}',
+      name: name,
+      regionId: regionId,
+      regionName: regionId,
+      offer: typeName == gpuOffer.typeName ? gpuOffer : cpuOffer,
+      spot: spot,
+      status: MachineStatus.running,
+      switchType: spot ? null : 't3.medium',
+    );
+    machines.add(m);
+    return m;
+  }
+
+  @override
+  Future<MachineSummary> startMachine(String providerId, String machineId) =>
+      _change('start', machineId, (m) => _with(m, MachineStatus.running));
+
+  @override
+  Future<MachineSummary> stopMachine(String providerId, String machineId) =>
+      _change('stop', machineId, (m) => _with(m, MachineStatus.stopped));
+
+  @override
+  Future<MachineSummary> resizeMachine(
+    String providerId,
+    String machineId,
+    String typeName,
+  ) => _change(
+    'resize $typeName',
+    machineId,
+    (m) =>
+        _with(m, m.status, typeName == cpuOffer.typeName ? cpuOffer : gpuOffer),
+  );
+
+  @override
+  Future<void> destroyMachine(String providerId, String machineId) async {
+    calls.add('destroy $machineId');
+    await actionGate;
+    if (actionError case final e?) throw e;
+    machines.removeWhere((m) => m.id == machineId);
+  }
+
+  @override
+  Future<List<OrphanSummary>> listOrphans(String providerId) async {
+    calls.add('orphans');
+    return List.of(orphans);
+  }
+
+  @override
+  Future<void> deleteOrphans(
+    String providerId,
+    List<OrphanSummary> orphans,
+  ) async {
+    calls.add('delete ${orphans.map((o) => o.id).join(',')}');
+    this.orphans = [];
+  }
 }
+
+MachineSummary _with(
+  MachineSummary m,
+  MachineStatus status, [
+  MachineOffer? offer,
+]) => MachineSummary(
+  id: m.id,
+  name: m.name,
+  regionId: m.regionId,
+  regionName: m.regionName,
+  offer: offer ?? m.offer,
+  spot: m.spot,
+  status: status,
+  switchType: m.switchType,
+);
