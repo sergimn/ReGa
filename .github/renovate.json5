@@ -11,6 +11,14 @@
   ],
   labels: ['dependencies'],
 
+  // Renovate's Dart package updates run `flutter pub upgrade`. This keeps
+  // them on CI's Flutter (FLUTTER_VERSION in app.yml) instead of the newest
+  // release; the Flutter update below bumps both together.
+  constraints: {
+    // renovate: datasource=flutter-version depName=flutter
+    flutter: '3.47.7',
+  },
+
   // Only take releases that are at least 30 days old, so a hijacked or
   // malicious release has time to be found and pulled before it reaches us.
   // Renovate proposes the newest release that is old enough. Updates with no
@@ -77,6 +85,15 @@
       matchStrings: [
         '# renovate: datasource=(?<datasource>github-release-attachments) depName=(?<depName>\\S+)\\s*\\n[a-z_]+_version: (?<currentValue>\\S+)\\n[a-z_]+_url: .+\\n[a-z_]+_sha256: (?<currentDigest>[a-f0-9]{64})',
       ],
+    },
+    {
+      customType: 'regex',
+      description: "The Flutter in this file's constraints, kept in step with CI",
+      managerFilePatterns: ['/^\\.github/renovate\\.json5$/'],
+      matchStrings: [
+        "// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s*\\n\\s*[a-z]+: '(?<currentValue>[^']+)'",
+      ],
+      versioningTemplate: 'semver-coerced',
     },
     {
       customType: 'regex',
@@ -178,6 +195,14 @@
       automerge: false,
       prBodyNotes: [
         "Renovate can't hash the Flatpak's Terraform download: set `sha256` in `app/flatpak/io.github.sergimn.rega.yml` from the release's `SHA256SUMS` file on https://releases.hashicorp.com/terraform/ before merging.",
+      ],
+    },
+    {
+      groupName: 'Flutter',
+      matchDatasources: ['flutter-version'],
+      automerge: false,
+      prBodyNotes: [
+        'Flutter pins some Dart packages to exact versions and CI uses `app/pubspec.lock` read-only, so run `flutter pub get` in `app/` with this Flutter and commit the lock before merging.',
       ],
     },
     {

@@ -75,8 +75,8 @@ found and what is waiting.
   ghcr.io, the runner images) are never proposed on their own. They wait on
   the Dependency Dashboard until someone ticks them, and never merge on
   their own. The builder image digest is the one exception to the 30 days:
-  ghcr.io only serves a tag's current digest, and the one pinned was 19 days
-  old when it was set.
+  the registry only lists a tag's current digest, and the one pinned was 19
+  days old when it was set.
 - Lock file refreshes are off, since they would take the newest version of
   everything at once with no age check. Cargo and pub can't filter by date:
   when a crate or Dart package update needs a newer version of something it
@@ -95,7 +95,9 @@ found and what is waiting.
 - Terraform: Renovate updates CI and the Flatpak together, but can't hash
   the Flatpak's download, so that PR needs its `sha256` set by hand (the PR
   says where to find it). flutter_rust_bridge updates need the bindings
-  regenerated. Neither merges on its own.
+  regenerated, and Flutter updates need `app/pubspec.lock` regenerated with
+  the new Flutter (`flutter pub get`), since CI uses it read-only. None of
+  these merges on its own.
 - Not tracked: the AWS CLI (it releases several times a week, and its MSI
   has no published hash to update from) and WireGuard for Windows. Update
   their version and SHA-256 in the Ansible role defaults by hand.

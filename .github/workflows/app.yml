@@ -105,10 +105,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
-      # Built 2026-09-22, under the 30 days the rest of the repo waits:
-      # ghcr.io only serves this tag's current digest, so no older one could
-      # be pinned. Renovate can't date these images either, so updates wait
-      # on the Dependency Dashboard (see CONTRIBUTING.md).
+      # Built 2026-09-22, under the 30 days the rest of the repo waits: the
+      # registry only lists this tag's current digest, so no older one could
+      # be found to pin. Renovate can't date these images either, so updates
+      # wait on the Dependency Dashboard (see CONTRIBUTING.md).
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08@sha256:c91a88269eee8fcdd73ecf43064232fbebe27411f926f63f38bdf70c51f2ceae
       options: --privileged
     steps:
