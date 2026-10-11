@@ -340,6 +340,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
   List<MachineOffer> dco_decode_list_machine_offer(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_machine_offer).toList();
@@ -458,13 +464,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RegionChoices dco_decode_region_choices(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return RegionChoices(
       recommended: dco_decode_opt_box_autoadd_region_option(arr[0]),
       lowestLatency: dco_decode_opt_box_autoadd_region_option(arr[1]),
       cheapest: dco_decode_opt_box_autoadd_region_option(arr[2]),
       all: dco_decode_list_region_option(arr[3]),
+      unreachable: dco_decode_list_String(arr[4]),
     );
   }
 
@@ -550,6 +557,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int sse_decode_i_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getInt32();
+  }
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <String>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
   }
 
   @protected
@@ -735,11 +754,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     var var_cheapest = sse_decode_opt_box_autoadd_region_option(deserializer);
     var var_all = sse_decode_list_region_option(deserializer);
+    var var_unreachable = sse_decode_list_String(deserializer);
     return RegionChoices(
       recommended: var_recommended,
       lowestLatency: var_lowestLatency,
       cheapest: var_cheapest,
       all: var_all,
+      unreachable: var_unreachable,
     );
   }
 
@@ -826,6 +847,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
+  }
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_String(item, serializer);
+    }
   }
 
   @protected
@@ -982,6 +1012,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_region_option(self.lowestLatency, serializer);
     sse_encode_opt_box_autoadd_region_option(self.cheapest, serializer);
     sse_encode_list_region_option(self.all, serializer);
+    sse_encode_list_String(self.unreachable, serializer);
   }
 
   @protected

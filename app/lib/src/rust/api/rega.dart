@@ -185,11 +185,15 @@ class RegionChoices {
   final RegionOption? cheapest;
   final List<RegionOption> all;
 
+  /// Names of regions that couldn't be checked (their queries failed).
+  final List<String> unreachable;
+
   const RegionChoices({
     this.recommended,
     this.lowestLatency,
     this.cheapest,
     required this.all,
+    required this.unreachable,
   });
 
   @override
@@ -197,7 +201,8 @@ class RegionChoices {
       recommended.hashCode ^
       lowestLatency.hashCode ^
       cheapest.hashCode ^
-      all.hashCode;
+      all.hashCode ^
+      unreachable.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -207,7 +212,8 @@ class RegionChoices {
           recommended == other.recommended &&
           lowestLatency == other.lowestLatency &&
           cheapest == other.cheapest &&
-          all == other.all;
+          all == other.all &&
+          unreachable == other.unreachable;
 }
 
 class RegionOption {

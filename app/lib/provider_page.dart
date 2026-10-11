@@ -34,6 +34,7 @@ class _ProviderPageState extends State<ProviderPage> {
   /// spot quota) so it comes back when it is. Null means follow Recommended.
   String? _userRegionId;
   bool _measuring = true;
+  bool _probeDone = false;
 
   /// True from the start of a full reload until one lands, so a region tap
   /// in between doesn't keep an outdated region list.
@@ -67,9 +68,14 @@ class _ProviderPageState extends State<ProviderPage> {
       // Latency is a hint; regions still show with "Latency unknown".
     }
     if (!mounted) return;
-    // Keep "Measuring…" until the refreshed list is in.
-    if (changed) await _reload();
-    if (mounted) setState(() => _measuring = false);
+    _probeDone = true;
+    // Keep "Measuring…" until a region list fetched after the probe lands;
+    // the reload that lands clears it (this one, or a newer one).
+    if (changed) {
+      _reload();
+    } else {
+      setState(() => _measuring = false);
+    }
   }
 
   /// Reloads regions, offers and machines. With `regions: false` (the user
@@ -103,6 +109,7 @@ class _ProviderPageState extends State<ProviderPage> {
       setState(() {
         _choices = choices;
         _regionsStale = false;
+        if (_probeDone && fetchRegions) _measuring = false;
         _regionId = regionId;
         _offers = offers;
         _machines = machines;
@@ -195,7 +202,9 @@ class _ProviderPageState extends State<ProviderPage> {
             onSelected: (r) {
               setState(() {
                 _regionId = r.regionId;
-                _userRegionId = r.regionId;
+                // Picking Recommended means "follow Recommended".
+                final recommended = _choices?.recommended?.regionId;
+                _userRegionId = r.regionId == recommended ? null : r.regionId;
               });
               _reload(regions: false);
             },

@@ -197,11 +197,22 @@ impl CloudProvider for MockProvider {
 
     async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> ProviderResult<u32> {
         let r = self.region(region_id)?;
-        Ok(if spot {
+        let quota = if spot {
             r.gpu_quota_spot
         } else {
             r.gpu_quota_on_demand
-        })
+        };
+        // Like AWS, running GPU machines use up quota; stopped ones don't.
+        let in_use: u32 = self
+            .machines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.region_id == region_id && m.spot == spot && m.machine_type.is_gpu())
+            .filter(|m| matches!(m.state, MachineState::Pending | MachineState::Running))
+            .map(|m| m.machine_type.spec.vcpus)
+            .sum();
+        Ok(quota.saturating_sub(in_use))
     }
 
     fn machine_types(&self) -> Vec<MachineType> {
@@ -276,6 +287,18 @@ impl CloudProvider for MockProvider {
     }
 
     async fn start(&self, machine_id: &str) -> ProviderResult<Machine> {
+        let current = self
+            .machines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.id == machine_id)
+            .cloned()
+            .ok_or_else(|| ProviderError::UnknownMachine(machine_id.into()))?;
+        if current.state == MachineState::Stopped {
+            self.check_gpu_quota(&current.region_id, &current.machine_type, current.spot)
+                .await?;
+        }
         self.update(machine_id, |m| {
             m.state = MachineState::Running;
             Ok(())

@@ -56,7 +56,8 @@ async fn regions_without_gpu_quota_are_not_offered() {
     let p = MockProvider::demo_aws();
     let c = region::candidates(&p, "g4dn.xlarge", false, |id| p.simulated_rtt(id))
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     assert!(!c.is_empty());
     assert!(c.iter().all(|c| c.region.id != "eu-south-1"));
 }
@@ -69,10 +70,12 @@ async fn spot_uses_the_spot_quota() {
     };
     let on_demand = region::candidates(&p, "g4dn.xlarge", false, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     let spot = region::candidates(&p, "g4dn.xlarge", true, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     // Ireland has on-demand GPU quota but no spot quota.
     assert!(ids(on_demand).contains(&"eu-west-1".to_string()));
     assert!(!ids(spot).contains(&"eu-west-1".to_string()));
@@ -84,7 +87,8 @@ async fn demo_choices_pick_three_regions() {
     let c = region::candidates(&p, "g4dn.xlarge", true, |id| p.simulated_rtt(id))
         .await
         .unwrap();
-    let choices = region::choose(c);
+    assert!(c.unreachable.is_empty());
+    let choices = region::choose(c.found);
     assert_eq!(choices.lowest_latency.unwrap().region.id, "eu-central-1");
     // Stockholm is within 10 ms of Frankfurt and has no library copy cost,
     // which also makes it the cheapest once that cost is counted.
@@ -134,11 +138,13 @@ async fn regions_that_dont_sell_the_type_are_skipped_not_fatal() {
     );
     let on_demand = region::candidates(&p, "g4dn.xlarge", false, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     assert_eq!(on_demand.len(), 2);
     let spot = region::candidates(&p, "g4dn.xlarge", true, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     assert_eq!(spot.len(), 1);
     assert_eq!(spot[0].region.id, "has-gpu");
 }
@@ -157,12 +163,14 @@ async fn quota_must_cover_the_gpu_types_vcpus() {
     );
     let gpu = region::candidates(&p, "g4dn.xlarge", false, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     assert_eq!(gpu.len(), 1);
     // A CPU machine is resized to GPU later, so it needs the same quota.
     let cpu = region::candidates(&p, "t3.medium", false, |_| None)
         .await
-        .unwrap();
+        .unwrap()
+        .found;
     assert_eq!(cpu.len(), 1);
     assert_eq!(cpu[0].region.id, "enough");
 
@@ -257,8 +265,11 @@ async fn one_failing_region_is_skipped() {
     let c = region::candidates(&p, "g4dn.xlarge", false, |_| None)
         .await
         .unwrap();
-    // The mock rejects the unknown "broken" region; the other four remain.
-    assert_eq!(c.len(), 4);
+    // The mock rejects the unknown "broken" region; the other four remain,
+    // and "broken" is reported as unreachable rather than silently dropped.
+    assert_eq!(c.found.len(), 4);
+    assert_eq!(c.unreachable.len(), 1);
+    assert_eq!(c.unreachable[0].id, "broken");
 }
 
 #[tokio::test]
@@ -289,4 +300,61 @@ async fn resize_reports_spot_before_quota() {
         p.resize(&m.id, "t3.medium").await,
         Err(ProviderError::SpotResize)
     );
+}
+
+#[tokio::test]
+async fn failures_next_to_a_quota_less_region_are_still_reported() {
+    // Milan answers (quota 0) and "broken" fails: no candidates, but the
+    // failure shows up instead of looking like "no region offers this".
+    let p = FlakyRegion(MockProvider::new(
+        "aws",
+        "AWS",
+        aws::catalog(),
+        vec![region_with(
+            "eu-south-1",
+            (0, 0),
+            &[("g4dn.xlarge", GPU_BOTH)],
+        )],
+    ));
+    let c = region::candidates(&p, "g4dn.xlarge", false, |_| None)
+        .await
+        .unwrap();
+    assert!(c.found.is_empty());
+    assert_eq!(c.unreachable.len(), 1);
+}
+
+#[tokio::test]
+async fn running_gpu_machines_use_up_quota() {
+    let p = MockProvider::new(
+        "aws",
+        "AWS",
+        aws::catalog(),
+        vec![region_with("r", (4, 4), &[("g4dn.xlarge", GPU_BOTH)])],
+    );
+    let first = p
+        .launch(&LaunchRequest {
+            region_id: "r".into(),
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .unwrap();
+    let offered = || async {
+        region::candidates(&p, "g4dn.xlarge", false, |_| None)
+            .await
+            .unwrap()
+            .found
+            .len()
+    };
+    assert_eq!(offered().await, 0);
+    assert!(p
+        .launch(&LaunchRequest {
+            region_id: "r".into(),
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .is_err());
+
+    // Stopping frees the quota again.
+    p.stop(&first.id).await.unwrap();
+    assert_eq!(offered().await, 1);
 }

@@ -11,6 +11,7 @@ void main() {
     lowestLatency: frankfurt,
     cheapest: virginia,
     all: [frankfurt, stockholm, virginia],
+    unreachable: [],
   );
 
   testWidgets('shows three choices and expands to all', (tester) async {
@@ -55,6 +56,7 @@ void main() {
               lowestLatency: frankfurt,
               cheapest: stockholm,
               all: [frankfurt, stockholm],
+              unreachable: [],
             ),
             selectedRegionId: 'eu-north-1',
             onSelected: (_) {},
@@ -79,6 +81,7 @@ void main() {
                 lowestLatency: frankfurt,
                 cheapest: stockholm,
                 all: [frankfurt, stockholm, unmeasured],
+                unreachable: [],
               ),
               selectedRegionId: 'sa-east-1',
               onSelected: (_) {},
@@ -96,7 +99,7 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: RegionPicker(
-            choices: const RegionChoices(all: []),
+            choices: const RegionChoices(all: [], unreachable: []),
             selectedRegionId: null,
             onSelected: (_) {},
           ),

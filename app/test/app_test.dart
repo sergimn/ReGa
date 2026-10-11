@@ -122,6 +122,29 @@ void main() {
     expect(backend.calls.last, 'offers eu-central-1');
   });
 
+  testWidgets('tapping Recommended goes back to following it', (tester) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Lowest latency'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Recommended'));
+    await tester.pumpAndSettle();
+
+    backend.recommended = virginia;
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers us-east-1');
+  });
+
+  testWidgets('regions that could not be checked are named', (tester) async {
+    final backend = FakeBackend()..unreachable = ['Asia Pacific (Tokyo)'];
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    expect(find.text("Couldn't check Asia Pacific (Tokyo)."), findsOneWidget);
+  });
+
   testWidgets('a user pick comes back after it drops out', (tester) async {
     final backend = FakeBackend()..hideVirginiaWithSpot = true;
     await tester.pumpWidget(RegaApp(backend: backend));
@@ -153,6 +176,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     // The refresh after the probe is still loading; pick a region now.
     await tester.tap(find.text('Lowest latency'));
+    // The superseded refresh returns at ~400 ms, before the tap's lands at
+    // ~450 ms: tiles must keep saying "Measuring…" in between.
+    await tester.pump(const Duration(milliseconds: 260));
+    expect(find.textContaining('Latency unknown'), findsNothing);
     await tester.pumpAndSettle();
 
     expect(find.textContaining('31 ms'), findsOneWidget);

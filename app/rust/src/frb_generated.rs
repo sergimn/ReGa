@@ -307,6 +307,18 @@ impl SseDecode for i32 {
     }
 }
 
+impl SseDecode for Vec<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::rega::MachineOffer> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -501,11 +513,13 @@ impl SseDecode for crate::api::rega::RegionChoices {
             <Option<crate::api::rega::RegionOption>>::sse_decode(deserializer);
         let mut var_cheapest = <Option<crate::api::rega::RegionOption>>::sse_decode(deserializer);
         let mut var_all = <Vec<crate::api::rega::RegionOption>>::sse_decode(deserializer);
+        let mut var_unreachable = <Vec<String>>::sse_decode(deserializer);
         return crate::api::rega::RegionChoices {
             recommended: var_recommended,
             lowest_latency: var_lowestLatency,
             cheapest: var_cheapest,
             all: var_all,
+            unreachable: var_unreachable,
         };
     }
 }
@@ -699,6 +713,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::RegionChoices {
             self.lowest_latency.into_into_dart().into_dart(),
             self.cheapest.into_into_dart().into_dart(),
             self.all.into_into_dart().into_dart(),
+            self.unreachable.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -771,6 +786,16 @@ impl SseEncode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_i32::<NativeEndian>(self).unwrap();
+    }
+}
+
+impl SseEncode for Vec<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <String>::sse_encode(item, serializer);
+        }
     }
 }
 
@@ -931,6 +956,7 @@ impl SseEncode for crate::api::rega::RegionChoices {
         <Option<crate::api::rega::RegionOption>>::sse_encode(self.lowest_latency, serializer);
         <Option<crate::api::rega::RegionOption>>::sse_encode(self.cheapest, serializer);
         <Vec<crate::api::rega::RegionOption>>::sse_encode(self.all, serializer);
+        <Vec<String>>::sse_encode(self.unreachable, serializer);
     }
 }
 

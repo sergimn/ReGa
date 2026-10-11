@@ -31,10 +31,25 @@ class _RegionPickerState extends State<RegionPicker> {
   @override
   Widget build(BuildContext context) {
     final c = widget.choices;
+    final unreachable = c.unreachable.isEmpty
+        ? null
+        : ListTile(
+            leading: Icon(
+              Icons.warning_amber,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: Text("Couldn't check ${c.unreachable.join(', ')}."),
+            subtitle: const Text('They may still offer this machine.'),
+          );
     if (c.all.isEmpty) {
-      return const ListTile(
-        leading: Icon(Icons.info_outline),
-        title: Text('No region offers this machine on this account yet.'),
+      return Column(
+        children: [
+          const ListTile(
+            leading: Icon(Icons.info_outline),
+            title: Text('No region offers this machine on this account yet.'),
+          ),
+          ?unreachable,
+        ],
       );
     }
     // One region can win several categories; show it once with every label.
@@ -68,6 +83,7 @@ class _RegionPickerState extends State<RegionPicker> {
       ),
       if (_showAll)
         for (final option in c.all) _tile(option),
+      ?unreachable,
     ];
     return Column(children: tiles);
   }

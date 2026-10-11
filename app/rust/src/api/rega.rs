@@ -68,6 +68,8 @@ pub struct RegionChoices {
     pub lowest_latency: Option<RegionOption>,
     pub cheapest: Option<RegionOption>,
     pub all: Vec<RegionOption>,
+    /// Names of regions that couldn't be checked (their queries failed).
+    pub unreachable: Vec<String>,
 }
 
 pub enum MachineStatus {
@@ -155,12 +157,17 @@ pub async fn region_choices(
             .ok_or_else(|| format!("{provider_id} offers no GPU type"))?,
     };
     let candidates = region::candidates(provider, &type_name, spot, |id| entry.rtt(id)).await?;
-    let choices = region::choose(candidates);
+    let choices = region::choose(candidates.found);
     Ok(RegionChoices {
         recommended: choices.recommended.map(option),
         lowest_latency: choices.lowest_latency.map(option),
         cheapest: choices.cheapest.map(option),
         all: choices.all.into_iter().map(option).collect(),
+        unreachable: candidates
+            .unreachable
+            .into_iter()
+            .map(|r| r.display_name)
+            .collect(),
     })
 }
 
@@ -243,6 +250,7 @@ mod tests {
     async fn region_choices_are_filled() {
         let c = region_choices("aws".into(), None, false).await.unwrap();
         assert!(c.recommended.is_some());
+        assert!(c.unreachable.is_empty());
         let named = region_choices("aws".into(), Some("g4dn.xlarge".into()), false)
             .await
             .unwrap();

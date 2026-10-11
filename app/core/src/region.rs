@@ -100,10 +100,23 @@ fn gpu_vcpus_needed(provider: &dyn CloudProvider, type_name: &str) -> ProviderRe
 /// At most this many regions are queried at once.
 const MAX_CONCURRENT_REGIONS: usize = 8;
 
+/// Hourly price and one-off cost in a region, or `None` when the machine
+/// can't be launched there.
+type RegionOffer = Option<(f64, f64)>;
+
+/// Launchable regions for one machine type, plus the regions that couldn't
+/// be checked (their queries failed), so the UI can say so.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Candidates {
+    pub found: Vec<RegionCandidate>,
+    pub unreachable: Vec<Region>,
+}
+
 /// Builds candidates for `type_name` from a provider, skipping regions where
 /// the free GPU quota doesn't cover the machine, or where the type isn't
 /// sold the chosen way (spot or on-demand). Regions are queried a few at a
-/// time; a region whose queries fail is skipped, unless every region fails.
+/// time. Regions whose queries fail are listed in `unreachable`; only when
+/// every region fails is it an error.
 ///
 /// `rtt_of` looks up the cached measurement for a region id.
 pub async fn candidates(
@@ -111,52 +124,55 @@ pub async fn candidates(
     type_name: &str,
     spot: bool,
     rtt_of: impl Fn(&str) -> Option<Duration>,
-) -> ProviderResult<Vec<RegionCandidate>> {
+) -> ProviderResult<Candidates> {
     let needed = gpu_vcpus_needed(provider, type_name)?;
     let regions = provider.regions().await?;
-    let results: Vec<ProviderResult<Option<RegionCandidate>>> = stream::iter(regions)
+    let total = regions.len();
+    let results: Vec<(Region, ProviderResult<RegionOffer>)> = stream::iter(regions)
         .map(|region| async move {
-            let (quota, price, one_off_cost) = futures::try_join!(
-                provider.gpu_quota_vcpus(&region.id, spot),
-                provider.price(&region.id, type_name),
-                provider.library_copy_cost(&region.id),
-            )?;
-            let price_per_hour = price.and_then(|p| p.per_hour(spot));
-            Ok(match price_per_hour {
-                Some(price_per_hour) if quota >= needed && quota > 0 => Some(RegionCandidate {
-                    rtt: None,
-                    region,
-                    price_per_hour,
-                    one_off_cost,
-                }),
-                _ => None,
-            })
+            let result = async {
+                let (quota, price, one_off_cost) = futures::try_join!(
+                    provider.gpu_quota_vcpus(&region.id, spot),
+                    provider.price(&region.id, type_name),
+                    provider.library_copy_cost(&region.id),
+                )?;
+                let price_per_hour = price.and_then(|p| p.per_hour(spot));
+                Ok(match price_per_hour {
+                    Some(price_per_hour) if quota >= needed && quota > 0 => {
+                        Some((price_per_hour, one_off_cost))
+                    }
+                    _ => None,
+                })
+            }
+            .await;
+            (region, result)
         })
-        .buffered(MAX_CONCURRENT_REGIONS)
+        .buffer_unordered(MAX_CONCURRENT_REGIONS)
         .collect()
         .await;
 
+    let mut out = Candidates::default();
     let mut first_error = None;
-    let mut out = Vec::new();
-    let mut any_ok = results.is_empty();
-    for result in results {
+    for (region, result) in results {
         match result {
-            Ok(found) => {
-                any_ok = true;
-                out.extend(found.map(|c| RegionCandidate {
-                    rtt: rtt_of(&c.region.id),
-                    ..c
-                }));
-            }
+            Ok(Some((price_per_hour, one_off_cost))) => out.found.push(RegionCandidate {
+                rtt: rtt_of(&region.id),
+                region,
+                price_per_hour,
+                one_off_cost,
+            }),
+            Ok(None) => {}
             Err(e) => {
                 first_error.get_or_insert(e);
+                out.unreachable.push(region);
             }
         }
     }
-    match first_error {
-        Some(e) if !any_ok => Err(e),
-        _ => Ok(out),
+    if let Some(e) = first_error.filter(|_| out.unreachable.len() == total) {
+        return Err(e);
     }
+    out.unreachable.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
 }
 
 #[cfg(test)]

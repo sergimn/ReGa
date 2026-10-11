@@ -69,6 +69,9 @@ class FakeBackend implements RegaBackend {
   /// When set, `regionChoices` throws it.
   Object? regionsError;
 
+  /// Region names reported as couldn't-check.
+  List<String> unreachable = const [];
+
   /// With Spot on, Virginia isn't offered (say, no spot quota there).
   bool hideVirginiaWithSpot = false;
 
@@ -103,7 +106,7 @@ class FakeBackend implements RegaBackend {
     if (regionsError case final e?) throw e;
     // Like the real core: CPU types have no spot price anywhere.
     if (spot && typeName == cpuOffer.typeName) {
-      return const RegionChoices(all: []);
+      return const RegionChoices(all: [], unreachable: []);
     }
     if (_measured) await Future<void>.delayed(measuredRegionsDelay);
     // Before the probe lands (when one is expected), nothing has a latency.
@@ -122,6 +125,7 @@ class FakeBackend implements RegaBackend {
       lowestLatency: r(frankfurt),
       cheapest: hide ? r(stockholm) : r(virginia),
       all: [r(frankfurt), r(stockholm), if (!hide) r(virginia), unmeasured],
+      unreachable: unreachable,
     );
   }
 
