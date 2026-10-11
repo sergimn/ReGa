@@ -1,0 +1,18 @@
+---
+rega_gpu_setup_command: >-
+  -NoProfile -ExecutionPolicy Bypass -File "{{ rega_agent_dir }}\rega-gpu-setup.ps1"
+
+rega_gpu_config:
+  aws_path: "{{ rega_aws_path }}"
+  log_dir: "{{ rega_log_dir }}"
+  state_dir: "{{ rega_state_dir }}"
+  work_dir: "{{ rega_work_dir }}"
+  nvidia:
+    s3_uri: "{{ rega_nvidia_driver_s3_uri }}"
+    region: "{{ rega_nvidia_driver_region }}"
+    certificate_url: "{{ rega_nvidia_certificate_url }}"
+  vdd:
+    zip_path: "{{ rega_work_dir }}\\vdd-{{ rega_vdd_version }}.zip"
+    signer_thumbprint: "{{ rega_vdd_signer_thumbprint }}"
+    settings_dir: "{{ rega_vdd_settings_dir }}"
+    disable_basic_display: "{{ rega_disable_basic_display | bool }}"

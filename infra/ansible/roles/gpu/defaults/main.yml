@@ -1,0 +1,18 @@
+---
+# NVIDIA gaming driver for g4dn (Tesla T4), from AWS's bucket for EC2
+# customers. ReGaInstanceRole needs read access to it (see README).
+rega_nvidia_driver_s3_uri: s3://nvidia-gaming/windows/latest/
+rega_nvidia_driver_region: us-east-1
+rega_nvidia_certificate_url: https://nvidia-gaming.s3.amazonaws.com/GridSwCert-Archive/GridSwCertWindows_2024_02_22.cert
+
+# Virtual Display Driver (VDD), signed through SignPath Foundation. The
+# "x86" package is the 64-bit Intel/AMD build.
+rega_vdd_version: 25.7.23
+rega_vdd_zip_url: https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/{{ rega_vdd_version }}/VirtualDisplayDriver-x86.Driver.Only.zip
+rega_vdd_zip_sha256: e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a
+# SignPath Foundation code signing certificate (valid until 2027-09-07).
+rega_vdd_signer_thumbprint: 3CF8CF26D8BA266C3A483AB7D26D4A818E317D76
+rega_vdd_settings_dir: C:\VirtualDisplayDriver
+# Disable the EC2 VGA adapter once the virtual display works, so the virtual
+# display is the only (primary) monitor.
+rega_disable_basic_display: true

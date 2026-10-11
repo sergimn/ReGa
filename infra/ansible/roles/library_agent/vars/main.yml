@@ -1,0 +1,23 @@
+---
+rega_agent_command: >-
+  -NoProfile -ExecutionPolicy Bypass -File "{{ rega_agent_dir }}\rega-agent.ps1"
+
+rega_agent_config:
+  machine_id: "{{ rega_machine_id }}"
+  state_dir: "{{ rega_state_dir }}"
+  log_dir: "{{ rega_log_dir }}"
+  aws_path: "{{ rega_aws_path }}"
+  steam_path: "{{ rega_steam_path }}"
+  steam_apps_paths:
+    - "{{ rega_steam_path }}\\steamapps"
+    - "{{ rega_library_path }}\\steamapps"
+  sunshine_log: "{{ rega_sunshine_path }}\\config\\sunshine.log"
+  idle_stop_enabled: "{{ rega_idle_stop_enabled | bool }}"
+  idle_minutes: "{{ rega_idle_minutes | int }}"
+  restore_wait_minutes: "{{ rega_restore_wait_minutes | int }}"
+  library:
+    path: "{{ rega_library_path }}"
+    bucket: "{{ rega_library_bucket }}"
+    bucket_region: "{{ rega_library_bucket_region }}"
+    prefix: "{{ rega_library_prefix }}"
+    excludes: "{{ rega_library_excludes }}"

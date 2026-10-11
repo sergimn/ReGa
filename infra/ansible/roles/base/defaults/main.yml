@@ -1,0 +1,31 @@
+---
+# Short id of the machine; also the S3 key of its final-sync record.
+rega_machine_id: "{{ inventory_hostname }}"
+
+# Controller-side folder for what the playbook generates: passwords,
+# WireGuard keys and connection.json. Inside the Flatpak, XDG_DATA_HOME is
+# the app's own data folder.
+rega_secrets_dir: >-
+  {{ lookup('ansible.builtin.env', 'XDG_DATA_HOME')
+     | default(lookup('ansible.builtin.env', 'HOME') ~ '/.local/share', true) }}/rega/machines/{{ rega_machine_id }}
+
+# Folders on the machine. Terraform's boot script already uses rega_root_dir.
+rega_root_dir: C:\ProgramData\ReGa
+rega_agent_dir: "{{ rega_root_dir }}\\agent"
+rega_state_dir: "{{ rega_root_dir }}\\state"
+rega_log_dir: "{{ rega_root_dir }}\\logs"
+rega_work_dir: "{{ rega_root_dir }}\\work"
+
+# Windows account that logs on at boot, so Steam and the desktop are up when
+# Moonlight connects. Generated once per machine unless the app passes one.
+rega_desktop_user: rega
+rega_desktop_password: "{{ lookup('ansible.builtin.file', rega_secrets_dir ~ '/desktop-password') }}"
+
+# CI runs the playbook on a hosted Windows runner, which must not reboot.
+rega_reboot_allowed: true
+
+# AWS CLI v2 for the S3 library sync and the NVIDIA driver download.
+rega_awscli_version: 2.37.12
+rega_awscli_url: https://awscli.amazonaws.com/AWSCLIV2-{{ rega_awscli_version }}.msi
+rega_awscli_sha256: 6bfcfaf5e2f630a4c6ea1abc78d3cd036abaff061da754383e63ddf66d402aa6
+rega_aws_path: C:\Program Files\Amazon\AWSCLIV2\aws.exe

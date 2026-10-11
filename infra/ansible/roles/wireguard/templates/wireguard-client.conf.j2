@@ -1,0 +1,13 @@
+# WireGuard client for ReGa machine {{ rega_machine_id }}. Only the
+# machine's tunnel address goes through the tunnel; Moonlight connects to
+# {{ rega_wireguard_server_address }}.
+[Interface]
+PrivateKey = {{ rega_wireguard_tunnel.result.client_private_key }}
+Address = {{ rega_wireguard_client_address }}
+MTU = {{ rega_wireguard_mtu }}
+
+[Peer]
+PublicKey = {{ rega_wireguard_server_public_key }}
+Endpoint = {{ ansible_host }}:{{ rega_wireguard_port }}
+AllowedIPs = {{ rega_wireguard_server_address }}/32
+PersistentKeepalive = 25

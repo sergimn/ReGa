@@ -1,0 +1,126 @@
+---
+- name: Create the controller-side secrets folder
+  ansible.builtin.file:
+    path: "{{ rega_secrets_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+
+# Windows Server enforces password complexity, which a random string of
+# letters and digits doesn't always meet; the fixed tail guarantees it.
+- name: Generate the desktop user's password once
+  ansible.builtin.copy:
+    dest: "{{ rega_secrets_dir }}/desktop-password"
+    content: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}-Rg7"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  no_log: true
+
+- name: Create the ReGa folders
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ rega_root_dir }}"
+    - "{{ rega_agent_dir }}"
+    - "{{ rega_state_dir }}"
+    - "{{ rega_log_dir }}"
+    - "{{ rega_work_dir }}"
+
+# SYSTEM runs the scripts in this folder, so only administrators may change
+# it. Users keep read access: the Steam launch task reads the agent's state.
+- name: Let administrators and SYSTEM change the ReGa folder
+  ansible.windows.win_acl:
+    path: "{{ rega_root_dir }}"
+    user: "{{ item }}"
+    rights: FullControl
+    type: allow
+    inherit: ContainerInherit, ObjectInherit
+    propagation: None
+  loop:
+    - S-1-5-18
+    - S-1-5-32-544
+
+- name: Let users read the ReGa folder
+  ansible.windows.win_acl:
+    path: "{{ rega_root_dir }}"
+    user: S-1-5-32-545
+    rights: ReadAndExecute
+    type: allow
+    inherit: ContainerInherit, ObjectInherit
+    propagation: None
+
+- name: Drop the write access inherited from ProgramData
+  ansible.windows.win_acl_inheritance:
+    path: "{{ rega_root_dir }}"
+    state: absent
+    reorganize: false
+
+- name: Create the desktop user
+  ansible.windows.win_user:
+    name: "{{ rega_desktop_user }}"
+    password: "{{ rega_desktop_password }}"
+    update_password: always
+    password_never_expires: true
+    groups: [Administrators]
+    groups_action: add
+    description: ReGa streaming desktop
+  no_log: true
+
+- name: Log the desktop user on at boot
+  ansible.windows.win_auto_logon:
+    username: "{{ rega_desktop_user }}"
+    password: "{{ rega_desktop_password }}"
+  no_log: true
+  notify: Reboot to apply
+
+- name: Use the High performance power plan
+  community.windows.win_power_plan:
+    name: High performance
+
+- name: Never turn the display off or sleep
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      foreach ($setting in @(@('SUB_VIDEO', 'VIDEOIDLE'), @('SUB_SLEEP', 'STANDBYIDLE'))) {
+        $query = powercfg.exe /query SCHEME_CURRENT $setting[0] $setting[1] | Out-String
+        if ($query -notmatch 'Current AC Power Setting Index:\s+0x00000000') {
+          powercfg.exe /setacvalueindex SCHEME_CURRENT $setting[0] $setting[1] 0
+          $Ansible.Changed = $true
+        }
+      }
+      if ($Ansible.Changed) { powercfg.exe /setactive SCHEME_CURRENT }
+
+- name: Don't open Server Manager at logon
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\Server\ServerManager
+    name: DoNotOpenAtLogon
+    data: 1
+    type: dword
+
+# Windows Server ships with audio off; Sunshine streams the game's sound
+# from the Steam Streaming Speakers device.
+- name: Start the Windows audio services
+  ansible.windows.win_service:
+    name: "{{ item }}"
+    start_mode: auto
+    state: started
+  loop:
+    - AudioEndpointBuilder
+    - Audiosrv
+
+# win_package downloads a URL before it checks creates_path, so check first.
+- name: Check for the AWS CLI
+  ansible.windows.win_stat:
+    path: "{{ rega_aws_path }}"
+    get_checksum: false
+  register: rega_awscli_installed
+
+- name: Install the AWS CLI
+  ansible.windows.win_package:
+    path: "{{ rega_awscli_url }}"
+    checksum: "{{ rega_awscli_sha256 }}"
+    checksum_algorithm: sha256
+    creates_path: "{{ rega_aws_path }}"
+  when: not rega_awscli_installed.stat.exists
