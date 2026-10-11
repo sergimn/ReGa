@@ -1,0 +1,23 @@
+---
+# Stop the machine when nobody has streamed, downloaded or held a WinRM
+# session for this long. The CloudWatch alarm from Terraform is the backstop
+# if the agent or Windows is stuck.
+rega_idle_stop_enabled: true
+rega_idle_minutes: 15
+
+# Game library in S3. Empty bucket: rega-games-<account-id>, the bucket the
+# app creates in eu-north-1. Empty region: the machine's region.
+rega_library_bucket: ""
+rega_library_bucket_region: eu-north-1
+rega_library_prefix: steam-library
+
+# The library disk Terraform attaches and the boot script formats as D:.
+rega_library_path: D:\SteamLibrary
+rega_restore_wait_minutes: 15
+
+# Not worth keeping: partial downloads and the shader cache, which the GPU
+# driver rebuilds.
+rega_library_excludes:
+  - steamapps/downloading/*
+  - steamapps/temp/*
+  - steamapps/shadercache/*

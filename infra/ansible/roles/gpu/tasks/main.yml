@@ -1,0 +1,45 @@
+---
+- name: Copy the GPU setup script
+  ansible.windows.win_copy:
+    src: rega-gpu-setup.ps1
+    dest: "{{ rega_agent_dir }}\\rega-gpu-setup.ps1"
+
+- name: Write the GPU setup config
+  ansible.windows.win_copy:
+    content: "{{ rega_gpu_config | to_nice_json }}"
+    dest: "{{ rega_agent_dir }}\\gpu-config.json"
+
+# Fetched during the CPU phase so the first GPU boot doesn't depend on
+# GitHub.
+- name: Download the virtual display driver
+  ansible.windows.win_get_url:
+    url: "{{ rega_vdd_zip_url }}"
+    dest: "{{ rega_gpu_config.vdd.zip_path }}"
+    checksum: "{{ rega_vdd_zip_sha256 }}"
+    checksum_algorithm: sha256
+    force: false
+
+- name: Set up the GPU on every boot
+  community.windows.win_scheduled_task:
+    name: ReGa-GpuSetup
+    description: Installs the NVIDIA gaming driver and the virtual display on the first GPU boot.
+    actions:
+      - path: powershell.exe
+        arguments: "{{ rega_gpu_setup_command }}"
+    triggers:
+      - type: boot
+    username: SYSTEM
+    logon_type: service_account
+    run_level: highest
+    execution_time_limit: PT2H
+    multiple_instances: 2
+    state: present
+    enabled: true
+
+# On a GPU machine, finish the setup now instead of at the next boot: the
+# driver needs a reboot before the virtual display goes on.
+- name: Set up the GPU now
+  ansible.builtin.include_tasks: setup_now.yml
+  loop: [1, 2, 3]
+  loop_control:
+    loop_var: rega_gpu_pass

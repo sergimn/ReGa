@@ -1,0 +1,22 @@
+---
+rega_sunshine_version: 2026.914.233613
+rega_sunshine_msi_url: https://github.com/LizardByte/Sunshine/releases/download/v{{ rega_sunshine_version }}/Sunshine-Windows-AMD64-installer.msi
+rega_sunshine_msi_sha256: 1d7fed8beecd5889dc7ff14cf9f42d6d38f37c3066c13c6c2a5f4e91847e0ccf
+rega_sunshine_path: C:\Program Files\Sunshine
+
+# Web UI and API login. The app uses it to pair Moonlight automatically.
+# Generated once per machine unless the app passes one.
+rega_sunshine_username: rega
+rega_sunshine_password: >-
+  {{ lookup('ansible.builtin.password', rega_secrets_dir ~ '/sunshine-password',
+            length=24, chars=['ascii_letters', 'digits']) }}
+
+# Keys this playbook owns in sunshine.conf; anything else set from the web UI
+# is left alone.
+rega_sunshine_config:
+  sunshine_name: ReGa
+  # The web UI must answer the app from the client's public IP when
+  # WireGuard is off. The security group already limits it to that IP (and
+  # to nobody when WireGuard is on), and it needs the password above.
+  origin_web_ui_allowed: wan
+  address_family: ipv4

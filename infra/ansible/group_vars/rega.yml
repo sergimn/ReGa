@@ -1,0 +1,15 @@
+---
+# How Ansible reaches a ReGa machine. Terraform's boot script enables WinRM
+# over HTTPS on 5986 with a self-signed certificate, and the security group
+# opens 5986 only to admin_cidrs.
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_scheme: https
+# NTLM keeps the Administrator password off the wire even though the
+# self-signed certificate can't be validated.
+ansible_winrm_transport: ntlm
+ansible_winrm_server_cert_validation: ignore
+ansible_user: Administrator
+# First runs install large packages; give WinRM operations time.
+ansible_winrm_operation_timeout_sec: 120
+ansible_winrm_read_timeout_sec: 150

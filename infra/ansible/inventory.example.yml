@@ -1,0 +1,14 @@
+---
+# One machine per inventory. The app fills this in from the Terraform
+# outputs of infra/terraform/aws; copy it to inventory.yml to run by hand.
+rega:
+  hosts:
+    main:                                   # the machine_id
+      ansible_host: 203.0.113.10            # output public_ip
+      ansible_password: "decrypted-password" # output password_data, decrypted with the private key
+      rega_wireguard_port: 51820            # same as the Terraform variable
+      # The app's WireGuard public key. Leave it out to have the playbook
+      # make a client key pair (written to the secrets folder).
+      # rega_wireguard_client_public_key: "base64..."
+      # Library bucket region, if it isn't the machine's region.
+      # rega_library_bucket_region: eu-north-1

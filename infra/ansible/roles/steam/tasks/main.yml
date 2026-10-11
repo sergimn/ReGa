@@ -1,0 +1,38 @@
+---
+# Steam installs to C:, which is kept between sessions. Games go to the
+# library disk (D:), which the agent restores from S3 and registers with
+# Steam at logon. The user signs in to Steam once, inside the first
+# Moonlight session; the app never handles Steam credentials.
+- name: Check for Steam
+  ansible.windows.win_stat:
+    path: "{{ rega_steam_path }}\\steam.exe"
+    get_checksum: false
+  register: rega_steam_installed
+
+- name: Install Steam
+  when: not rega_steam_installed.stat.exists
+  block:
+    - name: Download the Steam installer
+      ansible.windows.win_get_url:
+        url: "{{ rega_steam_setup_url }}"
+        dest: "{{ rega_work_dir }}\\SteamSetup.exe"
+        force: true
+
+    - name: Check that Valve signed the Steam installer
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Path, [string]$Signer)
+          $Ansible.Changed = $false
+          $signature = Get-AuthenticodeSignature -LiteralPath $Path
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch ('(^|, )O="?' + [regex]::Escape($Signer) + '"?(,|$)')) {
+            throw "Unexpected signature on ${Path}: $($signature.Status), $($signature.SignerCertificate.Subject)"
+          }
+        parameters:
+          Path: "{{ rega_work_dir }}\\SteamSetup.exe"
+          Signer: "{{ rega_steam_signer }}"
+
+    - name: Run the Steam installer
+      ansible.windows.win_package:
+        path: "{{ rega_work_dir }}\\SteamSetup.exe"
+        arguments: /S
+        creates_path: "{{ rega_steam_path }}\\steam.exe"
