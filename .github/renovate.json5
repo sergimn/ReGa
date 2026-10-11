@@ -197,6 +197,14 @@
         "Renovate can't hash the Flatpak's Terraform download: set `sha256` in `app/flatpak/io.github.sergimn.rega.yml` from the release's `SHA256SUMS` file on https://releases.hashicorp.com/terraform/ before merging.",
       ],
     },
+    // Renovate's own renovate-config manager would also bump
+    // constraints.flutter, alone and with automerge on; the regex manager
+    // above keeps it in the Flutter update instead.
+    {
+      matchManagers: ['renovate-config'],
+      matchDepTypes: ['tool-constraint'],
+      enabled: false,
+    },
     {
       groupName: 'Flutter',
       matchDatasources: ['flutter-version'],

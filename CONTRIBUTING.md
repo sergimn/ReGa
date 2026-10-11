@@ -83,6 +83,10 @@ found and what is waiting.
   depends on, that one comes at its newest compatible version.
 - Updates are grouped by area (GitHub Actions, pre-commit hooks, Rust
   crates, Dart packages, Terraform providers, Ansible).
+- If Renovate opens a config migration PR, put the comments back in
+  `.github/renovate.json5` before merging: it rewrites the file without
+  them, and the `// renovate:` comment there is what keeps Renovate's
+  Flutter in step with CI's.
 - Digest, patch and minor updates merge on their own once every check on the
   PR has passed. Major updates wait for a review, and so do breaking 0.x
   updates of crates and Dart packages.
