@@ -24,6 +24,7 @@ flatpak run io.github.sergimn.rega
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
 | `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock` |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
+| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT) and Terraform's (BUSL-1.1) |
 
 Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
 `~/.aws` read-only for credentials and profiles, with the SSO token cache
@@ -97,6 +98,7 @@ CI tests the module with.
   separate app, so starting it needs either a host permission or bundling
   Moonlight here; that's a decision for when the app starts streams.
 - Flathub. It would need the app built from source inside flatpak-builder
-  (Flutter, Dart packages and Cargo crates as offline sources), a license,
-  and review of the `~/.aws` permission.
+  (Flutter, Dart packages and Cargo crates as offline sources), a review of
+  the `~/.aws` permission, and a word on the bundled Terraform's licence
+  (BUSL-1.1, not open source) next to the app's own (MIT).
 - aarch64.

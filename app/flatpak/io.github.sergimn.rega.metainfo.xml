@@ -4,8 +4,7 @@
   <name>ReGa</name>
   <summary>Play games on a cloud machine you own</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <!-- TODO: add <project_license> once the project has a license. None is
-       picked yet, so none is claimed here. -->
+  <project_license>MIT</project_license>
   <developer id="io.github.sergimn">
     <name>Sergi</name>
   </developer>

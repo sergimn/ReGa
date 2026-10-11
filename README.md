@@ -36,3 +36,7 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 | Surface | Mist `#F4F7FB` | Night `#0B1220` |
 | Cards | White | Navy `#1C2A4A` |
 | Error | `#CE2C31` | `#F87171` |
+
+## License
+
+MIT; see [LICENSE](LICENSE).
