@@ -52,9 +52,11 @@ resource "aws_instance" "machine" {
   }
 
   lifecycle {
-    # A newer Windows AMI must not replace an existing machine, and resizing
-    # C: needs ec2:ModifyVolume, which the IAM policy denies.
-    ignore_changes = [ami, root_block_device[0].volume_size]
+    # A newer Windows AMI must not replace an existing machine. Resizing C:
+    # needs ec2:ModifyVolume, and changing user_data needs a non-resize
+    # ModifyInstanceAttribute; the IAM policy denies both. Existing machines
+    # keep the boot script they were created with.
+    ignore_changes = [ami, root_block_device[0].volume_size, user_data]
   }
 }
 
@@ -66,7 +68,7 @@ resource "aws_ec2_instance_state" "machine" {
   depends_on = [aws_volume_attachment.library]
 
   lifecycle {
-    # A resize or user_data change stops and restarts the instance behind
+    # A resize stops and restarts the instance behind
     # this resource's back. Re-apply the wanted state after every instance
     # change, so a stopped machine stays stopped and public_ip is re-read.
     replace_triggered_by = [aws_instance.machine]

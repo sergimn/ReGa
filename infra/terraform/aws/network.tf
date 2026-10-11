@@ -12,7 +12,10 @@ locals {
 
   ingress_rules = merge(
     var.wireguard_enabled ? {
-      wireguard = { protocol = "udp", from = var.wireguard_port, to = var.wireguard_port, cidr = "0.0.0.0/0" }
+      # The port is in the key so a new port replaces the rule: updating a
+      # rule in place needs ec2:ModifySecurityGroupRules, which the policy
+      # doesn't grant.
+      "wireguard-${var.wireguard_port}" = { protocol = "udp", from = var.wireguard_port, to = var.wireguard_port, cidr = "0.0.0.0/0" }
     } : {},
     var.wireguard_enabled ? {} : {
       for pair in setproduct(local.sunshine_ports, var.client_cidrs) :

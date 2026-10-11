@@ -78,12 +78,12 @@ run "defaults_are_an_on_demand_cpu_machine" {
   }
 
   assert {
-    condition     = keys(aws_vpc_security_group_ingress_rule.machine) == ["wireguard"]
+    condition     = keys(aws_vpc_security_group_ingress_rule.machine) == ["wireguard-51820"]
     error_message = "With WireGuard on and no admin IPs, only the WireGuard port is open."
   }
 
   assert {
-    condition     = aws_vpc_security_group_ingress_rule.machine["wireguard"].cidr_ipv4 == "0.0.0.0/0" && aws_vpc_security_group_ingress_rule.machine["wireguard"].ip_protocol == "udp"
+    condition     = aws_vpc_security_group_ingress_rule.machine["wireguard-51820"].cidr_ipv4 == "0.0.0.0/0" && aws_vpc_security_group_ingress_rule.machine["wireguard-51820"].ip_protocol == "udp"
     error_message = "WireGuard should be open over UDP to any IP."
   }
 
@@ -127,7 +127,7 @@ run "wireguard_off_opens_sunshine_to_client_ips_only" {
   }
 
   assert {
-    condition     = !contains(keys(aws_vpc_security_group_ingress_rule.machine), "wireguard")
+    condition     = !contains(keys(aws_vpc_security_group_ingress_rule.machine), "wireguard-51820")
     error_message = "WireGuard port should be closed when WireGuard is off."
   }
 
