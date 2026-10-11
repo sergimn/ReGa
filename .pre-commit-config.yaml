@@ -1,0 +1,81 @@
+# Checks that run on every commit once you run `pre-commit install`, and on
+# every PR in CI (.github/workflows/pre-commit.yml). Hooks are pinned to
+# commits, with the tag in the comment; Renovate keeps both current.
+#
+# The local hooks use your own toolchains (cargo, dart, terraform,
+# ansible-lint). CI skips them, because the App, Terraform and Ansible
+# workflows already run the same checks.
+
+# Generated or vendored; formatted by their own tools, if at all.
+exclude: ^app/(rust_builder/cargokit/|linux/flutter/generated_)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+        # Writes PEM files, so it holds the header as a constant.
+        exclude: ^app/core/src/aws/keys\.rs$
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0494aa7fa1314e98913a41227d8f0a515b2c1049  # frozen: 0.38.2
+    hooks:
+      - id: check-renovate
+        # For .github/renovate.json5. Set so Renovate tracks the version.
+        language: python
+        additional_dependencies: [json5==0.17.3]
+
+  # Workflows: syntax, expressions and the shell in run: steps.
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+        # For the run: steps. Set so Renovate tracks the version.
+        language: golang
+        additional_dependencies:
+          - github.com/wasilibs/go-shellcheck/cmd/shellcheck@v0.11.1
+
+  # Workflow security, including actions and images pinned to hashes.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: fa412071e4f5d44d44f9e365f4676f9df92456a2  # frozen: v1.30.1
+    hooks:
+      - id: zizmor
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --manifest-path app/Cargo.toml --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: dart-format
+        name: dart format
+        entry: dart format
+        language: system
+        types: [dart]
+        files: ^app/(lib|test|integration_test)/
+      - id: terraform-fmt
+        name: terraform fmt
+        entry: terraform fmt
+        language: system
+        files: \.(tf|tfvars|tftest\.hcl)$
+      - id: ansible-lint
+        name: ansible-lint
+        entry: bash -c 'cd infra/ansible && ansible-lint'
+        language: system
+        files: ^infra/ansible/
+        pass_filenames: false

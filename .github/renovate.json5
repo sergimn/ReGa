@@ -1,0 +1,157 @@
+// Renovate (the Mend-hosted GitHub app) keeps every pin in this repo current.
+// What it covers, and what it can't, is in CONTRIBUTING.md.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    // Recommended defaults, plus: GitHub Actions and container images pinned
+    // to digests, weekly lock file refreshes, and config migration PRs.
+    'config:best-practices',
+    // pre-commit hooks, pinned to commits by `pre-commit autoupdate --freeze`.
+    ':enablePreCommit',
+  ],
+  labels: ['dependencies'],
+
+  // Give a new release a few days before taking it: bad releases are usually
+  // yanked within that time. Sources without release dates aren't held back.
+  minimumReleaseAge: '3 days',
+  minimumReleaseAgeBehaviour: 'timestamp-optional',
+
+  // Security fixes from the OSV database, for every ecosystem here.
+  osvVulnerabilityAlerts: true,
+
+  // Renovate merges routine updates itself, and only once every check on the
+  // PR has passed. GitHub's own auto-merge is off because it waits only for
+  // the checks branch protection requires.
+  platformAutomerge: false,
+  lockFileMaintenance: {
+    automerge: true,
+  },
+
+  // Each Python *.lock file is generated, with hashes, from the .txt file of
+  // the same name. pip-compile updates the .txt and regenerates the lock;
+  // pip_requirements would update the .txt alone.
+  'pip-compile': {
+    managerFilePatterns: [
+      '/^infra/ansible/requirements(-[a-z]+)?\\.lock$/',
+      '/^\\.github/requirements/[^/]+\\.lock$/',
+    ],
+  },
+  pip_requirements: {
+    enabled: false,
+  },
+
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Tool versions in workflows, marked with a "# renovate:" comment',
+      managerFilePatterns: ['/^\\.github/workflows/[^/]+\\.ya?ml$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s*\\n\\s*[A-Z_]+: [\'"]?(?<currentValue>[^\'"\\s]+)',
+      ],
+      // These are exact pins. NuGet versioning would read 5.7.1 as ">= 5.7.1".
+      versioningTemplate: 'semver-coerced',
+    },
+    {
+      customType: 'regex',
+      description: 'Release downloads in Ansible roles: the tag and the SHA-256 of the file',
+      managerFilePatterns: ['/^infra/ansible/roles/[^/]+/defaults/main\\.yml$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>github-release-attachments) depName=(?<depName>\\S+)\\s*\\n[a-z_]+_version: (?<currentValue>\\S+)\\n[a-z_]+_url: .+\\n[a-z_]+_sha256: (?<currentDigest>[a-f0-9]{64})',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Terraform in the Flatpak, kept in step with CI',
+      managerFilePatterns: ['/^app/flatpak/[^/]+\\.ya?ml$/'],
+      matchStrings: [
+        'url: https://releases\\.hashicorp\\.com/terraform/(?<currentValue>[0-9.]+)/terraform_[0-9.]+_linux_amd64\\.zip',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'terraform',
+      packageNameTemplate: 'hashicorp/terraform',
+      extractVersionTemplate: '^v(?<version>.+)$',
+    },
+  ],
+
+  packageRules: [
+    // Vendored from the flutter_rust_bridge template; not ours to update.
+    {
+      matchFileNames: ['app/rust_builder/cargokit/**'],
+      enabled: false,
+    },
+    // Cargo.lock already pins every crate with a checksum, so dev-dependencies
+    // keep their ranges (best-practices would pin them in Cargo.toml).
+    {
+      matchManagers: ['cargo'],
+      matchDepTypes: ['dev-dependencies'],
+      rangeStrategy: 'auto',
+    },
+
+    // Routine updates merge on their own once CI passes; majors wait for a
+    // review.
+    {
+      matchUpdateTypes: ['minor', 'patch', 'digest', 'pinDigest'],
+      automerge: true,
+    },
+
+    // One PR per area for the routine updates; majors stay separate.
+    {
+      groupName: 'GitHub Actions',
+      matchManagers: ['github-actions'],
+      matchDepTypes: ['action'],
+      matchUpdateTypes: ['minor', 'patch', 'digest', 'pinDigest'],
+    },
+    {
+      groupName: 'pre-commit hooks',
+      matchManagers: ['pre-commit'],
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+    },
+    {
+      groupName: 'Rust crates',
+      matchManagers: ['cargo'],
+      matchUpdateTypes: ['minor', 'patch'],
+    },
+    {
+      groupName: 'Dart packages',
+      matchManagers: ['pub'],
+      matchUpdateTypes: ['minor', 'patch'],
+    },
+    {
+      groupName: 'Terraform providers',
+      matchManagers: ['terraform', 'tflint-plugin'],
+      matchUpdateTypes: ['minor', 'patch'],
+    },
+    {
+      groupName: 'Ansible',
+      matchFileNames: ['infra/ansible/**'],
+      matchManagers: ['ansible-galaxy', 'pip-compile'],
+      matchUpdateTypes: ['minor', 'patch'],
+    },
+    // The Flatpak builder image gets a new digest most days; once a week is
+    // plenty, since each one rebuilds the whole app in CI.
+    {
+      matchManagers: ['github-actions'],
+      matchDepTypes: ['container'],
+      schedule: ['* 0-3 * * 1'],
+    },
+
+    // Updates that need a hand after Renovate's change, so they never merge
+    // on their own.
+    {
+      groupName: 'Terraform CLI',
+      matchDepNames: ['terraform'],
+      automerge: false,
+      prBodyNotes: [
+        "Renovate can't hash the Flatpak's Terraform download: set `sha256` in `app/flatpak/io.github.sergimn.rega.yml` from the release's `SHA256SUMS` file on https://releases.hashicorp.com/terraform/ before merging.",
+      ],
+    },
+    {
+      groupName: 'flutter_rust_bridge',
+      matchPackageNames: ['flutter_rust_bridge'],
+      automerge: false,
+      prBodyNotes: [
+        'Regenerate the bindings with the same version of the codegen (`flutter_rust_bridge_codegen generate` in `app/`) before merging.',
+      ],
+    },
+  ],
+}
