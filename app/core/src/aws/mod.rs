@@ -912,11 +912,12 @@ impl AwsProvider {
             let id = record.id().to_string();
             self.with_setup_marker(&id, async {
                 let access = self.access_with_password(record, i).await?;
-                self.setup.after_start(&access).await?;
-                if !record.set_up {
-                    record.set_up = true;
+                // From here on the setup can put games on D:.
+                if !record.setup_started {
+                    record.setup_started = true;
                     self.save_record(record).await?;
                 }
+                self.setup.after_start(&access).await?;
                 if wait_for_library {
                     self.setup.wait_for_library(&access).await?;
                 }
@@ -968,12 +969,13 @@ impl AwsProvider {
         // A failed upload doesn't block the stop; it only keeps D:.
         let saved = self.save_library(&mut record, instance.as_ref()).await;
         record.vars.instance_state = InstanceState::Stopped;
-        // D: only goes away once its games are safe in S3 (one never set up
-        // has none). A machine that stopped itself saved them, or not,
-        // before it did. When this upload failed, an older record mustn't
-        // vouch for it: the upload may not have got as far as deleting it.
-        let never_set_up = self.setup.enabled() && !record.set_up;
-        if never_set_up || (saved.is_ok() && self.library_saved(&record, instance.as_ref()).await) {
+        // D: only goes away once its games are safe in S3 (one no setup has
+        // started on has none). A machine that stopped itself saved them, or
+        // not, before it did. When this upload failed, an older record
+        // mustn't vouch for it: the upload may not have got as far as
+        // deleting it.
+        let empty = self.setup.enabled() && !record.setup_started;
+        if empty || (saved.is_ok() && self.library_saved(&record, instance.as_ref()).await) {
             record.vars.library_volume_enabled = false;
         }
         self.save_record(&mut record).await?;
@@ -994,7 +996,7 @@ impl AwsProvider {
         else {
             return Ok(());
         };
-        if !record.set_up {
+        if !record.setup_started {
             return Ok(());
         }
         // It runs with its library disk, whatever a stop that didn't get
@@ -1028,24 +1030,29 @@ impl AwsProvider {
         saved: ProviderResult<()>,
     ) -> ProviderResult<()> {
         // D: outlives its instance (AWS taking back a spot machine), until
-        // Terraform deletes it. One never set up holds no games of its own.
-        let has_disk = record.vars.library_volume_enabled && record.set_up;
+        // Terraform deletes it. Before any setup it holds nothing.
+        let has_disk = record.vars.library_volume_enabled && record.setup_started;
         if !self.setup.enabled()
             || !has_disk
             || (saved.is_ok() && self.library_saved(record, instance).await)
         {
             return Ok(());
         }
-        let ended = instance.is_none_or(|i| i.state == MachineState::Terminated);
-        let why = match saved {
-            Err(e) => e.to_string(),
-            Ok(()) if ended => "its instance ended before it uploaded them".into(),
-            Ok(()) => "it hasn't uploaded them since it last started".into(),
+        let name = &record.name;
+        let why = match (saved, instance) {
+            (Err(e), _) => format!("{name}'s games couldn't be saved to the game library ({e})."),
+            // EC2 lists no ended instances, so there's no start to check
+            // its last upload against.
+            (Ok(()), None) => format!(
+                "ReGa can't tell whether {name} saved its games to the game library before \
+                 its instance ended."
+            ),
+            (Ok(()), Some(_)) => {
+                format!("{name} hasn't saved its games to the game library since it last started.")
+            }
         };
         Err(ProviderError::GamesNotSaved(format!(
-            "{}'s games couldn't be saved to the game library ({why}). Destroying it loses \
-             any installed since its last upload.",
-            record.name
+            "{why} Destroying it loses any installed since its last upload."
         )))
     }
 

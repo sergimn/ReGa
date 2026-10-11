@@ -121,14 +121,15 @@ pub struct MachineRecord {
     /// When a device last saved it, in Unix seconds; 0 when unknown.
     #[serde(default)]
     pub saved_at: u64,
-    /// Whether a setup has ever finished on the machine. Until one has,
-    /// nobody has played on it, so its library disk holds no games of its
-    /// own. Records from before this was kept count as set up.
-    #[serde(default = "set_up_before_records_said")]
-    pub set_up: bool,
+    /// Whether a setup has ever started on the machine. Until one has,
+    /// nothing can have put games on its library disk: the agent, its
+    /// restore and Steam all come with the setup. Records from before this
+    /// was kept count as started.
+    #[serde(default = "started_before_records_said")]
+    pub setup_started: bool,
 }
 
-fn set_up_before_records_said() -> bool {
+fn started_before_records_said() -> bool {
     true
 }
 
@@ -139,7 +140,7 @@ impl MachineRecord {
             name,
             vars,
             saved_at: 0,
-            set_up: false,
+            setup_started: false,
         }
     }
 
@@ -379,12 +380,12 @@ mod tests {
         let mut json: serde_json::Value =
             serde_json::from_str(&MachineRecord::new("G".into(), vars()).to_json()).unwrap();
         json.as_object_mut().unwrap().remove("saved_at");
-        json.as_object_mut().unwrap().remove("set_up");
+        json.as_object_mut().unwrap().remove("setup_started");
         let record = MachineRecord::from_json(json.to_string().as_bytes()).unwrap();
         assert_eq!(record.saved_at, 0);
         // It may have been played on, so its library disk counts.
-        assert!(record.set_up);
-        assert!(!MachineRecord::new("G".into(), vars()).set_up);
+        assert!(record.setup_started);
+        assert!(!MachineRecord::new("G".into(), vars()).setup_started);
     }
 
     #[test]

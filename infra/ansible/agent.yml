@@ -34,6 +34,20 @@
       ansible.builtin.wait_for_connection:
         timeout: 300
 
+    # A setup that failed early leaves no agent, and so no games on D:.
+    - name: Look for the agent
+      ansible.windows.win_stat:
+        path: "{{ rega_agent_dir }}\\rega-agent.ps1"
+      register: rega_agent_script
+
+    - name: Check the agent
+      ansible.builtin.assert:
+        that: rega_agent_script.stat.exists
+        fail_msg: >-
+          ReGa's agent isn't on this machine: its setup stopped before
+          installing it, so nothing has restored or saved games here.
+        quiet: true
+
     - name: Run the agent
       ansible.windows.win_command:
         argv: "{{ rega_agent_argv + (rega_wait_argv if rega_agent_action == 'WaitRestore' else []) }}"

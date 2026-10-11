@@ -1432,28 +1432,25 @@ async fn destroy_asks_before_deleting_the_disk_of_a_machine_aws_took_back() {
     let destroy = format!("terraform destroy {}", m.id);
     let err = f.provider.destroy(&m.id, false).await.unwrap_err();
     assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
-    assert!(err.to_string().contains("ended before"), "{err}");
+    assert!(
+        err.to_string().contains("before its instance ended"),
+        "{err}"
+    );
     assert!(!f.calls().contains(&destroy));
     f.provider.destroy(&m.id, true).await.unwrap();
     assert!(f.calls().contains(&destroy));
 }
 
 #[tokio::test]
-async fn a_machine_whose_setup_never_finished_has_no_games_to_save() {
-    let mut f = fixture(ready_account());
-    let setup = Arc::new(Recorder {
-        fail_after_start: true,
-        ..Recorder::new(&f.aws)
-    });
-    f.provider = f.provider.with_setup(setup.clone());
-    let err = f
-        .provider
+async fn a_machine_no_setup_started_on_has_no_games_to_save() {
+    // Windows never makes its password, so the setup never starts.
+    let (f, setup) = with_setup(Account::typical());
+    f.provider
         .launch(&request("t3.medium", false))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("Install Steam"), "{err}");
     let m = f.provider.list_machines().await.unwrap().remove(0);
-    assert!(!f.record(&m.id).set_up);
+    assert!(!f.record(&m.id).setup_started);
 
     // Nothing to upload: the stop drops D:, and destroy doesn't ask.
     let stopped = f.provider.stop(&m.id).await.unwrap();
@@ -1466,14 +1463,36 @@ async fn a_machine_whose_setup_never_finished_has_no_games_to_save() {
 }
 
 #[tokio::test]
-async fn a_finished_setup_is_recorded_for_every_device() {
-    let (f, _setup) = with_setup(ready_account());
-    let m = f
+async fn a_setup_that_failed_part_way_still_saves_the_games() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        fail_after_start: true,
+        final_sync: Default::default(),
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let err = f
         .provider
         .launch(&request("t3.medium", false))
         .await
-        .unwrap();
-    assert!(f.record(&m.id).set_up);
+        .unwrap_err();
+    assert!(err.to_string().contains("Install Steam"), "{err}");
+    let m = f.provider.list_machines().await.unwrap().remove(0);
+    // Every device knows the setup may have put games on D:.
+    assert!(f.record(&m.id).setup_started);
+
+    // It may have restored games and been played on: the upload runs, and
+    // without a good one D: stays.
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(stopped.library_kept);
+    let uploads = setup
+        .events()
+        .iter()
+        .filter(|e| e.starts_with("before_stop"))
+        .count();
+    assert_eq!(uploads, 2);
 }
 
 #[tokio::test]
