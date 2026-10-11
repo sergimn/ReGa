@@ -122,8 +122,10 @@ class _ProviderPageState extends State<ProviderPage> {
               _spot = v;
               // Spot only sells GPU types; drop a CPU pick so the region
               // picker prices the GPU type instead of finding nothing.
-              final selected = _offers.where((o) => o.typeName == _typeName);
-              if (v && selected.any((o) => !o.isGpu)) _typeName = null;
+              final keep = _offers.any(
+                (o) => o.typeName == _typeName && o.isGpu,
+              );
+              if (v && !keep) _typeName = null;
             });
             _reload();
           },
