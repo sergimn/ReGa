@@ -3,7 +3,11 @@
 //! about a cloud; a provider says where the machine is
 //! ([`crate::CloudProvider::stream_target`]).
 
+#[cfg(test)]
+mod fake;
 mod ipv4;
+pub mod moonlight;
+pub mod sunshine;
 pub mod tunnel;
 
 use std::net::{Ipv4Addr, SocketAddr};
