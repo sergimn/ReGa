@@ -50,9 +50,13 @@ the command in the lock's header, from the same folder:
 
 ```sh
 cd infra/ansible
-uv pip compile --universal --generate-hashes --python-version=3.12 requirements.txt --output-file=requirements.lock
-uv pip compile --universal --generate-hashes --python-version=3.12 requirements-lint.txt --output-file=requirements-lint.lock
+uv pip compile --universal --generate-hashes --python-version=3.12 --exclude-newer=P30D requirements.txt --output-file=requirements.lock
+uv pip compile --universal --generate-hashes --python-version=3.12 --exclude-newer=P30D requirements-lint.txt --output-file=requirements-lint.lock
 ```
+
+`--exclude-newer=P30D` keeps every package in the lock at least 30 days old
+(see Renovate below), so a version you pin in the `.txt` file has to be that
+old too.
 
 ## Renovate
 
@@ -61,10 +65,22 @@ PRs to keep all of the above current, with the config in
 `.github/renovate.json5`. The "Dependency Dashboard" issue lists what it
 found and what is waiting.
 
+- Renovate only takes releases that are at least 30 days old, security
+  fixes included, so a hijacked or malicious release has time to be caught
+  and pulled first. When the newest release is younger, it proposes the
+  newest one that is old enough. The Python locks hold the packages they
+  pull in to the same rule, and CI's pre-commit job installs the hooks' own
+  Python dependencies with `PIP_UPLOADED_PRIOR_TO=P30D`.
+- Updates whose source gives no release date (the Flatpak builder image on
+  ghcr.io, the runner images) are never proposed on their own. They wait on
+  the Dependency Dashboard until someone ticks them, and never merge on
+  their own.
+- Lock file refreshes are off, since they would take the newest version of
+  everything at once with no age check. Cargo and pub can't filter by date:
+  when a crate or Dart package update needs a newer version of something it
+  depends on, that one comes at its newest compatible version.
 - Updates are grouped by area (GitHub Actions, pre-commit hooks, Rust
-  crates, Dart packages, Terraform providers, Ansible), and a new release
-  waits 3 days before Renovate proposes it.
-- Lock files are refreshed weekly; the Flatpak builder image digest weekly.
+  crates, Dart packages, Terraform providers, Ansible).
 - Digest, patch and minor updates merge on their own once every check on the
   PR has passed. Major updates wait for a review.
 - Sunshine and the virtual display driver: Renovate updates the version and

@@ -2,4 +2,4 @@
 # requirements-lint.lock, generated from this file with hashes: see
 # CONTRIBUTING.md at the top of the repo.
 -r requirements.txt
-ansible-lint==26.9.0
+ansible-lint==26.8.0

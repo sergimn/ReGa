@@ -4,37 +4,56 @@
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   extends: [
     // Recommended defaults, plus: GitHub Actions and container images pinned
-    // to digests, weekly lock file refreshes, and config migration PRs.
+    // to digests, and config migration PRs.
     'config:best-practices',
     // pre-commit hooks, pinned to commits by `pre-commit autoupdate --freeze`.
     ':enablePreCommit',
   ],
   labels: ['dependencies'],
 
-  // Give a new release a few days before taking it: bad releases are usually
-  // yanked within that time. Sources without release dates aren't held back.
-  minimumReleaseAge: '3 days',
-  minimumReleaseAgeBehaviour: 'timestamp-optional',
+  // Only take releases that are at least 30 days old, so a hijacked or
+  // malicious release has time to be found and pulled before it reaches us.
+  // Renovate proposes the newest release that is old enough. Updates with no
+  // release date (the Flatpak builder image, runner images) wait on the
+  // Dependency Dashboard for someone to tick them, and never merge on their
+  // own. Pending releases don't get a branch until they are old enough.
+  minimumReleaseAge: '30 days',
+  minimumReleaseAgeBehaviour: 'timestamp-required',
+  internalChecksFilter: 'strict',
 
-  // Security fixes from the OSV database, for every ecosystem here.
+  // Security fixes from the OSV database, for every ecosystem here. They wait
+  // the same 30 days (Renovate's default is to propose them at once).
   osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    minimumReleaseAge: '30 days',
+  },
 
   // Renovate merges routine updates itself, and only once every check on the
   // PR has passed. GitHub's own auto-merge is off because it waits only for
   // the checks branch protection requires.
   platformAutomerge: false,
+
+  // Lock file refreshes are off: they take the newest version of everything
+  // in a lock at once, with no age check. Locks change only along with the
+  // update that needs them.
   lockFileMaintenance: {
-    automerge: true,
+    enabled: false,
   },
 
   // Each Python *.lock file is generated, with hashes, from the .txt file of
   // the same name. pip-compile updates the .txt and regenerates the lock;
-  // pip_requirements would update the .txt alone.
+  // pip_requirements would update the .txt alone. The lock command in each
+  // header has --exclude-newer=P30D, so the packages a lock pulls in are
+  // held to 30 days as well.
   'pip-compile': {
     managerFilePatterns: [
       '/^infra/ansible/requirements(-[a-z]+)?\\.lock$/',
       '/^\\.github/requirements/[^/]+\\.lock$/',
     ],
+    // On by default for this manager.
+    lockFileMaintenance: {
+      enabled: false,
+    },
   },
   pip_requirements: {
     enabled: false,
@@ -126,13 +145,6 @@
       matchFileNames: ['infra/ansible/**'],
       matchManagers: ['ansible-galaxy', 'pip-compile'],
       matchUpdateTypes: ['minor', 'patch'],
-    },
-    // The Flatpak builder image gets a new digest most days; once a week is
-    // plenty, since each one rebuilds the whole app in CI.
-    {
-      matchManagers: ['github-actions'],
-      matchDepTypes: ['container'],
-      schedule: ['* 0-3 * * 1'],
     },
 
     // Updates that need a hand after Renovate's change, so they never merge

@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12.15"
+          python-version: "3.12.14"
 
       - name: Install pre-commit
         run: pip install -r .github/requirements/pre-commit.lock
@@ -36,11 +36,14 @@ jobs:
           key: pre-commit-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       # The App, Terraform and Ansible workflows run these with the right
-      # toolchains.
+      # toolchains. pip installs each hook's own dependencies, which the
+      # config doesn't pin; it only takes releases at least 30 days old, like
+      # Renovate.
       - name: Run the hooks
         run: pre-commit run --all-files --show-diff-on-failure
         env:
           SKIP: cargo-fmt,dart-format,terraform-fmt,ansible-lint,zizmor
+          PIP_UPLOADED_PRIOR_TO: P30D
 
       # Again with a token, so zizmor can also check that every pinned commit
       # belongs to the action it names and has no known vulnerability.
@@ -48,3 +51,4 @@ jobs:
         run: pre-commit run zizmor --all-files
         env:
           GH_TOKEN: ${{ github.token }}
+          PIP_UPLOADED_PRIOR_TO: P30D
