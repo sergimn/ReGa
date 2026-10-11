@@ -11,6 +11,10 @@ use crate::registry;
 
 /// An error the UI shows as is: a plain message, never a backtrace.
 #[derive(Debug)]
+#[flutter_rust_bridge::frb(dart_code = "
+  @override
+  String toString() => message;
+")]
 pub struct RegaError {
     pub message: String,
 }
@@ -125,7 +129,7 @@ pub async fn machine_offers(
 }
 
 /// Measures latency to every region and caches it. Resolves when done, with
-/// `true` if any measurement changed (so the UI knows to refresh).
+/// `true` if any region was measured (so the UI knows to refresh).
 pub async fn probe_latency(provider_id: String) -> RegaResult<bool> {
     let entry = registry::entry(&provider_id)?;
     let regions = entry.provider().regions().await?;

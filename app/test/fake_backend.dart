@@ -69,6 +69,15 @@ class FakeBackend implements RegaBackend {
   /// When set, `regionChoices` throws it.
   Object? regionsError;
 
+  /// With Spot on, Virginia isn't offered (say, no spot quota there).
+  bool hideVirginiaWithSpot = false;
+
+  /// How long the latency probe takes, and how long region lists take once
+  /// it has measured something.
+  Duration probeDelay = Duration.zero;
+  Duration measuredRegionsDelay = Duration.zero;
+  bool _measured = false;
+
   int get regionCalls => calls.where((c) => c.startsWith('regions')).length;
 
   @override
@@ -79,6 +88,8 @@ class FakeBackend implements RegaBackend {
   @override
   Future<bool> probeLatency(String providerId) async {
     calls.add('probe $providerId');
+    await Future<void>.delayed(probeDelay);
+    _measured = latencyChanges;
     return latencyChanges;
   }
 
@@ -94,11 +105,23 @@ class FakeBackend implements RegaBackend {
     if (spot && typeName == cpuOffer.typeName) {
       return const RegionChoices(all: []);
     }
+    if (_measured) await Future<void>.delayed(measuredRegionsDelay);
+    // Before the probe lands (when one is expected), nothing has a latency.
+    final strip = latencyChanges && !_measured;
+    RegionOption r(RegionOption o) => strip
+        ? RegionOption(
+            regionId: o.regionId,
+            displayName: o.displayName,
+            pricePerHour: o.pricePerHour,
+            oneOffCost: o.oneOffCost,
+          )
+        : o;
+    final hide = spot && hideVirginiaWithSpot;
     return RegionChoices(
-      recommended: recommended,
-      lowestLatency: frankfurt,
-      cheapest: virginia,
-      all: const [frankfurt, stockholm, virginia, unmeasured],
+      recommended: r(recommended),
+      lowestLatency: r(frankfurt),
+      cheapest: hide ? r(stockholm) : r(virginia),
+      all: [r(frankfurt), r(stockholm), if (!hide) r(virginia), unmeasured],
     );
   }
 

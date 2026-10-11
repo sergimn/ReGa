@@ -60,17 +60,19 @@ impl RttCache {
     }
 
     /// Probes every region on its own thread and records results as they
-    /// arrive. Returns the handles so callers (and tests) can wait.
-    pub fn measure_in_background(&self, regions: Vec<Region>) -> Vec<thread::JoinHandle<()>> {
+    /// arrive. Each handle yields whether its region was measured.
+    pub fn measure_in_background(&self, regions: Vec<Region>) -> Vec<thread::JoinHandle<bool>> {
         regions
             .into_iter()
             .map(|region| {
                 let cache = self.clone();
                 thread::spawn(move || {
                     let host = region.latency_probe_host.as_str();
-                    if let Some(rtt) = measure_rtt(host, PROBE_PORT, PROBE_SAMPLES, PROBE_TIMEOUT) {
+                    let rtt = measure_rtt(host, PROBE_PORT, PROBE_SAMPLES, PROBE_TIMEOUT);
+                    if let Some(rtt) = rtt {
                         cache.insert(&region.id, rtt);
                     }
+                    rtt.is_some()
                 })
             })
             .collect()
@@ -118,7 +120,7 @@ mod tests {
             latency_probe_host: "host.invalid".into(),
         };
         for h in cache.measure_in_background(vec![region]) {
-            h.join().unwrap();
+            assert!(!h.join().unwrap());
         }
         assert_eq!(cache.get("nowhere"), None);
     }

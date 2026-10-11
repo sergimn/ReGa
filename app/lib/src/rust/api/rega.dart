@@ -28,7 +28,7 @@ Future<List<MachineOffer>> machineOffers({
 );
 
 /// Measures latency to every region and caches it. Resolves when done, with
-/// `true` if any measurement changed (so the UI knows to refresh).
+/// `true` if any region was measured (so the UI knows to refresh).
 Future<bool> probeLatency({required String providerId}) =>
     RustLib.instance.api.crateApiRegaProbeLatency(providerId: providerId);
 
@@ -164,6 +164,9 @@ class RegaError implements FrbException {
   final String message;
 
   const RegaError({required this.message});
+
+  @override
+  String toString() => message;
 
   @override
   int get hashCode => message.hashCode;

@@ -188,3 +188,105 @@ async fn unknown_type_is_an_error() {
         Err(ProviderError::UnknownMachineType("x1.huge".into()))
     );
 }
+
+/// The demo provider, except that every query about `broken` fails.
+struct FlakyRegion(MockProvider);
+
+#[async_trait::async_trait]
+impl CloudProvider for FlakyRegion {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn display_name(&self) -> &str {
+        self.0.display_name()
+    }
+    async fn ensure_storage(&self) -> rega_core::ProviderResult<rega_core::StorageLocation> {
+        self.0.ensure_storage().await
+    }
+    async fn regions(&self) -> rega_core::ProviderResult<Vec<rega_core::Region>> {
+        let mut regions = self.0.regions().await?;
+        regions.push(aws::region("broken", "Broken"));
+        Ok(regions)
+    }
+    async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> rega_core::ProviderResult<u32> {
+        self.0.gpu_quota_vcpus(region_id, spot).await
+    }
+    fn machine_types(&self) -> Vec<rega_core::MachineType> {
+        self.0.machine_types()
+    }
+    async fn price(
+        &self,
+        region_id: &str,
+        type_name: &str,
+    ) -> rega_core::ProviderResult<Option<Price>> {
+        self.0.price(region_id, type_name).await
+    }
+    async fn library_copy_cost(&self, region_id: &str) -> rega_core::ProviderResult<f64> {
+        self.0.library_copy_cost(region_id).await
+    }
+    async fn list_machines(&self) -> rega_core::ProviderResult<Vec<rega_core::Machine>> {
+        self.0.list_machines().await
+    }
+    async fn launch(
+        &self,
+        request: &LaunchRequest,
+    ) -> rega_core::ProviderResult<rega_core::Machine> {
+        self.0.launch(request).await
+    }
+    async fn resize(
+        &self,
+        machine_id: &str,
+        type_name: &str,
+    ) -> rega_core::ProviderResult<rega_core::Machine> {
+        self.0.resize(machine_id, type_name).await
+    }
+    async fn start(&self, machine_id: &str) -> rega_core::ProviderResult<rega_core::Machine> {
+        self.0.start(machine_id).await
+    }
+    async fn stop(&self, machine_id: &str) -> rega_core::ProviderResult<rega_core::Machine> {
+        self.0.stop(machine_id).await
+    }
+    async fn destroy(&self, machine_id: &str) -> rega_core::ProviderResult<()> {
+        self.0.destroy(machine_id).await
+    }
+}
+
+#[tokio::test]
+async fn one_failing_region_is_skipped() {
+    let p = FlakyRegion(MockProvider::demo_aws());
+    let c = region::candidates(&p, "g4dn.xlarge", false, |_| None)
+        .await
+        .unwrap();
+    // The mock rejects the unknown "broken" region; the other four remain.
+    assert_eq!(c.len(), 4);
+}
+
+#[tokio::test]
+async fn every_region_failing_is_an_error() {
+    let p = FlakyRegion(MockProvider::new("aws", "AWS", aws::catalog(), vec![]));
+    assert!(region::candidates(&p, "g4dn.xlarge", false, |_| None)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn resize_reports_spot_before_quota() {
+    let p = MockProvider::new(
+        "aws",
+        "AWS",
+        aws::catalog(),
+        vec![region_with("r", (0, 4), &[("g4dn.xlarge", GPU_BOTH)])],
+    );
+    let m = p
+        .launch(&LaunchRequest {
+            region_id: "r".into(),
+            ..request("g4dn.xlarge", true)
+        })
+        .await
+        .unwrap();
+    p.stop(&m.id).await.unwrap();
+    assert_eq!(
+        p.resize(&m.id, "t3.medium").await,
+        Err(ProviderError::SpotResize)
+    );
+}

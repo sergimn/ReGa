@@ -25,12 +25,19 @@ class _ProviderPageState extends State<ProviderPage> {
   bool _spot = false;
   bool _wireguard = true;
   String? _typeName;
+
+  /// The region offers are priced for: the user's pick while it's offered,
+  /// otherwise Recommended.
   String? _regionId;
 
-  /// False while the region is our pick (Recommended), so it follows
-  /// Recommended as prices and latencies change; true once the user taps one.
-  bool _userPickedRegion = false;
+  /// The region the user tapped, kept even while it isn't offered (say, no
+  /// spot quota) so it comes back when it is. Null means follow Recommended.
+  String? _userRegionId;
   bool _measuring = true;
+
+  /// True from the start of a full reload until one lands, so a region tap
+  /// in between doesn't keep an outdated region list.
+  bool _regionsStale = true;
 
   RegionChoices? _choices;
   List<MachineOffer> _offers = const [];
@@ -60,11 +67,10 @@ class _ProviderPageState extends State<ProviderPage> {
       // Latency is a hint; regions still show with "Latency unknown".
     }
     if (!mounted) return;
-    setState(() => _measuring = false);
-    if (changed) _reload();
+    // Keep "Measuring…" until the refreshed list is in.
+    if (changed) await _reload();
+    if (mounted) setState(() => _measuring = false);
   }
-
-  String _errorText(Object e) => e is RegaError ? e.message : '$e';
 
   /// Reloads regions, offers and machines. With `regions: false` (the user
   /// only picked another region) the region list is kept as is.
@@ -72,13 +78,17 @@ class _ProviderPageState extends State<ProviderPage> {
     final generation = ++_generation;
     final spot = _spot;
     final typeName = _typeName;
-    final wantedRegionId = _userPickedRegion ? _regionId : null;
+    final wantedRegionId = _userRegionId;
     final currentChoices = _choices;
+    final fetchRegions = regions || _regionsStale || currentChoices == null;
     bool stale() => !mounted || generation != _generation;
 
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      if (fetchRegions) _regionsStale = true;
+    });
     try {
-      final choices = regions || currentChoices == null
+      final choices = fetchRegions
           ? await _backend.regionChoices(_id, typeName: typeName, spot: spot)
           : currentChoices;
       final all = choices.all.map((r) => r.regionId);
@@ -92,6 +102,7 @@ class _ProviderPageState extends State<ProviderPage> {
       if (stale()) return;
       setState(() {
         _choices = choices;
+        _regionsStale = false;
         _regionId = regionId;
         _offers = offers;
         _machines = machines;
@@ -164,7 +175,7 @@ class _ProviderPageState extends State<ProviderPage> {
         if (_error != null)
           ListTile(
             leading: Icon(Icons.error_outline, color: theme.colorScheme.error),
-            title: Text(_errorText(_error!)),
+            title: Text('$_error'),
             trailing: TextButton(
               onPressed: _reload,
               child: const Text('Retry'),
@@ -184,7 +195,7 @@ class _ProviderPageState extends State<ProviderPage> {
             onSelected: (r) {
               setState(() {
                 _regionId = r.regionId;
-                _userPickedRegion = true;
+                _userRegionId = r.regionId;
               });
               _reload(regions: false);
             },

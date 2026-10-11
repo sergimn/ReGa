@@ -44,9 +44,10 @@ pub trait CloudProvider: Send + Sync {
     /// Every region that offers at least one of [`Self::machine_types`].
     async fn regions(&self) -> ProviderResult<Vec<Region>>;
 
-    /// How many GPU vCPUs the account may run in `region_id`, for spot or
-    /// on-demand (clouds keep separate quotas for each). A region is only
-    /// offered when this covers the GPU type's vCPUs.
+    /// GPU vCPUs the account can still start in `region_id`, for spot or
+    /// on-demand (clouds keep separate quotas for each): the quota minus what
+    /// is already running there, ReGa's or not. A region is only offered
+    /// when this covers the GPU type's vCPUs.
     async fn gpu_quota_vcpus(&self, region_id: &str, spot: bool) -> ProviderResult<u32>;
 
     /// The machine types the app offers, CPU and GPU.

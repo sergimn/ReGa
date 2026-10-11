@@ -40,7 +40,8 @@ impl Entry {
     }
 
     /// Measures latency to `regions` off the async executor and resolves
-    /// when every probe is done. Demo data never changes, so it's `false`.
+    /// when every probe is done, with `true` if any region was measured.
+    /// Demo data never changes, so it's `false`.
     pub async fn probe(&self, regions: Vec<Region>) -> bool {
         let Entry::Live { rtt, .. } = self else {
             return false;
@@ -48,12 +49,16 @@ impl Entry {
         let (done, finished) = oneshot::channel();
         let handles = rtt.measure_in_background(regions);
         thread::spawn(move || {
-            for h in handles {
-                let _ = h.join();
-            }
-            let _ = done.send(());
+            // Join every probe (no short-circuit) so this resolves only
+            // once all of them are done.
+            let results: Vec<bool> = handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or(false))
+                .collect();
+            let measured = results.contains(&true);
+            let _ = done.send(measured);
         });
-        finished.await.is_ok()
+        finished.await.unwrap_or(false)
     }
 }
 

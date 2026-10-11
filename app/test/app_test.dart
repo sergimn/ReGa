@@ -122,11 +122,48 @@ void main() {
     expect(backend.calls.last, 'offers eu-central-1');
   });
 
+  testWidgets('a user pick comes back after it drops out', (tester) async {
+    final backend = FakeBackend()..hideVirginiaWithSpot = true;
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cheapest'));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers us-east-1');
+
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers eu-north-1');
+
+    backend.recommended = frankfurt;
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers us-east-1');
+  });
+
+  testWidgets('a region tap during a latency refresh keeps the new latencies', (
+    tester,
+  ) async {
+    final backend = FakeBackend()
+      ..latencyChanges = true
+      ..probeDelay = const Duration(milliseconds: 100)
+      ..measuredRegionsDelay = const Duration(milliseconds: 300);
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    // The refresh after the probe is still loading; pick a region now.
+    await tester.tap(find.text('Lowest latency'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('31 ms'), findsOneWidget);
+  });
+
   testWidgets('new latency results refresh the regions', (tester) async {
     final backend = FakeBackend()..latencyChanges = true;
     await tester.pumpWidget(RegaApp(backend: backend));
     await tester.pumpAndSettle();
     expect(backend.regionCalls, 2);
+    expect(find.textContaining('38 ms'), findsOneWidget);
 
     await tester.tap(find.text('Show all regions'));
     await tester.pumpAndSettle();

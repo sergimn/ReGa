@@ -251,25 +251,25 @@ impl CloudProvider for MockProvider {
 
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
         let machine_type = self.machine_type(type_name)?;
-        let region_id = self
+        let current = self
             .machines
             .lock()
             .unwrap()
             .iter()
             .find(|m| m.id == machine_id)
-            .map(|m| m.region_id.clone())
+            .cloned()
             .ok_or_else(|| ProviderError::UnknownMachine(machine_id.into()))?;
-        self.check_gpu_quota(&region_id, &machine_type, false)
+        if current.spot {
+            return Err(ProviderError::SpotResize);
+        }
+        if current.state != MachineState::Stopped {
+            return Err(ProviderError::InvalidState(
+                "stop the machine before changing its type".into(),
+            ));
+        }
+        self.check_gpu_quota(&current.region_id, &machine_type, false)
             .await?;
         self.update(machine_id, |m| {
-            if m.spot {
-                return Err(ProviderError::SpotResize);
-            }
-            if m.state != MachineState::Stopped {
-                return Err(ProviderError::InvalidState(
-                    "stop the machine before changing its type".into(),
-                ));
-            }
             m.machine_type = machine_type;
             Ok(())
         })

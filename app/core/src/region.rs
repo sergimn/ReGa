@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use futures::future::try_join_all;
+use futures::stream::{self, StreamExt};
 
 use crate::model::Region;
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
@@ -97,9 +97,13 @@ fn gpu_vcpus_needed(provider: &dyn CloudProvider, type_name: &str) -> ProviderRe
         .unwrap_or(0))
 }
 
+/// At most this many regions are queried at once.
+const MAX_CONCURRENT_REGIONS: usize = 8;
+
 /// Builds candidates for `type_name` from a provider, skipping regions where
-/// the GPU quota doesn't cover the machine, or where the type isn't sold the
-/// chosen way (spot or on-demand). Regions are queried concurrently.
+/// the free GPU quota doesn't cover the machine, or where the type isn't
+/// sold the chosen way (spot or on-demand). Regions are queried a few at a
+/// time; a region whose queries fail is skipped, unless every region fails.
 ///
 /// `rtt_of` looks up the cached measurement for a region id.
 pub async fn candidates(
@@ -110,31 +114,49 @@ pub async fn candidates(
 ) -> ProviderResult<Vec<RegionCandidate>> {
     let needed = gpu_vcpus_needed(provider, type_name)?;
     let regions = provider.regions().await?;
-    let found = try_join_all(regions.into_iter().map(|region| async move {
-        let (quota, price, one_off_cost) = futures::try_join!(
-            provider.gpu_quota_vcpus(&region.id, spot),
-            provider.price(&region.id, type_name),
-            provider.library_copy_cost(&region.id),
-        )?;
-        let price_per_hour = price.and_then(|p| p.per_hour(spot));
-        Ok::<_, ProviderError>(match price_per_hour {
-            Some(price_per_hour) if quota >= needed && quota > 0 => {
-                Some((region, price_per_hour, one_off_cost))
+    let results: Vec<ProviderResult<Option<RegionCandidate>>> = stream::iter(regions)
+        .map(|region| async move {
+            let (quota, price, one_off_cost) = futures::try_join!(
+                provider.gpu_quota_vcpus(&region.id, spot),
+                provider.price(&region.id, type_name),
+                provider.library_copy_cost(&region.id),
+            )?;
+            let price_per_hour = price.and_then(|p| p.per_hour(spot));
+            Ok(match price_per_hour {
+                Some(price_per_hour) if quota >= needed && quota > 0 => Some(RegionCandidate {
+                    rtt: None,
+                    region,
+                    price_per_hour,
+                    one_off_cost,
+                }),
+                _ => None,
+            })
+        })
+        .buffered(MAX_CONCURRENT_REGIONS)
+        .collect()
+        .await;
+
+    let mut first_error = None;
+    let mut out = Vec::new();
+    let mut any_ok = results.is_empty();
+    for result in results {
+        match result {
+            Ok(found) => {
+                any_ok = true;
+                out.extend(found.map(|c| RegionCandidate {
+                    rtt: rtt_of(&c.region.id),
+                    ..c
+                }));
             }
-            _ => None,
-        })
-    }))
-    .await?;
-    Ok(found
-        .into_iter()
-        .flatten()
-        .map(|(region, price_per_hour, one_off_cost)| RegionCandidate {
-            rtt: rtt_of(&region.id),
-            region,
-            price_per_hour,
-            one_off_cost,
-        })
-        .collect())
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    match first_error {
+        Some(e) if !any_ok => Err(e),
+        _ => Ok(out),
+    }
 }
 
 #[cfg(test)]
