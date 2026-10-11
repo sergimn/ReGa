@@ -21,6 +21,7 @@ resource "aws_volume_attachment" "library" {
   volume_id   = aws_ebs_volume.library[0].id
   instance_id = aws_instance.machine.id
 
-  # Windows must not lose the disk while running.
-  stop_instance_before_detaching = true
+  # Windows must not lose the disk while running. Spot instances can't be
+  # stopped; they only detach on destroy.
+  stop_instance_before_detaching = !var.spot
 }

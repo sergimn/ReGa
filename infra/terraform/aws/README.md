@@ -29,12 +29,29 @@ terraform init \
 | WireGuard off | `wireguard_enabled = false`, `client_cidrs = ["<ip>/32"]` |
 | Ansible run | `admin_cidrs = ["<ip>/32"]` opens WinRM HTTPS (5986) |
 
+Change `instance_type` only together with a start. The provider always
+starts the instance after a resize, so resizing a stopped machine boots it
+briefly before `instance_state` stops it again.
+
 Pass `availability_zone` back from the output once the machine exists, so it
 never moves zone. `public_ip` changes on every start.
 
 The Windows Administrator password comes out as `password_data`, encrypted
-with `public_key` (RSA). The boot script enables WinRM over HTTPS and brings
-the empty library volume online as D: on every boot.
+with `public_key` (RSA). The boot script enables WinRM over HTTPS and
+registers a scheduled task that brings a new, empty library volume online as
+D: within a minute of it being attached, including when Terraform attaches it
+after Windows has booted.
+
+## Spot machines
+
+Spot uses one-time requests, so a spot machine can't be stopped or resized.
+The idle alarm terminates it instead of stopping it.
+
+On destroy, the AWS provider cancels the spot request before terminating the
+instance, and that needs `ec2:CancelSpotInstanceRequests`, which the
+`rega-claude` policy doesn't grant yet. Until it does, end a spot session by
+calling `TerminateInstances` first and then running `terraform destroy`: the
+refresh drops the terminated instance and the destroy cleans up the rest.
 
 Constraints from the `rega-claude` IAM policy: types t3.micro/medium/large and
 g4dn.xlarge only, gp3 disks up to 256 GB, default VPC, spot only through
@@ -45,7 +62,8 @@ a bad request fails at plan time, not halfway through an apply.
 ## Idle backstop alarm
 
 `aws_cloudwatch_metric_alarm.idle_stop` stops the instance when CPU and
-network both stay near zero for `idle_alarm_minutes` (120 by default).
+network both stay near zero for `idle_alarm_minutes` (120 by default). It terminates spot machines instead.
+A stop by the alarm leaves D: attached until the app's next apply.
 CloudWatch needs the service-linked role `AWSServiceRoleForCloudWatchEvents`
 for EC2 stop actions, and `rega-claude` can't create it. Create it once per
 account as an admin:

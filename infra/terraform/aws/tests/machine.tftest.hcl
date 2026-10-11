@@ -73,6 +73,11 @@ run "defaults_are_an_on_demand_cpu_machine" {
   }
 
   assert {
+    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching
+    error_message = "On-demand machines must stop before D: is detached."
+  }
+
+  assert {
     condition     = keys(aws_vpc_security_group_ingress_rule.machine) == ["wireguard"]
     error_message = "With WireGuard on and no admin IPs, only the WireGuard port is open."
   }
@@ -93,7 +98,7 @@ run "defaults_are_an_on_demand_cpu_machine" {
   }
 }
 
-run "every_resource_is_tagged" {
+run "tags_carry_project_and_machine" {
   command = plan
 
   assert {
@@ -167,6 +172,16 @@ run "spot_gpu_uses_market_options" {
   assert {
     condition     = aws_instance.machine.instance_market_options[0].spot_options[0].spot_instance_type == "one-time"
     error_message = "Spot requests must be one-time so destroy leaves nothing behind."
+  }
+
+  assert {
+    condition     = aws_volume_attachment.library[0].stop_instance_before_detaching == false
+    error_message = "Spot instances can't be stopped, so detaching must not try to."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.idle_stop[0].alarm_actions == toset(["arn:aws:automate:eu-central-1:ec2:terminate"])
+    error_message = "The idle backstop must terminate spot machines, which can't be stopped."
   }
 }
 

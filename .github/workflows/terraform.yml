@@ -55,6 +55,11 @@ jobs:
             echo "Don't declare aws_s3_bucket_public_access_block; the app only checks it." >&2
             exit 1
           fi
+          # Project=ReGa reaches every resource through the provider's default_tags.
+          if ! grep -Pzq 'default_tags\s*\{\s*tags\s*=\s*local\.tags' versions.tf; then
+            echo "provider \"aws\" must keep default_tags { tags = local.tags }." >&2
+            exit 1
+          fi
           # Standalone spot requests need permissions the policy doesn't grant.
           if grep -rn 'aws_spot_instance_request' --include='*.tf' .; then
             echo "Use aws_instance with instance_market_options for spot." >&2

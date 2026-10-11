@@ -15,8 +15,9 @@ resource "aws_instance" "machine" {
   user_data = templatefile("${path.module}/templates/user_data.ps1.tftpl", {})
 
   # Spot uses RunInstances market options, which the IAM policy allows; a
-  # standalone spot request isn't. One-time requests close when the instance
-  # terminates, so destroy leaves nothing behind.
+  # standalone spot request isn't. On destroy the provider cancels the spot
+  # request before terminating, which needs ec2:CancelSpotInstanceRequests
+  # (see README).
   dynamic "instance_market_options" {
     for_each = var.spot ? [1] : []
     content {

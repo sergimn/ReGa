@@ -13,15 +13,33 @@ if (-not (Get-NetFirewallRule -Name "ReGa-WinRM-HTTPS" -ErrorAction SilentlyCont
   New-NetFirewallRule -Name "ReGa-WinRM-HTTPS" -DisplayName "ReGa WinRM HTTPS" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow | Out-Null
 }
 
-# The game library volume is recreated empty on each start. Bring it online
-# as D: so the restore from S3 (step 4) has somewhere to go. Only EBS disks
-# count: the g4dn instance-store NVMe is also RAW but is wiped on stop.
-$ebs = Get-Disk | Where-Object { $_.FriendlyName -like "*Elastic Block Store*" }
+# The game library volume is recreated empty on each start, and Terraform can
+# attach it after Windows has booted. A scheduled task checks every minute and
+# brings a new, empty EBS disk online as D: so the restore from S3 (step 4)
+# has somewhere to go. EBS serials start with "vol"; the g4dn instance-store
+# NVMe (serial "AWS...") is also RAW but is wiped on stop, so it is skipped.
+$dir = "C:\ProgramData\ReGa"
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+Set-Content -Path "$dir\library-disk.ps1" -Encoding UTF8 -Value @'
+$ebs = Get-Disk | Where-Object { $_.SerialNumber -clike "vol*" -and $_.Number -ne (Get-Partition -DriveLetter C).DiskNumber }
 $ebs | Where-Object { $_.IsOffline } | Set-Disk -IsOffline $false
-$ebs | Where-Object { $_.PartitionStyle -eq "RAW" } | Select-Object -First 1 | ForEach-Object {
-  Initialize-Disk -Number $_.Number -PartitionStyle GPT -PassThru |
-    New-Partition -UseMaximumSize -DriveLetter D |
-    Format-Volume -FileSystem NTFS -NewFileSystemLabel "ReGaLibrary" -Confirm:$false | Out-Null
+$ebs | Where-Object { $_.IsReadOnly } | Set-Disk -IsReadOnly $false
+if (-not (Get-Volume -DriveLetter D -ErrorAction SilentlyContinue)) {
+  $ebs | Where-Object { $_.PartitionStyle -eq "RAW" } | Select-Object -First 1 | ForEach-Object {
+    Initialize-Disk -Number $_.Number -PartitionStyle GPT -PassThru |
+      New-Partition -UseMaximumSize -DriveLetter D |
+      Format-Volume -FileSystem NTFS -NewFileSystemLabel "ReGaLibrary" -Confirm:$false | Out-Null
+  }
 }
+'@
+if (-not (Get-ScheduledTask -TaskName "ReGa-LibraryDisk" -ErrorAction SilentlyContinue)) {
+  $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $dir\library-disk.ps1"
+  $triggers = @(
+    (New-ScheduledTaskTrigger -AtStartup),
+    (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1))
+  )
+  Register-ScheduledTask -TaskName "ReGa-LibraryDisk" -Action $action -Trigger $triggers -User "SYSTEM" -RunLevel Highest -Force | Out-Null
+}
+& "$dir\library-disk.ps1"
 </powershell>
 <persist>true</persist>
