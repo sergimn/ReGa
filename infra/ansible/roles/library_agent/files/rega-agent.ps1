@@ -208,6 +208,8 @@ switch ($Action) {
         New-Item -ItemType Directory -Path $libraryPath -Force | Out-Null
         $arguments = Get-SyncArguments -Source $target.Uri -Destination $libraryPath -Region $target.Region `
           -Excludes $config.library.excludes
+        $drive = [IO.Path]::GetPathRoot($libraryPath).TrimEnd('\').TrimEnd(':')
+        $full = $false
         $code = 1
         foreach ($wait in @(0, 30, 60, 120, 240)) {
           if ($wait -gt 0) {
@@ -216,8 +218,14 @@ switch ($Action) {
           }
           $code = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments
           if ($code -eq 0) { break }
+          $volume = Get-Volume -DriveLetter $drive -ErrorAction SilentlyContinue
+          if ($volume -and $volume.SizeRemaining -lt 1GB) { $full = $true; break }
         }
-        if ($code -eq 0) {
+        if ($full) {
+          # Retrying can't help: the library needs a bigger disk or fewer games.
+          Write-ReGaLog "The library in $($target.Uri) doesn't fit on $libraryPath; uploads stay off this session." 'error'
+          $result = 'disk-full'
+        } elseif ($code -eq 0) {
           Initialize-LibraryFolder
           $snapshot = Get-LibrarySnapshot $steamApps
           Write-JsonFile $marker ([pscustomobject]@{
@@ -241,7 +249,7 @@ switch ($Action) {
       $status['finished_utc'] = (ConvertTo-IsoString ([datetime]::UtcNow))
       Write-JsonFile $restorePath ([pscustomobject]$status)
     }
-    if ($result -eq 'failed') { exit 1 }
+    if ($result -in @('failed', 'disk-full')) { exit 1 }
   }
 
   'Tick' {

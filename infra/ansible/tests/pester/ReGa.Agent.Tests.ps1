@@ -284,10 +284,27 @@ Describe 'Write-JsonFile' {
   }
 }
 
+Describe 'Get-AcfDepots' {
+  It 'lists installed depots with their manifests, sorted' {
+    $text = "`"AppState`"`n{`n`t`"buildid`"`t`t`"5`"`n`t`"InstalledDepots`"`n`t{`n`t`t`"402`"`n`t`t{`n`t`t`t`"manifest`"`t`t`"22`"`n`t`t`t`"size`"`t`t`"9`"`n`t`t}`n`t`t`"401`"`n`t`t{`n`t`t`t`"manifest`"`t`t`"11`"`n`t`t}`n`t}`n`t`"SharedDepots`"`n`t{`n`t`t`"228988`"`t`t`"228980`"`n`t}`n`t`"UserConfig`"`n`t{`n`t`t`"language`"`t`t`"english`"`n`t}`n}"
+    Get-AcfDepots $text | Should -Be '401:11;402:22'
+  }
+
+  It 'is empty for a manifest without depots' {
+    Get-AcfDepots "`"AppState`"`n{`n`t`"buildid`"`t`t`"5`"`n}" | Should -Be ''
+    Get-AcfDepots '' | Should -Be ''
+  }
+}
+
 Describe 'Invoke-LibraryUpload' {
   BeforeAll {
-    function New-Manifest([string]$Path, [string]$Id, [string]$Dir, [string]$Build) {
-      Set-Content -LiteralPath $Path -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"$Id`"`n`t`"installdir`"`t`t`"$Dir`"`n`t`"buildid`"`t`t`"$Build`"`n}"
+    function New-Manifest([string]$Path, [string]$Id, [string]$Dir, [string]$Build, [string[]]$Depots = @()) {
+      Set-Content -LiteralPath $Path -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"$Id`"`n`t`"installdir`"`t`t`"$Dir`"`n`t`"buildid`"`t`t`"$Build`"`n$(New-DepotsText $Depots)}"
+    }
+    function New-DepotsText([string[]]$Depots) {
+      if (-not $Depots) { return '' }
+      $entries = foreach ($depot in $Depots) { "`t`t`"$depot`"`n`t`t{`n`t`t`t`"manifest`"`t`t`"m$depot`"`n`t`t}`n" }
+      return "`t`"InstalledDepots`"`n`t{`n$($entries -join '')`t}`n"
     }
   }
 
@@ -418,6 +435,18 @@ Describe 'Invoke-LibraryUpload' {
     (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -All).Ok | Should -BeTrue
     @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
     @($calls | Where-Object { $_ -match '^s3 cp .*appmanifest_70\.acf' }).Count | Should -Be 1
+  }
+
+  It 'mirrors a game whose DLC was uninstalled on the same build' {
+    New-Manifest (Join-Path $apps 'appmanifest_70.acf') '70' 'Half-Life' '7' @('71')
+    (Get-Item -LiteralPath (Join-Path $apps 'common/Half-Life')).LastWriteTimeUtc = [datetime]::UtcNow.AddSeconds(1)
+    $script:s3Text = "`"buildid`"`t`t`"7`"`n$(New-DepotsText @('71', '72'))"
+    Mock Get-S3Text -ModuleName ReGa.Agent {
+      $text = if ($Uri -like '*appmanifest_70.acf') { $script:s3Text } else { "`"buildid`"`t`t`"100`"" }
+      [pscustomobject]@{ Ok = $true; Found = $true; Text = $text }
+    }
+    (Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target).Ok | Should -BeTrue
+    @($calls | Where-Object { $_ -match 'steamapps/common/Half-Life/ .*--delete$' }).Count | Should -Be 1
   }
 
   It 'uploads a soundtrack from steamapps\music' {

@@ -266,6 +266,33 @@ function Get-AcfValue {
   return $null
 }
 
+function Get-AcfDepots {
+  # Pure: the depots an app manifest lists under InstalledDepots, as sorted
+  # "depot:manifest" pairs joined by ';'. Uninstalling a DLC, a language or
+  # an optional pack changes them without changing the build.
+  param([string]$Text)
+  $stack = [Collections.Generic.List[string]]::new()
+  $depots = @{}
+  $key = $null
+  foreach ($token in [regex]::Matches("$Text", '"((?:[^"\\]|\\.)*)"|[{}]')) {
+    $inDepot = $stack.Count -ge 2 -and $stack[$stack.Count - 2] -eq 'InstalledDepots'
+    if ($token.Value -eq '{') {
+      $stack.Add("$key")
+      $key = $null
+      if ($stack.Count -ge 2 -and $stack[$stack.Count - 2] -eq 'InstalledDepots') { $depots[$stack[$stack.Count - 1]] = '' }
+    } elseif ($token.Value -eq '}') {
+      if ($stack.Count -gt 0) { $stack.RemoveAt($stack.Count - 1) }
+      $key = $null
+    } elseif ($null -eq $key) {
+      $key = $token.Groups[1].Value
+    } else {
+      if ($inDepot -and $key -eq 'manifest') { $depots[$stack[$stack.Count - 1]] = $token.Groups[1].Value }
+      $key = $null
+    }
+  }
+  return (@($depots.Keys | Sort-Object | ForEach-Object { '{0}:{1}' -f $_, $depots[$_] }) -join ';')
+}
+
 function Test-SafeFolderName {
   # Pure: a single folder name, so an S3 delete built from it can't reach
   # outside steamapps/common.
@@ -417,8 +444,8 @@ function Invoke-LibraryUpload {
   # -All (before a stop, so saves and mods written into game folders are
   # kept, and a game another machine removed goes back while this disk
   # still has it). A game's folder is mirrored, deletes included, only when
-  # S3 holds another build or none; on the same build files are only added
-  # or replaced, so two machines' saves both stay. Workshop content always
+  # S3 holds another build, other installed depots or nothing; otherwise
+  # files are only added or replaced, so two machines' saves both stay. Workshop content always
   # mirrors its manifest. A game is left alone, for upload and for removal,
   # when S3 holds a build another machine uploaded. Only a disk restored
   # from S3 this session uploads at all: its marker records the games it
@@ -458,7 +485,8 @@ function Invoke-LibraryUpload {
     if (-not $All -and $stamps[$id] -eq $knownStamps[$id]) { continue }
     $dir = $current[$id]
     $manifest = Join-Path $steamApps "appmanifest_$id.acf"
-    try { $localBuild = Get-AcfValue ([IO.File]::ReadAllText($manifest)) 'buildid' } catch { $ok = $false; $failed += $id; continue }
+    try { $localText = [IO.File]::ReadAllText($manifest) } catch { $ok = $false; $failed += $id; continue }
+    $localBuild = Get-AcfValue $localText 'buildid'
     # Local folder, S3 prefix, and whether it always mirrors. Soundtracks
     # install under music instead of common.
     $folders = @(
@@ -500,9 +528,12 @@ function Invoke-LibraryUpload {
     if (-not $known.ContainsKey($id)) { $known[$id] = $dir }
     $started = [datetime]::UtcNow
     $appOk = $true
+    # The same build and depots as S3: whatever this disk lacks, Steam
+    # didn't remove.
+    $sameContent = ($s3Build -eq $localBuild) -and ((Get-AcfDepots $remote.Text) -eq (Get-AcfDepots $localText))
     foreach ($folder in $folders) {
       if (-not (Test-Path -LiteralPath $folder[0])) { continue }
-      $mirror = $folder[2] -or ($s3Build -ne $localBuild)
+      $mirror = $folder[2] -or -not $sameContent
       $arguments = Get-SyncArguments -Source $folder[0] -Destination $folder[1] -Region $region -Excludes @() -Delete:$mirror
       if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $appOk = $false }
     }

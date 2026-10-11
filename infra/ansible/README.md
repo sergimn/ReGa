@@ -99,20 +99,23 @@ saves and mods written into game folders are kept. For each one it uploads
 the game's folder (`steamapps/common`, or `steamapps/music` for a
 soundtrack) and workshop content, and only then the manifest, so S3 never
 has a manifest ahead of its files. When S3 holds another build of the game,
-or none, the folder is mirrored so files an update removed go away; on the
-same build files are only added or replaced. It deletes from S3 only the
-games whose manifest this disk had and lost. A game is left alone, both
-ways, when S3 holds a build another machine uploaded since.
+other installed depots (DLC, languages) or nothing, the folder is mirrored,
+so files an update or an uninstalled DLC removed go away; otherwise files
+are only added or replaced. It deletes from S3 only the games whose manifest
+this disk had and lost. A game is left alone, both ways, when S3 holds a
+build another machine uploaded since.
 
 With more than one machine: an uninstall sticks only if no other machine
-still has the game, because before its stop a machine that has it uploads
-it again. Two machines writing the same file of the same game keep the last
-upload. A file deleted from a game folder without a game update stays in S3
-and comes back at the next restore. A change is seen by file and folder
-times, so a file copied over another with its old timestamp kept (some
-archive tools do this) is not uploaded.
+still has the game, because before its stop a machine that has it uploads it
+again. Two machines writing the same file of the same game keep the last
+upload. A file deleted from a game folder without a Steam update or DLC
+change stays in S3 and comes back at the next restore. A change is seen by
+file and folder times, so a file copied over another with its old timestamp
+kept (some archive tools do this) is not uploaded.
 
 Nothing is uploaded from a disk that wasn't restored from S3 this session.
+When the library doesn't fit on the disk, the restore gives up with status
+`disk-full` (in `-Action Status`, under `restore`) instead of retrying.
 
 Before a stop, the agent uploads once more and writes
 `s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json` with
