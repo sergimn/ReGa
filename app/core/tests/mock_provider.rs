@@ -358,3 +358,21 @@ async fn running_gpu_machines_use_up_quota() {
     p.stop(&first.id).await.unwrap();
     assert_eq!(offered().await, 1);
 }
+
+#[tokio::test]
+async fn start_is_refused_when_another_machine_took_the_quota() {
+    let p = MockProvider::new(
+        "aws",
+        "AWS",
+        aws::catalog(),
+        vec![region_with("r", (4, 4), &[("g4dn.xlarge", GPU_BOTH)])],
+    );
+    let gpu = || LaunchRequest {
+        region_id: "r".into(),
+        ..request("g4dn.xlarge", false)
+    };
+    let a = p.launch(&gpu()).await.unwrap();
+    p.stop(&a.id).await.unwrap();
+    p.launch(&gpu()).await.unwrap();
+    assert!(matches!(p.start(&a.id).await, Err(ProviderError::Cloud(_))));
+}

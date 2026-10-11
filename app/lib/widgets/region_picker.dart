@@ -16,7 +16,10 @@ class RegionPicker extends StatefulWidget {
 
   final RegionChoices choices;
   final String? selectedRegionId;
-  final ValueChanged<RegionOption> onSelected;
+
+  /// Called with the tapped region, and whether the tile tapped was the
+  /// Recommended one (as opposed to the same region picked by name).
+  final void Function(RegionOption option, bool recommendedTile) onSelected;
 
   /// True while latency probes are still running.
   final bool measuring;
@@ -105,7 +108,8 @@ class _RegionPickerState extends State<RegionPicker> {
         '${formatRtt(option.rttMs, measuring: widget.measuring)} · '
         '${formatPrice(option.pricePerHour)}$copy',
       ),
-      onTap: () => widget.onSelected(option),
+      onTap: () =>
+          widget.onSelected(option, label?.contains('Recommended') ?? false),
     );
   }
 }

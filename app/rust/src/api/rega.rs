@@ -157,8 +157,12 @@ pub async fn region_choices(
             .ok_or_else(|| format!("{provider_id} offers no GPU type"))?,
     };
     let candidates = region::candidates(provider, &type_name, spot, |id| entry.rtt(id)).await?;
+    Ok(choices_view(candidates))
+}
+
+fn choices_view(candidates: region::Candidates) -> RegionChoices {
     let choices = region::choose(candidates.found);
-    Ok(RegionChoices {
+    RegionChoices {
         recommended: choices.recommended.map(option),
         lowest_latency: choices.lowest_latency.map(option),
         cheapest: choices.cheapest.map(option),
@@ -168,7 +172,7 @@ pub async fn region_choices(
             .into_iter()
             .map(|r| r.display_name)
             .collect(),
-    })
+    }
 }
 
 pub async fn list_machines(provider_id: String) -> RegaResult<Vec<MachineSummary>> {
@@ -256,6 +260,19 @@ mod tests {
             .unwrap();
         assert_eq!(named.all.len(), c.all.len());
         assert!(c.all.iter().all(|r| r.rtt_ms.is_some()));
+    }
+
+    #[test]
+    fn unreachable_regions_are_shown_by_name() {
+        let view = choices_view(region::Candidates {
+            found: vec![],
+            unreachable: vec![rega_core::aws::region(
+                "ap-northeast-1",
+                "Asia Pacific (Tokyo)",
+            )],
+        });
+        assert!(view.all.is_empty());
+        assert_eq!(view.unreachable, vec!["Asia Pacific (Tokyo)".to_string()]);
     }
 
     #[tokio::test]

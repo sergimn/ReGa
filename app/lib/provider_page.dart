@@ -199,12 +199,12 @@ class _ProviderPageState extends State<ProviderPage> {
             choices: _choices!,
             selectedRegionId: _regionId,
             measuring: _measuring,
-            onSelected: (r) {
+            onSelected: (r, recommendedTile) {
               setState(() {
                 _regionId = r.regionId;
-                // Picking Recommended means "follow Recommended".
-                final recommended = _choices?.recommended?.regionId;
-                _userRegionId = r.regionId == recommended ? null : r.regionId;
+                // Tapping the Recommended tile means "follow Recommended";
+                // picking a region by name pins it.
+                _userRegionId = recommendedTile ? null : r.regionId;
               });
               _reload(regions: false);
             },

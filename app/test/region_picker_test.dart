@@ -16,6 +16,7 @@ void main() {
 
   testWidgets('shows three choices and expands to all', (tester) async {
     RegionOption? picked;
+    bool? pickedRecommended;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -23,7 +24,10 @@ void main() {
             child: RegionPicker(
               choices: choices,
               selectedRegionId: 'eu-north-1',
-              onSelected: (r) => picked = r,
+              onSelected: (r, recommendedTile) {
+                picked = r;
+                pickedRecommended = recommendedTile;
+              },
             ),
           ),
         ),
@@ -44,6 +48,16 @@ void main() {
 
     await tester.tap(find.text('Cheapest'));
     expect(picked?.regionId, 'us-east-1');
+    expect(pickedRecommended, isFalse);
+
+    await tester.tap(find.text('Recommended'));
+    expect(picked?.regionId, 'eu-north-1');
+    expect(pickedRecommended, isTrue);
+
+    // The same region picked by name from the full list is a pin.
+    await tester.tap(find.text('Europe (Stockholm)').last);
+    expect(picked?.regionId, 'eu-north-1');
+    expect(pickedRecommended, isFalse);
   });
 
   testWidgets('a region that wins twice is shown once', (tester) async {
@@ -59,7 +73,7 @@ void main() {
               unreachable: [],
             ),
             selectedRegionId: 'eu-north-1',
-            onSelected: (_) {},
+            onSelected: (_, _) {},
           ),
         ),
       ),
@@ -84,7 +98,7 @@ void main() {
                 unreachable: [],
               ),
               selectedRegionId: 'sa-east-1',
-              onSelected: (_) {},
+              onSelected: (_, _) {},
             ),
           ),
         ),
@@ -101,7 +115,7 @@ void main() {
           body: RegionPicker(
             choices: const RegionChoices(all: [], unreachable: []),
             selectedRegionId: null,
-            onSelected: (_) {},
+            onSelected: (_, _) {},
           ),
         ),
       ),

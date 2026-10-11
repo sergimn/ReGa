@@ -138,6 +138,22 @@ void main() {
     expect(backend.calls.last, 'offers us-east-1');
   });
 
+  testWidgets('picking the Recommended region by name pins it', (tester) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Show all regions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('region-all-eu-north-1')));
+    await tester.pumpAndSettle();
+
+    backend.recommended = virginia;
+    await tester.tap(find.byKey(const ValueKey('spot-toggle')));
+    await tester.pumpAndSettle();
+    expect(backend.calls.last, 'offers eu-north-1');
+  });
+
   testWidgets('regions that could not be checked are named', (tester) async {
     final backend = FakeBackend()..unreachable = ['Asia Pacific (Tokyo)'];
     await tester.pumpWidget(RegaApp(backend: backend));
