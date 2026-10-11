@@ -93,7 +93,11 @@ first (`core/src/aws/`):
     games.
   - Destroy refuses when the machine's D: may hold games the library
     doesn't, and says why; the app then asks whether to destroy it anyway,
-    which doesn't try the upload again.
+    which doesn't try the upload again. That includes the D: of a spot
+    machine AWS took back, which outlives its instance.
+  - Until a setup has finished on a machine (the record's `set_up`),
+    nobody has played on it, so stop and destroy skip the upload and treat
+    D: as holding nothing of its own.
   - Idle stop: after 15 minutes without a stream the machine uploads its
     games and shuts itself down, which EC2 turns into a stop. The app checks
     running machines every minute, and finishes the stop of one that

@@ -905,6 +905,8 @@ struct Recorder {
     final_sync: std::sync::Mutex<Option<(bool, i64)>>,
     /// `before_stop` fails (say, WinRM timed out) without recording.
     fail_before_stop: bool,
+    /// The setup fails.
+    fail_after_start: bool,
     /// The tool the setup runs isn't installed.
     not_ready: bool,
     /// The game library restore failed.
@@ -924,6 +926,7 @@ impl Recorder {
             accesses: Default::default(),
             final_sync: std::sync::Mutex::new(Some((true, 60))),
             fail_before_stop: false,
+            fail_after_start: false,
             not_ready: false,
             fail_wait_for_library: false,
             other_device: Default::default(),
@@ -963,6 +966,11 @@ impl MachineSetup for Recorder {
                 .lock()
                 .unwrap()
                 .push((m.busy, m.starting));
+        }
+        if self.fail_after_start {
+            return Err(ProviderError::Cloud(
+                "Install Steam: download failed".into(),
+            ));
         }
         Ok(())
     }
@@ -1384,6 +1392,88 @@ async fn a_failed_upload_after_an_earlier_one_this_boot_keeps_the_disk() {
     assert_eq!(last.instance_state, InstanceState::Stopped);
     assert!(last.library_volume_enabled);
     assert!(stopped.library_kept);
+}
+
+#[tokio::test]
+async fn a_failed_upload_cant_lean_on_a_record_it_couldnt_clear() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // An upload earlier this boot, by a stop whose Terraform run failed.
+    write_final_sync(&f.aws, &m.id, true, 60);
+    // Now S3 won't delete that record, so this upload never starts.
+    f.aws
+        .with(|a| a.undeletable = Some(record::final_sync_key(&m.id)));
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(err.to_string().contains("can't be deleted"), "{err}");
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(stopped.library_kept);
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn destroy_asks_before_deleting_the_disk_of_a_machine_aws_took_back() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("g4dn.xlarge", true))
+        .await
+        .unwrap();
+    // AWS reclaims the spot instance mid-game; D: outlives it.
+    f.aws.with(|a| {
+        for i in a.instances.iter_mut() {
+            i.state = MachineState::Terminated;
+        }
+    });
+    let destroy = format!("terraform destroy {}", m.id);
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(err.to_string().contains("ended before"), "{err}");
+    assert!(!f.calls().contains(&destroy));
+    f.provider.destroy(&m.id, true).await.unwrap();
+    assert!(f.calls().contains(&destroy));
+}
+
+#[tokio::test]
+async fn a_machine_whose_setup_never_finished_has_no_games_to_save() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        fail_after_start: true,
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let err = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Install Steam"), "{err}");
+    let m = f.provider.list_machines().await.unwrap().remove(0);
+    assert!(!f.record(&m.id).set_up);
+
+    // Nothing to upload: the stop drops D:, and destroy doesn't ask.
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(!stopped.library_kept);
+    assert!(!f.record(&m.id).vars.library_volume_enabled);
+    f.provider.start(&m.id).await.unwrap_err();
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+    f.provider.destroy(&m.id, false).await.unwrap();
+    assert!(!setup.events().iter().any(|e| e.starts_with("before_stop")));
+}
+
+#[tokio::test]
+async fn a_finished_setup_is_recorded_for_every_device() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    assert!(f.record(&m.id).set_up);
 }
 
 #[tokio::test]

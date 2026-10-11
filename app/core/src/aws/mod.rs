@@ -901,7 +901,7 @@ impl AwsProvider {
     /// for the game library restore to be over.
     async fn after_start(
         &self,
-        record: &MachineRecord,
+        record: &mut MachineRecord,
         wait_for_library: bool,
     ) -> ProviderResult<Machine> {
         let instance = self.instance_of(record).await?;
@@ -909,9 +909,14 @@ impl AwsProvider {
             .as_ref()
             .filter(|i| self.setup.enabled() && i.state == MachineState::Running)
         {
-            self.with_setup_marker(record.id(), async {
+            let id = record.id().to_string();
+            self.with_setup_marker(&id, async {
                 let access = self.access_with_password(record, i).await?;
                 self.setup.after_start(&access).await?;
+                if !record.set_up {
+                    record.set_up = true;
+                    self.save_record(record).await?;
+                }
                 if wait_for_library {
                     self.setup.wait_for_library(&access).await?;
                 }
@@ -961,11 +966,14 @@ impl AwsProvider {
         instance: Option<Instance>,
     ) -> ProviderResult<Machine> {
         // A failed upload doesn't block the stop; it only keeps D:.
-        let _ = self.save_library(&mut record, instance.as_ref()).await;
+        let saved = self.save_library(&mut record, instance.as_ref()).await;
         record.vars.instance_state = InstanceState::Stopped;
-        // D: only goes away once its games are safe in S3. A machine that
-        // stopped itself saved them, or not, before it did.
-        if self.library_saved(&record, instance.as_ref()).await {
+        // D: only goes away once its games are safe in S3 (one never set up
+        // has none). A machine that stopped itself saved them, or not,
+        // before it did. When this upload failed, an older record mustn't
+        // vouch for it: the upload may not have got as far as deleting it.
+        let never_set_up = self.setup.enabled() && !record.set_up;
+        if never_set_up || (saved.is_ok() && self.library_saved(&record, instance.as_ref()).await) {
             record.vars.library_volume_enabled = false;
         }
         self.save_record(&mut record).await?;
@@ -986,6 +994,9 @@ impl AwsProvider {
         else {
             return Ok(());
         };
+        if !record.set_up {
+            return Ok(());
+        }
         // It runs with its library disk, whatever a stop that didn't get
         // through left in the record, so opening WinRM must keep both.
         record.vars.instance_state = InstanceState::Running;
@@ -1016,13 +1027,19 @@ impl AwsProvider {
         instance: Option<&Instance>,
         saved: ProviderResult<()>,
     ) -> ProviderResult<()> {
-        let has_disk = record.vars.library_volume_enabled
-            && instance.is_some_and(|i| i.state != MachineState::Terminated);
-        if !self.setup.enabled() || !has_disk || self.library_saved(record, instance).await {
+        // D: outlives its instance (AWS taking back a spot machine), until
+        // Terraform deletes it. One never set up holds no games of its own.
+        let has_disk = record.vars.library_volume_enabled && record.set_up;
+        if !self.setup.enabled()
+            || !has_disk
+            || (saved.is_ok() && self.library_saved(record, instance).await)
+        {
             return Ok(());
         }
+        let ended = instance.is_none_or(|i| i.state == MachineState::Terminated);
         let why = match saved {
             Err(e) => e.to_string(),
+            Ok(()) if ended => "its instance ended before it uploaded them".into(),
             Ok(()) => "it hasn't uploaded them since it last started".into(),
         };
         Err(ProviderError::GamesNotSaved(format!(
@@ -1411,7 +1428,7 @@ impl CloudProvider for AwsProvider {
         self.save_record(&mut record).await?;
 
         self.apply(&record).await?;
-        let machine = self.after_start(&record, setup_type.is_some()).await?;
+        let machine = self.after_start(&mut record, setup_type.is_some()).await?;
         if setup_type.is_none() {
             return Ok(machine);
         }
@@ -1420,7 +1437,7 @@ impl CloudProvider for AwsProvider {
         record.vars.instance_type = request.type_name.clone();
         self.save_record(&mut record).await?;
         self.apply(&record).await?;
-        self.after_start(&record, false).await
+        self.after_start(&mut record, false).await
     }
 
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
@@ -1462,7 +1479,7 @@ impl CloudProvider for AwsProvider {
             record.vars.library_volume_enabled = true;
             self.save_record(&mut record).await?;
             self.apply(&record).await?;
-            return self.after_start(&record, false).await;
+            return self.after_start(&mut record, false).await;
         }
         // One that stopped itself loses D: as a stop would, once its games
         // are saved.
@@ -1501,7 +1518,7 @@ impl CloudProvider for AwsProvider {
         record.vars.admin_cidrs = admin;
         self.save_record(&mut record).await?;
         self.apply(&record).await?;
-        self.after_start(&record, false).await
+        self.after_start(&mut record, false).await
     }
 
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine> {

@@ -154,8 +154,9 @@ meanwhile:
 ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=FinalSync
 ```
 
-A machine's first boot comes before the restore task exists, so the
-playbook starts this boot's restore itself when none ran (`StartRestore`).
+A machine's first boot comes before the restore task exists. So when no
+restore ran on the current boot, `site.yml` starts one itself
+(`StartRestore`), after the roles' reboots.
 WaitRestore gives the boot task `rega_restore_start_minutes` (5) to start a
 restore and waits up to `rega_restore_timeout_minutes` (240) for it. It fails,
 saying why, unless the games were restored (no library disk, a library too

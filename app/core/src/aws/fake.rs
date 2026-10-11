@@ -40,7 +40,7 @@ pub struct Account {
     pub calls: Vec<String>,
     /// Calls about this region fail.
     pub broken_region: Option<String>,
-    /// Deleting this resource fails.
+    /// Deleting this resource or object fails.
     pub undeletable: Option<String>,
     /// A new bucket stays invisible for this many reads.
     pub slow_new_buckets: u32,
@@ -346,8 +346,13 @@ impl AwsApi for FakeAws {
 
     async fn delete_object(&self, bucket: &str, key: &str) -> ProviderResult<()> {
         self.call(format!("delete_object {key}"));
-        self.with(|a| a.objects.remove(&(bucket.to_string(), key.to_string())));
-        Ok(())
+        self.with(|a| {
+            if a.undeletable.as_deref() == Some(key) {
+                return Err(ProviderError::Cloud(format!("{key} can't be deleted")));
+            }
+            a.objects.remove(&(bucket.to_string(), key.to_string()));
+            Ok(())
+        })
     }
 
     async fn credential_env(&self) -> ProviderResult<Vec<(String, String)>> {
