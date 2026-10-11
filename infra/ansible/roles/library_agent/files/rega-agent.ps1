@@ -6,8 +6,8 @@
   Restore     (boot, SYSTEM)  Copy the Steam library from S3 to the library disk.
   Tick        (every minute, SYSTEM)  Track idle time, upload finished
               downloads, stop the machine after idle_minutes with nobody streaming.
-  FinalSync   (app, over WinRM)  Upload the library and record it in S3 so
-              the app can delete the library disk.
+  FinalSync   (app, over WinRM)  Upload the library and record the outcome
+              in S3, so the app knows whether it can delete the library disk.
   LaunchSteam (logon, desktop user)  Wait for the restore, register the
               library folder with Steam and start Steam.
   Status      Print the agent state as JSON.
@@ -50,8 +50,19 @@ function Get-BootTime {
 }
 
 function Get-Target {
-  $identity = Get-Ec2Identity
+  # The instance metadata service can be slow to answer right after boot.
+  param([int]$Attempts = 1)
+  $identity = $null
+  for ($i = 1; $i -le $Attempts -and $null -eq $identity; $i++) {
+    $identity = Get-Ec2Identity
+    if ($null -eq $identity -and $i -lt $Attempts) { Start-Sleep -Seconds 10 }
+  }
   return Resolve-LibraryTarget -Config $config.library -Identity $identity
+}
+
+function Get-FinalSyncKey {
+  param($Target)
+  return "s3://$($Target.Bucket)/rega/machines/$($config.machine_id)/final-sync.json"
 }
 
 function Initialize-LibraryFolder {
@@ -65,42 +76,51 @@ function Initialize-LibraryFolder {
   & icacls.exe $libraryPath /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
 }
 
-function Invoke-Sync {
-  # Upload the library. --delete mirrors uninstalls and replaced files; it is
-  # only safe after this disk was restored from S3, which the marker proves.
-  param([switch]$Final)
-  if (-not (Test-Path -LiteralPath $marker)) {
-    Write-ReGaLog "Skipping upload: $libraryPath was not restored from S3 this session." 'warning'
-    return $false
-  }
-  $target = Get-Target
-  $arguments = Get-SyncArguments -Source $libraryPath -Destination $target.Uri -Region $target.Region `
-    -Excludes $config.library.excludes -Delete
-  $code = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments
-  if ($code -ne 0) {
-    Write-ReGaLog "Upload to $($target.Uri) failed with exit code $code." 'error'
-    return $false
-  }
-  if ($Final) {
-    # The app deletes the library disk only after it sees this record.
+function Invoke-Upload {
+  return Invoke-LibraryUpload -AwsPath $config.aws_path -LibraryPath $libraryPath -MarkerPath $marker `
+    -Target (Get-Target) -Excludes @($config.library.excludes)
+}
+
+function Invoke-FinalSync {
+  # Upload, then record the outcome at a fixed key, successful or not. The
+  # app deletes the library disk only for a record with synced = true that
+  # was written after the machine's last start.
+  $synced = $false
+  try { $synced = Invoke-Upload } catch { Write-ReGaLog "Final upload failed: $_" 'error' }
+  try {
+    $target = Get-Target
     $identity = Get-Ec2Identity
     $record = [pscustomobject]@{
-      machine_id    = $config.machine_id
-      instance_id   = (Get-PropertyValue $identity 'instanceId' '')
-      finished_utc  = (ConvertTo-IsoString ([datetime]::UtcNow))
-      library_uri   = $target.Uri
+      machine_id   = $config.machine_id
+      instance_id  = (Get-PropertyValue $identity 'instanceId' '')
+      boot_utc     = (ConvertTo-IsoString (Get-BootTime))
+      finished_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
+      synced       = $synced
+      library_uri  = $target.Uri
     }
-    $tmp = Join-Path $stateDir 'final-sync.json'
-    Write-JsonFile $tmp $record
-    $key = "s3://$($target.Bucket)/rega/machines/$($config.machine_id)/final-sync.json"
-    $code = Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'cp', $tmp, $key, '--region', $target.Region, '--only-show-errors')
+    $file = Join-Path $stateDir 'final-sync.json'
+    Write-JsonFile $file $record
+    $key = Get-FinalSyncKey $target
+    $code = Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'cp', $file, $key, '--region', $target.Region, '--only-show-errors')
     if ($code -ne 0) {
       Write-ReGaLog "Could not write $key (exit code $code)." 'error'
       return $false
     }
+  } catch {
+    Write-ReGaLog "Could not record the final sync: $_" 'error'
+    return $false
   }
-  Write-ReGaLog "Uploaded $libraryPath to $($target.Uri)."
-  return $true
+  return $synced
+}
+
+function Stop-Steam {
+  param([string]$SteamExe)
+  if (-not (Get-Process -Name 'steam' -ErrorAction SilentlyContinue)) { return }
+  Write-ReGaLog 'Closing Steam.'
+  & $SteamExe -shutdown
+  $wait = [datetime]::UtcNow.AddSeconds(90)
+  while ((Get-Process -Name 'steam' -ErrorAction SilentlyContinue) -and [datetime]::UtcNow -lt $wait) { Start-Sleep -Seconds 2 }
+  Get-Process -Name 'steam' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 function Save-State {
@@ -118,18 +138,17 @@ function Get-Signals {
   $restore = Read-JsonFile $restorePath
   $restoring = ((Get-PropertyValue $restore 'status') -eq 'running' -and
     (Test-SameBoot (Get-PropertyValue $restore 'boot_utc') $boot))
-  $sunshineLog = $config.sunshine_log
-  $clients = Get-SunshineClientCount (Read-SharedTextFile $sunshineLog)
+  $streaming = Test-SunshineStreaming $config.sunshine_log
   $downloading = Test-SteamDownloadActive -SteamAppsPaths @($config.steam_apps_paths) -Now $now
   $remote = Test-RemoteShellActive
   return [pscustomobject]@{
     Now         = $now
     Boot        = $boot
-    Clients     = $clients
+    Streaming   = $streaming
     Downloading = $downloading
     Restoring   = $restoring
     RemoteShell = $remote
-    Active      = ($clients -gt 0 -or $downloading -or $restoring -or $remote)
+    Active      = ($streaming -or $downloading -or $restoring -or $remote)
   }
 }
 
@@ -152,14 +171,28 @@ switch ($Action) {
         Initialize-LibraryFolder
         $result = 'done'
       } else {
-        $target = Get-Target
+        $target = Get-Target -Attempts 6
+        # A record from an earlier session must not vouch for this disk.
+        Invoke-Aws -AwsPath $config.aws_path -Arguments @('s3', 'rm', (Get-FinalSyncKey $target), '--region', $target.Region, '--only-show-errors') | Out-Null
         New-Item -ItemType Directory -Path $libraryPath -Force | Out-Null
         $arguments = Get-SyncArguments -Source $target.Uri -Destination $libraryPath -Region $target.Region `
           -Excludes $config.library.excludes
-        $code = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments
+        $code = 1
+        foreach ($wait in @(0, 30, 60, 120, 240)) {
+          if ($wait -gt 0) {
+            Write-ReGaLog "Restore attempt failed with exit code $code; retrying in $wait seconds." 'warning'
+            Start-Sleep -Seconds $wait
+          }
+          $code = Invoke-Aws -AwsPath $config.aws_path -Arguments $arguments
+          if ($code -eq 0) { break }
+        }
         if ($code -eq 0) {
           Initialize-LibraryFolder
-          Write-JsonFile $marker ([pscustomobject]@{ restored_utc = (ConvertTo-IsoString ([datetime]::UtcNow)); source = $target.Uri })
+          Write-JsonFile $marker ([pscustomobject]@{
+            restored_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
+            source       = $target.Uri
+            apps         = (Get-SteamApps $steamApps)
+          })
           Write-ReGaLog "Restored $($target.Uri) to $libraryPath."
           Save-State @{ synced_fingerprint = (Get-LibraryFingerprint $steamApps) }
           $result = 'done'
@@ -191,12 +224,12 @@ switch ($Action) {
 
     # Upload finished downloads and updates, but not while someone is
     # playing: the upload competes with the game for disk throughput.
-    if (-not $decision.ShouldStop -and $signals.Clients -eq 0 -and -not $signals.Downloading -and
+    if (-not $decision.ShouldStop -and -not $signals.Streaming -and -not $signals.Downloading -and
         -not $signals.Restoring -and (Test-Path -LiteralPath $marker)) {
       $fingerprint = Get-LibraryFingerprint $steamApps
       if ($fingerprint -ne (Get-PropertyValue $state 'synced_fingerprint' '')) {
         try {
-          if (Invoke-Sync) { Save-State @{ synced_fingerprint = $fingerprint; last_sync_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) } }
+          if (Invoke-Upload) { Save-State @{ synced_fingerprint = $fingerprint; last_sync_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) } }
         } catch {
           Write-ReGaLog "Upload failed: $_" 'error'
         }
@@ -209,8 +242,7 @@ switch ($Action) {
         return
       }
       Write-ReGaLog "No stream, download or remote session for $($decision.IdleMinutes) minutes; syncing and stopping."
-      $synced = $false
-      try { $synced = Invoke-Sync -Final } catch { Write-ReGaLog "Final upload failed: $_" 'error' }
+      $synced = Invoke-FinalSync
       if (-not $synced) { Write-ReGaLog 'Stopping without a final upload; the app keeps the library disk.' 'warning' }
       Save-State @{ stopped_utc = (ConvertTo-IsoString ([datetime]::UtcNow)); final_sync = $synced }
       # An OS shutdown stops an on-demand instance (and ends a spot one).
@@ -219,13 +251,23 @@ switch ($Action) {
   }
 
   'FinalSync' {
-    $ok = $false
-    try { $ok = Invoke-Sync -Final } catch { Write-ReGaLog "Final upload failed: $_" 'error' }
+    $ok = Invoke-FinalSync
     [pscustomobject]@{ synced = $ok } | ConvertTo-Json -Compress
     if (-not $ok) { exit 1 }
   }
 
   'LaunchSteam' {
+    $steamExe = Join-Path $config.steam_path 'steam.exe'
+    if (-not (Test-Path -LiteralPath $steamExe)) {
+      Write-ReGaLog "Steam is not installed at $steamExe." 'error'
+      exit 1
+    }
+    # Steam puts itself in the user's Run key and would start at logon on a
+    # library that is still being restored. Take it out, and close a Steam
+    # that already started this way.
+    Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Steam' -ErrorAction SilentlyContinue
+    Stop-Steam $steamExe
+
     # Wait until this boot's restore has finished, so Steam sees the
     # restored games as installed.
     # Give the boot task a few minutes to start, then wait while it runs.
@@ -239,18 +281,8 @@ switch ($Action) {
       if (-not $sameBoot -and [datetime]::UtcNow -gt $startBy) { break }
       Start-Sleep -Seconds 10
     }
-    $steamExe = Join-Path $config.steam_path 'steam.exe'
-    if (-not (Test-Path -LiteralPath $steamExe)) {
-      Write-ReGaLog "Steam is not installed at $steamExe." 'error'
-      exit 1
-    }
-    # Steam may have started on its own at logon and would overwrite
-    # libraryfolders.vdf on exit, so close it before editing.
-    if (Get-Process -Name 'steam' -ErrorAction SilentlyContinue) {
-      & $steamExe -shutdown
-      $wait = [datetime]::UtcNow.AddSeconds(90)
-      while ((Get-Process -Name 'steam' -ErrorAction SilentlyContinue) -and [datetime]::UtcNow -lt $wait) { Start-Sleep -Seconds 2 }
-    }
+    # Steam rewrites libraryfolders.vdf on exit, so close it before editing.
+    Stop-Steam $steamExe
     if (Test-Path -LiteralPath (Join-Path $libraryPath 'libraryfolder.vdf')) {
       try {
         $folders = Join-Path $config.steam_path 'steamapps\libraryfolders.vdf'
@@ -275,7 +307,7 @@ switch ($Action) {
     $signals = Get-Signals
     [pscustomobject]@{
       machine_id   = $config.machine_id
-      clients      = $signals.Clients
+      streaming    = $signals.Streaming
       downloading  = $signals.Downloading
       restoring    = $signals.Restoring
       remote_shell = $signals.RemoteShell

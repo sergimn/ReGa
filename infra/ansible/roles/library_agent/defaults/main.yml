@@ -6,9 +6,9 @@ rega_idle_stop_enabled: true
 rega_idle_minutes: 15
 
 # Game library in S3. Empty bucket: rega-games-<account-id>, the bucket the
-# app creates. Empty region: the machine's region.
+# app creates in eu-north-1. Empty region: the machine's region.
 rega_library_bucket: ""
-rega_library_bucket_region: ""
+rega_library_bucket_region: eu-north-1
 rega_library_prefix: steam-library
 
 # The library disk Terraform attaches and the boot script formats as D:.

@@ -41,8 +41,7 @@ Optional variables:
 | --- | --- | --- |
 | `rega_wireguard_client_public_key` | empty | The app's own WireGuard public key. Empty means the playbook makes a client key pair and writes `wireguard-client.conf`. |
 | `rega_idle_stop_enabled` | `true` | Shut the machine down after `rega_idle_minutes` (15) with nobody playing. |
-| `rega_library_bucket` / `rega_library_bucket_region` | `rega-games-<account>` / the machine's region | Where the Steam library lives in S3. |
-| `rega_sunshine_password`, `rega_desktop_password` | generated once | Pass them to use your own. |
+| `rega_library_bucket` / `rega_library_bucket_region` | `rega-games-<account>` / `eu-north-1` | Where the Steam library lives in S3. |
 | `rega_reboot_allowed` | `true` | CI sets it to `false`. |
 
 ## What comes back
@@ -53,7 +52,8 @@ Everything the app needs lands in
 
 - `connection.json`: Sunshine user and web UI port, WireGuard server public
   key, addresses, port and MTU.
-- `sunshine-password`, `desktop-password`.
+- `sunshine-password`, `desktop-password`, generated at the first run. To
+  choose your own, write them there before it.
 - `wireguard-client.conf`, only when no client key was passed. It holds the
   client's private key.
 
@@ -65,7 +65,7 @@ git-ignored.
 | | |
 | --- | --- |
 | `base` | ReGa folders under `C:\ProgramData\ReGa` (SYSTEM and Administrators only, Users read), a `rega` desktop account that logs on at boot, high performance power plan with no display sleep, audio services, AWS CLI. |
-| `steam` | Steam. Logging in to Steam is done by hand once, over Moonlight. |
+| `steam` | Steam, after checking that Valve signed the installer. Logging in to Steam is done by hand once, over Moonlight. |
 | `sunshine` | Sunshine as a service, its web UI login, and the few `sunshine.conf` keys ReGa owns. |
 | `wireguard` | WireGuard for Windows with one tunnel, `rega`: server `10.213.37.1/24`, client `10.213.37.2/32`, MTU 1400. Keys are made on the machine and the server key never leaves it. |
 | `library_agent` | `rega-agent.ps1` and its scheduled tasks (below). |
@@ -83,27 +83,42 @@ Sunshine from the client's IP.
 | `ReGa-Agent` | every minute | Tracks activity, uploads the library when Steam's installed games change and nobody is playing, and stops the machine after the idle time. |
 | `ReGa-SteamLaunch` | `rega` logs on | Waits for the restore, adds `D:\SteamLibrary` to Steam's library folders and starts Steam. |
 
-Activity means a Moonlight client connected (from Sunshine's log), a Steam
-download in progress, a restore running, or a WinRM session (Ansible or the
-app). Uploads use `aws s3 sync --delete`, and only after a restore finished
-on this disk, so an empty or half-restored disk never wipes the bucket.
+Activity means a Moonlight stream, a Steam download in progress, a restore
+running, or an open WinRM session (Ansible or the app). Sunshine raises its
+own process priority to High while it streams and lowers it when the last
+stream ends, however it ended, so the agent reads that rather than the log.
+Any WinRM shell keeps the machine up, so the app should not poll the agent
+over WinRM while waiting for the idle stop.
 
-The idle stop does a final sync, records it at
-`s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json`, and
-shuts Windows down, which EC2 turns into a stop. It only does so on EC2. The
-app should then apply `instance_state = "stopped"` and
-`library_volume_enabled = false` as for any stop; the record says whether the
-disk was safely uploaded.
+Every machine in the account shares the one library, so an upload never
+mirrors deletes across the whole library. It uploads new and changed files,
+mirrors each installed game's folder under `steamapps/common` (so files an
+update removed go away), and deletes from S3 only the games this disk had
+when it was restored or last uploaded and has since uninstalled. Nothing is
+uploaded from a disk that wasn't restored from S3 this session.
+
+Before a stop, the agent uploads once more and writes
+`s3://rega-games-<account>/rega/machines/<machine-id>/final-sync.json` with
+`synced`, `boot_utc` and `finished_utc`, whether the upload worked or not.
+The restore deletes that record. The app may delete the library disk only
+when the record says `"synced": true` and `finished_utc` is later than the
+instance's last start. The idle stop then shuts Windows down, which EC2
+turns into a stop (only on EC2), and the app applies
+`instance_state = "stopped"` and `library_volume_enabled = false` as for any
+stop.
 
 The app can drive the agent over WinRM:
 
 ```powershell
-powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status     # JSON: clients, downloads, restore and idle state
+powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status     # JSON: streaming, downloads, restore and idle state
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action FinalSync  # before a stop the app starts; prints {"synced": true|false}
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action ResetIdle
 ```
 
 Logs are in `C:\ProgramData\ReGa\logs`.
+
+At logon the agent removes Steam's own "run at startup" entry and closes a
+Steam that started early, so Steam never runs on a half-restored library.
 
 ### GPU
 
@@ -120,12 +135,21 @@ boot it:
 On a t3 it does nothing. Back on a t3 after being a g4dn, the driver stays
 installed and simply has no device.
 
+When the boot task needs a reboot while a WinRM session is open (the
+playbook run right after the resize, say), it waits up to an hour for the
+session to end. The playbook sees the pending reboot and reboots by itself.
+The driver installer must be signed by NVIDIA, and a failed download doesn't
+count towards the two install attempts.
+
 The virtual display driver comes from a pinned release, checked against its
 SHA-256. Its catalog must carry a valid signature from the pinned SignPath
 certificate (thumbprint in `roles/gpu/defaults/main.yml`) before that
 certificate is added to the machine's Trusted Publishers. It is never added
-as a root. The certificate expires on 2027-09-07; a newer driver release
-means updating the URL, hash and thumbprint together.
+as a root. Trusted Publishers is machine-wide, so Windows would also install
+other drivers signed with that SignPath Foundation certificate without
+asking; on a single-purpose machine that is the price of an unattended
+install. The certificate expires on 2027-09-07; a newer driver release means
+updating the URL, hash and thumbprint together.
 
 ## Needs from AWS
 
@@ -142,8 +166,8 @@ means updating the URL, hash and thumbprint together.
 }
 ```
 
-Without it the GPU setup logs an error naming this policy and retries at the
-next boot.
+Without it the GPU setup logs an error naming this policy and tries again at
+the next boot.
 
 ## Tests
 
@@ -158,6 +182,8 @@ next boot.
   display.
 
 Not covered without a real g4dn: the NVIDIA driver install and license, the
-virtual display next to the NVIDIA GPU, Sunshine capture and encoding, the S3
-restore and sync with the instance role, and the idle stop turning into an
-EC2 stop.
+virtual display next to the NVIDIA GPU, Sunshine capture and encoding and its
+priority signal, the S3 restore and sync with the instance role, the idle
+stop turning into an EC2 stop, and Steam's behaviour at logon. Steam may
+also keep its own folder on C: as the default install location; making
+`D:\SteamLibrary` the default is still to be checked on a real machine.

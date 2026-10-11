@@ -110,9 +110,17 @@
     - AudioEndpointBuilder
     - Audiosrv
 
+# win_package downloads a URL before it checks creates_path, so check first.
+- name: Check for the AWS CLI
+  ansible.windows.win_stat:
+    path: "{{ rega_aws_path }}"
+    get_checksum: false
+  register: rega_awscli_installed
+
 - name: Install the AWS CLI
   ansible.windows.win_package:
     path: "{{ rega_awscli_url }}"
     checksum: "{{ rega_awscli_sha256 }}"
     checksum_algorithm: sha256
     creates_path: "{{ rega_aws_path }}"
+  when: not rega_awscli_installed.stat.exists

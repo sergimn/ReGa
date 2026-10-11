@@ -65,22 +65,46 @@ function Get-VirtualDisplay {
     Where-Object { $_.HardwareID -contains $vddHardwareId })
 }
 
+function Get-BootTime {
+  return (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+}
+
+function Test-ThisBoot {
+  # Boot times are written by one run and read by another; allow for
+  # rounding.
+  param($Recorded, [datetime]$Boot)
+  if (-not $Recorded) { return $false }
+  $value = [datetime]::Parse("$Recorded", [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+  return ([Math]::Abs(($value - $Boot).TotalSeconds) -lt 60)
+}
+
 function Read-State {
-  if (Test-Path -LiteralPath $statePath) { return Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json }
-  return [pscustomobject]@{ driver_attempts = 0 }
+  $state = @{ driver_attempts = 0; reboot_pending_boot_utc = $null }
+  if (Test-Path -LiteralPath $statePath) {
+    try {
+      $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+      foreach ($p in $saved.PSObject.Properties) { $state[$p.Name] = $p.Value }
+    } catch {
+      Write-GpuLog "Ignoring unreadable $statePath`: $_" 'warning'
+    }
+  }
+  return $state
 }
 
 function Save-State {
-  param($State)
+  param([hashtable]$State)
   New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
-  $State | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
+  [pscustomobject]$State | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
 function Set-GamingLicense {
   # The gaming driver checks this marketplace flag and certificate; see
   # "NVIDIA gaming drivers" in the EC2 user guide.
   $key = 'HKLM:\SOFTWARE\NVIDIA Corporation\Global'
-  New-Item -Path $key -Force | Out-Null
+  # Not New-Item -Force: on the registry it deletes and recreates the key,
+  # wiping what the driver installer put there.
+  if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
   New-ItemProperty -Path $key -Name 'vGamingMarketplace' -PropertyType DWord -Value 2 -Force | Out-Null
   $cert = Join-Path $env:PUBLIC 'Documents\GridSwCert.txt'
   if (-not (Test-Path -LiteralPath $cert)) {
@@ -89,6 +113,7 @@ function Set-GamingLicense {
 }
 
 function Install-NvidiaDriver {
+  param([hashtable]$State)
   $work = Join-Path $config.work_dir 'nvidia'
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
   New-Item -ItemType Directory -Path $work -Force | Out-Null
@@ -105,6 +130,16 @@ function Install-NvidiaDriver {
   }
   $installer = Get-ChildItem -LiteralPath $work -Recurse -Filter *.exe | Sort-Object Length -Descending | Select-Object -First 1
   if (-not $installer) { throw "No driver installer found under $work." }
+  $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+  if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O="?NVIDIA Corporation') {
+    throw "Refusing $($installer.Name): signature $($signature.Status) by $($signature.SignerCertificate.Subject)."
+  }
+  # Count only real install attempts: a download that failed, for example
+  # before the IAM policy was fixed, is retried at every boot.
+  $attempts = [int]$State.driver_attempts
+  if ($attempts -ge 2) { throw 'The NVIDIA driver failed to install twice; see gpu-setup.log. Delete gpu-setup.json in the state folder to try again.' }
+  $State.driver_attempts = $attempts + 1
+  Save-State $State
   Write-GpuLog "Installing $($installer.Name)"
   $process = Start-Process -FilePath $installer.FullName -ArgumentList @('-s', '-noreboot', '-noeula', '-clean') -Wait -PassThru
   Write-GpuLog "Driver installer exited with $($process.ExitCode)"
@@ -235,6 +270,7 @@ function Disable-BasicDisplay {
 
 $mutex = New-Object Threading.Mutex($false, 'Global\ReGaGpuSetup')
 [void]$mutex.WaitOne()
+$pending = $false
 $result = [ordered]@{
   gpu             = $false
   driver          = $false
@@ -243,21 +279,25 @@ $result = [ordered]@{
   changed         = $false
 }
 try {
+  $boot = Get-BootTime
+  $state = Read-State
+  # An earlier run this boot already changed drivers and is waiting for its
+  # reboot (the boot task waits for Ansible to finish first).
+  $pending = Test-ThisBoot $state.reboot_pending_boot_utc $boot
   $result.gpu = (@(Get-NvidiaGpu).Count -gt 0)
   $result.driver = $result.gpu -and (Test-NvidiaDriver)
   $result.virtual_display = (@(Get-VirtualDisplay).Count -gt 0)
 
-  if ($Action -eq 'VirtualDisplay' -and -not $result.virtual_display) {
+  if ($pending) {
+    Write-GpuLog 'A reboot from an earlier run is still pending.'
+    $result.reboot_required = $true
+  } elseif ($Action -eq 'VirtualDisplay' -and -not $result.virtual_display) {
     $result.reboot_required = Install-VirtualDisplay
     $result.virtual_display = (@(Get-VirtualDisplay).Count -gt 0)
     $result.changed = $true
   } elseif ($Action -eq 'Auto' -and $result.gpu) {
     if (-not $result.driver) {
-      $state = Read-State
-      $attempts = [int]$state.driver_attempts
-      if ($attempts -ge 2) { throw 'The NVIDIA driver failed to install twice; see gpu-setup.log.' }
-      Save-State ([pscustomobject]@{ driver_attempts = $attempts + 1 })
-      Install-NvidiaDriver
+      Install-NvidiaDriver $state
       $result.driver = $true
       $result.reboot_required = $true
       $result.changed = $true
@@ -272,6 +312,10 @@ try {
       if ($config.vdd.disable_basic_display -and $vdd -and (Disable-BasicDisplay)) { $result.changed = $true }
     }
   }
+  if ($result.reboot_required -and -not $pending) {
+    $state.reboot_pending_boot_utc = $boot.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    Save-State $state
+  }
   Write-GpuLog ("Result: " + (([pscustomobject]$result) | ConvertTo-Json -Compress))
 } catch {
   Write-GpuLog "GPU setup failed: $_" 'error'
@@ -282,5 +326,13 @@ try {
 
 ([pscustomobject]$result) | ConvertTo-Json -Compress
 if ($result.reboot_required -and -not $NoReboot) {
+  # Ansible or the app may be working over WinRM, for example the playbook
+  # run right after the resize. Let them finish (the playbook reboots by
+  # itself) and only then reboot.
+  $deadline = [datetime]::UtcNow.AddMinutes(60)
+  while ((Get-Process -Name 'wsmprovhost' -ErrorAction SilentlyContinue) -and [datetime]::UtcNow -lt $deadline) {
+    Start-Sleep -Seconds 15
+  }
+  Write-GpuLog 'Rebooting to finish the GPU setup.'
   & shutdown.exe /r /t 10 /d p:2:4 /c 'ReGa: finishing the GPU driver setup.'
 }

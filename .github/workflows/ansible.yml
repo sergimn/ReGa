@@ -177,7 +177,7 @@ jobs:
           Assert ($code -eq '401') "the Sunshine API rejects a wrong password (HTTP $code)"
 
           $status = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status | ConvertFrom-Json
-          Assert ($status.clients -eq 0) 'the agent sees no Moonlight client'
+          Assert ($status.streaming -eq $false) 'the agent sees no Moonlight stream'
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Tick
           Assert ($LASTEXITCODE -eq 0) 'an agent tick off EC2 exits cleanly'
           Get-Content C:\ProgramData\ReGa\logs\agent.log -ErrorAction SilentlyContinue | Select-Object -Last 20

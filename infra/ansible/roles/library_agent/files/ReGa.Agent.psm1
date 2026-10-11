@@ -67,7 +67,9 @@ function Write-JsonFile {
   param([string]$Path, $Value)
   $dir = Split-Path -Parent $Path
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-  $tmp = "$Path.tmp"
+  # Several processes write the agent state; give each its own temporary
+  # file.
+  $tmp = '{0}.{1}.tmp' -f $Path, [guid]::NewGuid().ToString('N')
   $json = $Value | ConvertTo-Json -Depth 6
   [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
   Move-Item -LiteralPath $tmp -Destination $Path -Force
@@ -85,10 +87,11 @@ function Get-PropertyValue {
 # --- Streaming sessions -------------------------------------------------------
 
 function Get-SunshineClientCount {
-  # Sunshine rotates its log at every start and writes "CLIENT CONNECTED" and
-  # "CLIENT DISCONNECTED" when a Moonlight control stream opens or closes.
-  # Count them after the last startup line, so a crash can't leave a session
-  # open forever.
+  # Fallback for Test-SunshineStreaming. Sunshine rotates its log at every
+  # start and writes "CLIENT CONNECTED" and "CLIENT DISCONNECTED" when a
+  # Moonlight control stream opens or closes, and "<address>: Ping Timeout"
+  # when it drops a client that stopped answering. Count them after the last
+  # startup line, so a crash can't leave a session open forever.
   param([string[]]$Lines)
   $connected = 0
   foreach ($line in $Lines) {
@@ -96,11 +99,30 @@ function Get-SunshineClientCount {
       $connected = 0
     } elseif ($line -match 'CLIENT CONNECTED\s*$') {
       $connected++
-    } elseif ($line -match 'CLIENT DISCONNECTED\s*$') {
+    } elseif ($line -match 'CLIENT DISCONNECTED\s*$' -or $line -match '\S: Ping Timeout\s*$') {
       $connected = [Math]::Max(0, $connected - 1)
     }
   }
   return $connected
+}
+
+function Test-SunshineStreaming {
+  # Sunshine raises its own priority class to High when the first stream
+  # starts and puts it back to Normal when the last one ends, however it
+  # ended (platf::streaming_will_start and streaming_will_stop). The log
+  # misses some endings: an encoder failure stops a session without a line.
+  param([string]$LogPath)
+  $readable = $false
+  foreach ($process in @(Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue)) {
+    try {
+      if ($process.PriorityClass -eq [Diagnostics.ProcessPriorityClass]::High) { return $true }
+      $readable = $true
+    } catch {
+      Write-ReGaLog "Could not read Sunshine's priority: $_" 'warning'
+    }
+  }
+  if ($readable) { return $false }
+  return ((Get-SunshineClientCount (Read-SharedTextFile $LogPath)) -gt 0)
 }
 
 function Read-SharedTextFile {
@@ -235,6 +257,125 @@ function Invoke-Aws {
   $code = $LASTEXITCODE
   foreach ($line in $output) { Write-ReGaLog "aws: $line" 'debug' }
   return $code
+}
+
+function Get-AcfValue {
+  # Pure: a top-level string value from a Steam .acf/.vdf file.
+  param([string]$Text, [string]$Key)
+  if ($Text -match ('"' + [regex]::Escape($Key) + '"\s+"([^"]*)"')) { return $Matches[1] }
+  return $null
+}
+
+function Test-SafeFolderName {
+  # Pure: a single folder name, so an S3 delete built from it can't reach
+  # outside steamapps/common.
+  param([string]$Name)
+  if (-not $Name -or $Name.Trim() -eq '' -or $Name -eq '.' -or $Name -eq '..') { return $false }
+  return ($Name.IndexOfAny([char[]]'\/:*?"<>|') -lt 0)
+}
+
+function ConvertTo-AppTable {
+  # appid -> installdir as a hashtable, from a hashtable or from JSON.
+  param($Value)
+  $table = @{}
+  if ($null -eq $Value) { return $table }
+  if ($Value -is [hashtable]) {
+    foreach ($key in $Value.Keys) { $table["$key"] = "$($Value[$key])" }
+  } else {
+    foreach ($p in $Value.PSObject.Properties) { $table[$p.Name] = "$($p.Value)" }
+  }
+  return $table
+}
+
+function Get-SteamApps {
+  # appid -> installdir for every app manifest in a steamapps folder.
+  param([string]$SteamAppsPath)
+  $apps = @{}
+  if (-not (Test-Path -LiteralPath $SteamAppsPath)) { return $apps }
+  foreach ($file in @(Get-ChildItem -LiteralPath $SteamAppsPath -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
+    $text = [IO.File]::ReadAllText($file.FullName)
+    $id = Get-AcfValue $text 'appid'
+    $dir = Get-AcfValue $text 'installdir'
+    if ($id -and (Test-SafeFolderName $dir)) { $apps[$id] = $dir }
+  }
+  return $apps
+}
+
+function Get-RemovedApps {
+  # Pure: apps this disk knew (restored or uploaded) that are no longer
+  # installed. DeleteFolder is false when an installed app still uses the
+  # same folder.
+  param([hashtable]$Known, [hashtable]$Current)
+  $inUse = @($Current.Values | ForEach-Object { "$_".ToLowerInvariant() })
+  $removed = @()
+  foreach ($id in @($Known.Keys | Sort-Object)) {
+    if ($Current.ContainsKey($id)) { continue }
+    $dir = $Known[$id]
+    $removed += [pscustomobject]@{
+      AppId        = $id
+      InstallDir   = $dir
+      DeleteFolder = ((Test-SafeFolderName $dir) -and ($inUse -notcontains $dir.ToLowerInvariant()))
+    }
+  }
+  return , $removed
+}
+
+function Invoke-LibraryUpload {
+  # Other machines in the account share the library, so a whole-library
+  # "sync --delete" could wipe games they uploaded. Instead:
+  #   1. upload new and changed files everywhere except steamapps/common;
+  #   2. mirror each installed game's folder, so files an update removed go;
+  #   3. delete the games this disk had and has since uninstalled.
+  # Only a disk restored from S3 this session uploads at all: its marker
+  # records which games it started with.
+  param([string]$AwsPath, [string]$LibraryPath, [string]$MarkerPath, $Target, [string[]]$Excludes)
+  if (-not (Test-Path -LiteralPath $MarkerPath)) {
+    Write-ReGaLog "Skipping upload: $LibraryPath was not restored from S3 this session." 'warning'
+    return $false
+  }
+  $steamApps = Join-Path $LibraryPath 'steamapps'
+  $restored = Read-JsonFile $MarkerPath
+  $known = ConvertTo-AppTable (Get-PropertyValue $restored 'apps')
+  $current = Get-SteamApps $steamApps
+  $ok = $true
+
+  $arguments = Get-SyncArguments -Source $LibraryPath -Destination $Target.Uri -Region $Target.Region `
+    -Excludes (@($Excludes) + 'steamapps/common/*')
+  if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+
+  foreach ($id in @($current.Keys | Sort-Object)) {
+    $dir = $current[$id]
+    $local = Join-Path (Join-Path $steamApps 'common') $dir
+    if (-not (Test-Path -LiteralPath $local)) { continue }
+    $arguments = Get-SyncArguments -Source $local -Destination "$($Target.Uri)steamapps/common/$dir/" `
+      -Region $Target.Region -Excludes @() -Delete
+    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+  }
+
+  foreach ($app in (Get-RemovedApps -Known $known -Current $current)) {
+    Write-ReGaLog "Removing uninstalled app $($app.AppId) ($($app.InstallDir)) from $($Target.Uri)."
+    $arguments = @('s3', 'rm', "$($Target.Uri)steamapps/appmanifest_$($app.AppId).acf",
+      '--region', $Target.Region, '--only-show-errors')
+    if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+    if ($app.DeleteFolder) {
+      $arguments = @('s3', 'rm', "$($Target.Uri)steamapps/common/$($app.InstallDir)/", '--recursive',
+        '--region', $Target.Region, '--only-show-errors')
+      if ((Invoke-Aws -AwsPath $AwsPath -Arguments $arguments) -ne 0) { $ok = $false }
+    }
+  }
+
+  if (-not $ok) {
+    Write-ReGaLog "Upload to $($Target.Uri) failed; it is retried at the next change or stop." 'error'
+    return $false
+  }
+  Write-JsonFile $MarkerPath ([pscustomobject]@{
+    restored_utc = (Get-PropertyValue $restored 'restored_utc')
+    source       = $Target.Uri
+    apps         = $current
+    uploaded_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
+  })
+  Write-ReGaLog "Uploaded $LibraryPath to $($Target.Uri)."
+  return $true
 }
 
 function Get-LibraryFingerprint {

@@ -46,6 +46,18 @@ Describe 'Get-SunshineClientCount' {
     Get-SunshineClientCount $log | Should -Be 0
   }
 
+  It 'counts a ping timeout as a disconnect' {
+    $log = @(
+      '[x]: Info: CLIENT CONNECTED',
+      '[x]: Info: 203.0.113.7: Ping Timeout'
+    )
+    Get-SunshineClientCount $log | Should -Be 0
+  }
+
+  It 'ignores an initial ping timeout' {
+    Get-SunshineClientCount @('[x]: Info: CLIENT CONNECTED', '[x]: Error: Initial Ping Timeout') | Should -Be 1
+  }
+
   It 'never goes below zero' {
     Get-SunshineClientCount @('[x]: Info: CLIENT DISCONNECTED', '[x]: Info: CLIENT CONNECTED') | Should -Be 1
   }
@@ -186,5 +198,115 @@ Describe 'Steam library folders' {
     $id = New-SteamContentId
     $id | Should -Match '^\d+$'
     [decimal]$id | Should -BeLessOrEqual ([decimal][long]::MaxValue)
+  }
+}
+
+Describe 'Steam apps' {
+  It 'reads values from an app manifest' {
+    $acf = "`"AppState`"`n{`n`t`"appid`"`t`t`"228980`"`n`t`"installdir`"`t`t`"Steamworks Shared`"`n}`n"
+    Get-AcfValue $acf 'appid' | Should -Be '228980'
+    Get-AcfValue $acf 'installdir' | Should -Be 'Steamworks Shared'
+    Get-AcfValue $acf 'missing' | Should -BeNullOrEmpty
+  }
+
+  It 'accepts only plain folder names' {
+    Test-SafeFolderName 'Half-Life 2' | Should -BeTrue
+    foreach ($bad in @('', ' ', '.', '..', 'a/b', 'a\b', '..\x', 'C:x')) {
+      Test-SafeFolderName $bad | Should -BeFalse -Because "'$bad' is not a single folder"
+    }
+  }
+
+  It 'lists installed apps and skips unsafe folders' {
+    $apps = Join-Path $TestDrive 'steamapps'
+    New-Item -ItemType Directory -Path $apps -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $apps 'appmanifest_10.acf') -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"10`"`n`t`"installdir`"`t`t`"Counter-Strike`"`n}"
+    Set-Content -LiteralPath (Join-Path $apps 'appmanifest_20.acf') -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"20`"`n`t`"installdir`"`t`t`"..`"`n}"
+    $found = Get-SteamApps $apps
+    $found.Count | Should -Be 1
+    $found['10'] | Should -Be 'Counter-Strike'
+  }
+
+  It 'returns no apps for a missing folder' {
+    (Get-SteamApps (Join-Path $TestDrive 'nowhere')).Count | Should -Be 0
+  }
+
+  It 'reads the app table back from JSON' {
+    $json = '{"10":"Counter-Strike","20":"Portal"}' | ConvertFrom-Json
+    $table = ConvertTo-AppTable $json
+    $table['20'] | Should -Be 'Portal'
+    (ConvertTo-AppTable $null).Count | Should -Be 0
+  }
+
+  It 'finds uninstalled apps and keeps folders still in use' {
+    $known = @{ '10' = 'Counter-Strike'; '20' = 'Shared'; '30' = 'Portal' }
+    $current = @{ '10' = 'Counter-Strike'; '21' = 'shared' }
+    $removed = Get-RemovedApps -Known $known -Current $current
+    $removed.Count | Should -Be 2
+    ($removed | Where-Object AppId -eq '20').DeleteFolder | Should -BeFalse
+    ($removed | Where-Object AppId -eq '30').DeleteFolder | Should -BeTrue
+  }
+
+  It 'removes nothing when nothing was known' {
+    $removed = Get-RemovedApps -Known @{} -Current @{ '10' = 'Counter-Strike' }
+    $removed.Count | Should -Be 0
+  }
+}
+
+Describe 'Write-JsonFile' {
+  It 'writes the file and leaves no temporary file behind' {
+    $path = Join-Path $TestDrive 'state.json'
+    Write-JsonFile $path ([pscustomobject]@{ a = 1 })
+    (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).a | Should -Be 1
+    @(Get-ChildItem -LiteralPath $TestDrive -Filter '*.tmp').Count | Should -Be 0
+  }
+}
+
+Describe 'Invoke-LibraryUpload' {
+  BeforeEach {
+    $script:library = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+    $script:apps = Join-Path $library 'steamapps'
+    $script:marker = Join-Path $TestDrive 'marker.json'
+    $script:target = [pscustomobject]@{ Bucket = 'b'; Region = 'eu-north-1'; Uri = 's3://b/steam-library/' }
+    New-Item -ItemType Directory -Path (Join-Path $apps 'common/Portal') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $apps 'appmanifest_400.acf') -Value "`"AppState`"`n{`n`t`"appid`"`t`t`"400`"`n`t`"installdir`"`t`t`"Portal`"`n}"
+    Write-JsonFile $marker ([pscustomobject]@{ restored_utc = '2026-10-11T10:00:00Z'; apps = @{ '400' = 'Portal'; '620' = 'Portal 2' } })
+    $script:calls = [Collections.ArrayList]::new()
+    Mock Invoke-Aws -ModuleName ReGa.Agent { [void]$script:calls.Add($Arguments -join ' '); return 0 }
+  }
+
+  It 'never deletes across the whole library' {
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @('steamapps/downloading/*') | Should -BeTrue
+    $root = @($calls | Where-Object { $_ -like "s3 sync $library s3://b/steam-library/ *" })
+    $root.Count | Should -Be 1
+    $root[0] | Should -Not -Match '--delete'
+    $root[0] | Should -Match '--exclude steamapps/common/\*'
+    $root[0] | Should -Match '--exclude steamapps/downloading/\*'
+  }
+
+  It 'mirrors each installed game and deletes only uninstalled ones' {
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeTrue
+    @($calls | Where-Object { $_ -match 's3://b/steam-library/steamapps/common/Portal/ .*--delete$' }).Count | Should -Be 1
+    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/appmanifest_620.acf --region eu-north-1 --only-show-errors'
+    $calls | Should -Contain 's3 rm s3://b/steam-library/steamapps/common/Portal 2/ --recursive --region eu-north-1 --only-show-errors'
+    @($calls | Where-Object { $_ -match 'appmanifest_400' }).Count | Should -Be 0
+  }
+
+  It 'remembers the uploaded apps so a removal happens once' {
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Out-Null
+    $saved = ConvertTo-AppTable (Read-JsonFile $marker).apps
+    $saved.Keys | Should -Be @('400')
+    (Read-JsonFile $marker).restored_utc | Should -Not -BeNullOrEmpty
+  }
+
+  It 'keeps the old app list when a step fails' {
+    Mock Invoke-Aws -ModuleName ReGa.Agent { if ($Arguments[1] -eq 'rm') { return 1 } ; return 0 }
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    (ConvertTo-AppTable (Read-JsonFile $marker).apps).ContainsKey('620') | Should -BeTrue
+  }
+
+  It 'uploads nothing from a disk that was not restored' {
+    Remove-Item -LiteralPath $marker
+    Invoke-LibraryUpload -AwsPath 'aws' -LibraryPath $library -MarkerPath $marker -Target $target -Excludes @() | Should -BeFalse
+    $calls.Count | Should -Be 0
   }
 }

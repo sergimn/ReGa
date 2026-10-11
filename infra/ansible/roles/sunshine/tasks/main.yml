@@ -1,12 +1,19 @@
 ---
 # The MSI adds Sunshine's firewall rules and the SunshineService service,
 # which starts Sunshine in the logged-on desktop session.
+- name: Check for Sunshine
+  ansible.windows.win_stat:
+    path: "{{ rega_sunshine_path }}\\sunshine.exe"
+    get_checksum: false
+  register: rega_sunshine_installed
+
 - name: Install Sunshine
   ansible.windows.win_package:
     path: "{{ rega_sunshine_msi_url }}"
     checksum: "{{ rega_sunshine_msi_sha256 }}"
     checksum_algorithm: sha256
     creates_path: "{{ rega_sunshine_path }}\\sunshine.exe"
+  when: not rega_sunshine_installed.stat.exists
 
 - name: Configure Sunshine
   community.windows.win_lineinfile:

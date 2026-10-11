@@ -1,4 +1,10 @@
 ---
+- name: Check for WireGuard
+  ansible.windows.win_stat:
+    path: "{{ rega_wireguard_path }}\\wireguard.exe"
+    get_checksum: false
+  register: rega_wireguard_installed
+
 - name: Install WireGuard
   ansible.windows.win_package:
     path: "{{ rega_wireguard_msi_url }}"
@@ -7,6 +13,7 @@
     # Don't start the WireGuard UI; there is nobody to see it.
     arguments: DO_NOT_LAUNCH=1
     creates_path: "{{ rega_wireguard_path }}\\wireguard.exe"
+  when: not rega_wireguard_installed.stat.exists
 
 - name: Configure and start the WireGuard tunnel
   ansible.windows.win_powershell:
