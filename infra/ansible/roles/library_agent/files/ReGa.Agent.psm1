@@ -187,6 +187,21 @@ function Get-RestoreWaitState {
   return 'none'
 }
 
+function Get-RestoreWaitProblem {
+  # Pure: why waiting for the restore didn't end with the games on the
+  # library disk, or $null when it did.
+  param([string]$Wait, [string]$Status, [int]$TimeoutMinutes, [string]$LogPath)
+  if ($Wait -eq 'running') { return "The game library restore is still running after $TimeoutMinutes minutes." }
+  if ($Wait -ne 'finished') { return 'No game library restore started on this boot.' }
+  switch ($Status) {
+    'done' { return $null }
+    'no-disk' { return 'The machine has no game library disk.' }
+    'disk-full' { return "The game library doesn't fit on the machine's library disk." }
+    'failed' { return "The game library restore failed; see $LogPath on the machine." }
+  }
+  return "The game library restore ended as '$Status'."
+}
+
 function Get-IdleDecision {
   # Pure: given the saved state and the current signals, work out when the
   # machine was last active and whether it should stop now.

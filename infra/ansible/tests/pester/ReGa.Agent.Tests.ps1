@@ -152,6 +152,20 @@ Describe 'Get-RestoreWaitState' {
   }
 }
 
+Describe 'Get-RestoreWaitProblem' {
+  It 'is happy only when the games were restored' {
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'done' -TimeoutMinutes 240 -LogPath 'agent.log' | Should -BeNullOrEmpty
+  }
+
+  It 'says why otherwise' {
+    Get-RestoreWaitProblem -Wait 'running' -Status 'running' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'still running after 240 minutes'
+    Get-RestoreWaitProblem -Wait 'none' -Status $null -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'No game library restore started'
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'no-disk' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'no game library disk'
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'disk-full' -TimeoutMinutes 240 -LogPath 'x' | Should -Match "doesn't fit"
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'failed' -TimeoutMinutes 240 -LogPath 'C:\logs\agent.log' | Should -Match 'see C:\\logs\\agent.log'
+  }
+}
+
 Describe 'Resolve-LibraryTarget' {
   It 'derives the bucket from the account' {
     $t = Resolve-LibraryTarget -Config ([pscustomobject]@{ prefix = 'steam-library' }) `

@@ -137,7 +137,7 @@ jobs:
           set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1
 
       - name: Run it again; nothing should change
         shell: wsl-bash {0}
@@ -146,7 +146,8 @@ jobs:
           workspace=$PWD
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false --diff | tee second-run.log
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
@@ -157,10 +158,16 @@ jobs:
           set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=Status
-          # No restore ran at this boot, so this returns right away.
-          ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=WaitRestore \
-            -e rega_restore_start_minutes=0 | tee wait-restore.log
-          grep -Eq 'wait[^a-z]+none' wait-restore.log
+          # The setup started a restore, which finds no library disk on the
+          # runner, so waiting for it fails and says why.
+          if ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=WaitRestore \
+            > wait-restore.log; then
+            cat wait-restore.log
+            echo "WaitRestore should fail without a library disk"
+            exit 1
+          fi
+          cat wait-restore.log
+          grep -q 'no game library disk' wait-restore.log
 
       - name: Check the machine
         shell: powershell

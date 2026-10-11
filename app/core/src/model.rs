@@ -97,6 +97,10 @@ pub struct Machine {
     /// and the app hasn't finished the stop yet: [`crate::CloudProvider::stop`]
     /// drops its game library disk if the machine saved its games first.
     pub stopped_itself: bool,
+    /// Stopped with its game library disk kept, because the machine
+    /// couldn't save its games when it stopped. The disk costs storage
+    /// until a later stop saves them.
+    pub library_kept: bool,
 }
 
 /// What the user asked for when launching a machine.

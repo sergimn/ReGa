@@ -8,6 +8,8 @@
 //! machines/<id>.json      MachineRecord: the name and the Terraform variables
 //! machines/<id>.key.pem   the machine's RSA key, for its Windows password
 //! machines/<id>.secrets.json  passwords the setup gives the machine
+//! machines/<id>.setup     while a device sets the machine up: when it last
+//!                         said it still is (Unix seconds)
 //! ```
 
 use std::collections::HashSet;
@@ -37,6 +39,12 @@ pub fn secrets_key(machine_id: &str) -> String {
     format!("{PREFIX}{machine_id}.secrets.json")
 }
 
+/// Kept fresh while a device runs the setup on the machine, so other
+/// devices see it as busy although no Terraform run holds its lock.
+pub fn setup_key(machine_id: &str) -> String {
+    format!("{PREFIX}{machine_id}.setup")
+}
+
 /// Where the machine says whether its last upload of the game library
 /// worked, in the library bucket (`roles/library_agent` in
 /// `infra/ansible`).
@@ -57,6 +65,7 @@ pub fn all_keys(machine_id: &str) -> Vec<String> {
         record_key(machine_id),
         key_key(machine_id),
         secrets_key(machine_id),
+        setup_key(machine_id),
     ]
 }
 
@@ -69,6 +78,7 @@ pub fn machine_id_of(key: &str) -> Option<&str> {
         ".secrets.json",
         ".json",
         ".key.pem",
+        ".setup",
     ]
     .iter()
     .find_map(|ext| name.strip_suffix(ext))

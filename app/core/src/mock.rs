@@ -265,6 +265,7 @@ impl CloudProvider for MockProvider {
             busy: false,
             starting: false,
             stopped_itself: false,
+            library_kept: false,
         };
         *next_id += 1;
         self.machines.lock().unwrap().push(machine.clone());
@@ -323,7 +324,12 @@ impl CloudProvider for MockProvider {
         })
     }
 
-    async fn destroy(&self, machine_id: &str) -> ProviderResult<()> {
+    /// Demo machines never stop by themselves.
+    async fn finish_stop(&self, machine_id: &str) -> ProviderResult<Machine> {
+        self.update(machine_id, |_| Ok(()))
+    }
+
+    async fn destroy(&self, machine_id: &str, _even_if_unsaved: bool) -> ProviderResult<()> {
         let mut machines = self.machines.lock().unwrap();
         let before = machines.len();
         machines.retain(|m| m.id != machine_id);

@@ -142,7 +142,7 @@ The app can drive the agent over WinRM:
 ```powershell
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action Status       # JSON: streaming, downloads, restore and idle state
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action FinalSync    # before a stop the app starts; prints {"synced": true|false}
-powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action WaitRestore  # waits for this boot's restore; prints {"wait": "finished"|"none"|...}
+powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action WaitRestore  # waits for this boot's restore; prints {"wait": ..., "status": ...}, exits 1 unless restored
 powershell -NoProfile -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action ResetIdle
 ```
 
@@ -154,10 +154,13 @@ meanwhile:
 ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=FinalSync
 ```
 
+A machine's first boot comes before the restore task exists, so the
+playbook starts this boot's restore itself when none ran (`StartRestore`).
 WaitRestore gives the boot task `rega_restore_start_minutes` (5) to start a
-restore and waits up to `rega_restore_timeout_minutes` (240) for it. The app
-uses it in the CPU phase, so the games are on D: before the switch to the
-GPU type.
+restore and waits up to `rega_restore_timeout_minutes` (240) for it. It fails,
+saying why, unless the games were restored (no library disk, a library too
+big for it, a failed copy, or a timeout). The app uses it in the CPU phase,
+so the games are on D: before the switch to the GPU type.
 
 Logs are in `C:\ProgramData\ReGa\logs`.
 
@@ -223,8 +226,8 @@ the next boot.
   WSL over WinRM HTTPS set up by Terraform's own boot script. It runs twice
   and the second run must change nothing. Then it checks the services, the
   tunnel, the Sunshine API login, an agent tick, runs `agent.yml` (Status,
-  and WaitRestore with no restore to wait for), and installs the virtual
-  display.
+  and WaitRestore, which must fail since the runner has no library disk),
+  and installs the virtual display.
 - The app's Rust tests syntax-check both playbooks as the app writes them,
   with the inventory it generates (`.github/workflows/app.yml`).
 

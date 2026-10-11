@@ -7,7 +7,7 @@ use futures::future::try_join_all;
 use rega_core::region::{self, RegionCandidate};
 use rega_core::{
     roomy_cpu_type, CloudProvider, LaunchRequest, Machine, MachineState, MachineType, Orphan,
-    Region, ResourceKind, DEFAULT_DISK_GIB,
+    ProviderError, Region, ResourceKind, DEFAULT_DISK_GIB,
 };
 
 use crate::registry;
@@ -20,12 +20,16 @@ use crate::registry;
 ")]
 pub struct RegaError {
     pub message: String,
+    /// Destroying the machine would lose games it couldn't save; asking
+    /// again with `even_if_unsaved` goes ahead.
+    pub games_not_saved: bool,
 }
 
 impl<E: Display> From<E> for RegaError {
     fn from(e: E) -> Self {
         Self {
             message: e.to_string(),
+            games_not_saved: false,
         }
     }
 }
@@ -106,9 +110,13 @@ pub struct MachineSummary {
     pub switch_type: Option<String>,
     /// What [`MachineSummary::switch_type`] costs per hour, when known.
     pub switch_price_per_hour: Option<f64>,
-    /// It stopped on its own (idle) and the app should finish the stop,
-    /// which drops its game library disk once the games are saved.
+    /// It stopped on its own (idle) and the app should finish the stop
+    /// ([`finish_stop`]), which drops its game library disk once the games
+    /// are saved.
     pub stopped_itself: bool,
+    /// Stopped with its game library disk kept, because it couldn't save
+    /// its games when it stopped.
+    pub library_kept: bool,
 }
 
 pub enum OrphanKind {
@@ -316,11 +324,18 @@ pub async fn start_machine(provider_id: String, machine_id: String) -> RegaResul
     view(entry.provider(), machine).await
 }
 
-/// Saves the game library and stops the machine; also finishes the stop of
-/// one that stopped itself.
+/// Saves the game library and stops the machine.
 pub async fn stop_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
     let machine = entry.provider().stop(&machine_id).await?;
+    view(entry.provider(), machine).await
+}
+
+/// Finishes the stop of a machine that stopped itself (see
+/// [`MachineSummary::stopped_itself`]); does nothing once it no longer has.
+pub async fn finish_stop(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
+    let entry = registry::entry(&provider_id)?;
+    let machine = entry.provider().finish_stop(&machine_id).await?;
     view(entry.provider(), machine).await
 }
 
@@ -337,10 +352,23 @@ pub async fn resize_machine(
 }
 
 /// Saves the game library of a running machine, then deletes the machine
-/// and its disks. The game library in object storage stays.
-pub async fn destroy_machine(provider_id: String, machine_id: String) -> RegaResult<()> {
+/// and its disks. The game library in object storage stays. Fails with
+/// [`RegaError::games_not_saved`] set when the machine's games couldn't be
+/// saved. `even_if_unsaved` deletes it without trying to save the games.
+pub async fn destroy_machine(
+    provider_id: String,
+    machine_id: String,
+    even_if_unsaved: bool,
+) -> RegaResult<()> {
     let entry = registry::entry(&provider_id)?;
-    Ok(entry.provider().destroy(&machine_id).await?)
+    entry
+        .provider()
+        .destroy(&machine_id, even_if_unsaved)
+        .await
+        .map_err(|e| RegaError {
+            games_not_saved: matches!(e, ProviderError::GamesNotSaved(_)),
+            message: e.to_string(),
+        })
 }
 
 /// Leftover resources in the account that belong to no machine.
@@ -453,6 +481,7 @@ fn summary(
         busy: m.busy,
         starting: m.starting,
         stopped_itself: m.stopped_itself,
+        library_kept: m.library_kept,
         switch_price_per_hour: None,
         id: m.id,
         name: m.name,
@@ -537,6 +566,7 @@ mod tests {
             busy: false,
             starting: false,
             stopped_itself: false,
+            library_kept: false,
         }
     }
 
@@ -587,7 +617,9 @@ mod tests {
         assert_eq!(m.offer.gpu_model.as_deref(), Some("NVIDIA T4"));
         let m = start_machine("aws".into(), m.id).await.unwrap();
         assert!(matches!(m.status, MachineStatus::Running));
-        destroy_machine("aws".into(), m.id.clone()).await.unwrap();
+        destroy_machine("aws".into(), m.id.clone(), false)
+            .await
+            .unwrap();
         let left = list_machines("aws".into()).await.unwrap();
         assert!(left.iter().all(|x| x.id != m.id));
     }

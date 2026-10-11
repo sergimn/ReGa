@@ -29,6 +29,22 @@
     state: present
     enabled: true
 
+# A machine's first boot comes before the task exists, so start the restore
+# now when no restore ran on this boot; later boots run it from the trigger.
+- name: Restore the game library now if this boot hasn't
+  ansible.windows.win_command:
+    argv:
+      - powershell.exe
+      - -NoProfile
+      - -ExecutionPolicy
+      - Bypass
+      - -File
+      - "{{ rega_agent_dir }}\\rega-agent.ps1"
+      - -Action
+      - StartRestore
+  register: rega_restore_start
+  changed_when: (rega_restore_start.stdout_lines | last | from_json).started
+
 # A registration trigger as well as the boot one, so the agent keeps running
 # after Ansible updates the task without a reboot.
 - name: Run the agent every minute

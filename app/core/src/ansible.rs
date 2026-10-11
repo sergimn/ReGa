@@ -155,7 +155,7 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
     "REQUESTS_CA_BUNDLE",
-    // Where the Windows collections are installed (the Flatpak sets it).
+    // Where the Windows collections are, when not on Python's path.
     "ANSIBLE_COLLECTIONS_PATH",
     "ANSIBLE_HOME",
     "PYTHONPATH",
@@ -173,14 +173,43 @@ pub trait Ansible: Send + Sync {
         Ok(())
     }
 
-    /// Runs `ansible-playbook <args>` in `dir` with `env` added, returning
-    /// its output.
+    /// Runs `ansible-playbook <args>` in `dir` with `env` added. An error
+    /// means it couldn't run at all; a failed playbook is a
+    /// [`PlaybookOutput`] that says so.
     async fn run(
         &self,
         dir: &Path,
         args: &[String],
         env: &[(String, String)],
-    ) -> ProviderResult<String>;
+    ) -> ProviderResult<PlaybookOutput>;
+}
+
+/// What a run of `ansible-playbook` printed.
+pub struct PlaybookOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl PlaybookOutput {
+    /// Everything it printed, for a log.
+    pub fn log(&self) -> String {
+        if self.stderr.trim().is_empty() {
+            return self.stdout.clone();
+        }
+        format!("{}\n--- stderr ---\n{}", self.stdout, self.stderr)
+    }
+
+    /// Its output, or which task failed and why.
+    pub fn into_result(self) -> ProviderResult<String> {
+        if self.success {
+            return Ok(self.stdout);
+        }
+        Err(ProviderError::Cloud(summarize_failure(
+            &self.stdout,
+            &self.stderr,
+        )))
+    }
 }
 
 /// The real `ansible-playbook`.
@@ -226,7 +255,7 @@ impl Ansible for AnsibleCli {
         dir: &Path,
         args: &[String],
         env: &[(String, String)],
-    ) -> ProviderResult<String> {
+    ) -> ProviderResult<PlaybookOutput> {
         let binary = self.binary()?;
         let output = tokio::process::Command::new(binary)
             .args(args)
@@ -235,8 +264,8 @@ impl Ansible for AnsibleCli {
             .envs(std::env::vars_os().filter(|(k, _)| k.to_str().is_some_and(passes_through)))
             .envs(env.iter().map(|(k, v)| (k, v)))
             .env("ANSIBLE_CONFIG", dir.join("ansible.cfg"))
-            // Ansible's own temporary files, outside ~/.ansible, which the
-            // Flatpak can't write.
+            // Ansible's own temporary files, outside ~/.ansible, which a
+            // sandbox may not let it write.
             .env("ANSIBLE_LOCAL_TEMP", dir.join(".tmp"))
             .env("ANSIBLE_NOCOLOR", "1")
             .env("ANSIBLE_FORCE_COLOR", "0")
@@ -247,12 +276,11 @@ impl Ansible for AnsibleCli {
             .output()
             .await
             .map_err(|e| io_error("run Ansible", e))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.success() {
-            return Ok(stdout);
-        }
-        Err(ProviderError::Cloud(summarize_failure(&stdout, &stderr)))
+        Ok(PlaybookOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 }
 
@@ -284,22 +312,22 @@ pub fn summarize_failure(stdout: &str, stderr: &str) -> String {
             .into_iter()
             .next()
             .and_then(Result::ok);
-        let msg = result
-            .as_ref()
-            .and_then(|r| r["msg"].as_str())
+        let msg = result.as_ref().and_then(|r| r["msg"].as_str());
+        // A command that failed says why on its own output, better than
+        // Ansible's "non-zero return code".
+        let output = result.as_ref().and_then(|r| {
+            ["stderr", "stdout"]
+                .iter()
+                .filter_map(|k| r[*k].as_str())
+                .map(str::trim)
+                .find(|s| !s.is_empty())
+                .map(String::from)
+        });
+        let msg = msg
+            .filter(|m| !m.is_empty() && *m != "non-zero return code")
             .map(|m| m.trim_start_matches("Task failed: ").to_string())
-            .filter(|m| !m.is_empty())
-            .or_else(|| {
-                // A command that failed says why on its own output.
-                result.as_ref().and_then(|r| {
-                    ["stderr", "stdout"]
-                        .iter()
-                        .filter_map(|k| r[*k].as_str())
-                        .map(str::trim)
-                        .find(|s| !s.is_empty())
-                        .map(String::from)
-                })
-            })
+            .or(output)
+            .or_else(|| msg.filter(|m| !m.is_empty()).map(String::from))
             .unwrap_or_else(|| "failed".into());
         return match &task {
             Some(task) => format!("{task}: {msg}"),
@@ -444,12 +472,12 @@ impl AnsibleSetup {
             .run(&dir, &args, &[(PASSWORD_ENV.into(), password)])
             .await;
         let text = match &result {
-            Ok(out) => out.clone(),
+            Ok(output) => output.log(),
             Err(e) => e.to_string(),
         };
         // Best effort: the log only helps troubleshooting.
         let _ = write_private(&machine.dir.join(log), &text).await;
-        result
+        result?.into_result()
     }
 }
 
@@ -564,6 +592,8 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
             "TASK [Run the agent] ***\nfatal: [m]: FAILED! => {\n    \"msg\": \"\",\n    \
                        \"rc\": 1,\n    \"stderr\": \"no bucket\\r\\n\",\n    \"stdout\": \"\"\n}\n";
         assert_eq!(summarize_failure(command, ""), "Run the agent: no bucket");
+        let command = command.replace(r#""msg": """#, r#""msg": "non-zero return code""#);
+        assert_eq!(summarize_failure(&command, ""), "Run the agent: no bucket");
         assert_eq!(
             summarize_failure("", "[ERROR]: the playbook: x.yml could not be found\n"),
             "the playbook: x.yml could not be found"
@@ -632,17 +662,18 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
             dir: &Path,
             args: &[String],
             env: &[(String, String)],
-        ) -> ProviderResult<String> {
+        ) -> ProviderResult<PlaybookOutput> {
             assert!(dir.join("site.yml").exists());
             assert!(dir.join(&args[1]).exists(), "{args:?}");
             self.runs
                 .lock()
                 .unwrap()
                 .push((dir.to_path_buf(), args.to_vec(), env.to_vec()));
-            match &self.fail {
-                Some(e) => Err(ProviderError::Cloud(e.clone())),
-                None => Ok("ok".into()),
-            }
+            Ok(PlaybookOutput {
+                success: self.fail.is_none(),
+                stdout: self.fail.clone().unwrap_or_else(|| "ok".into()),
+                stderr: "a warning".into(),
+            })
         }
     }
 
@@ -717,16 +748,18 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
     async fn a_failed_setup_says_where_and_keeps_the_log() {
         let tmp = tempfile::tempdir().unwrap();
         let setup = AnsibleSetup::new(Arc::new(Recorder {
-            fail: Some("Install Steam: no network".into()),
+            fail: Some(FAILED.into()),
             ..Recorder::default()
         }));
         let err = setup.after_start(&machine(tmp.path())).await.unwrap_err();
         assert_eq!(
             err.to_string(),
-            "setting up the machine failed: Install Steam: no network"
+            r#"setting up the machine failed: Install Sunshine: Module failed: download "failed""#
         );
+        // All of it, for troubleshooting.
         let log = std::fs::read_to_string(tmp.path().join("setup.log")).unwrap();
-        assert!(log.contains("no network"));
+        assert!(log.starts_with(FAILED), "{log}");
+        assert!(log.ends_with("--- stderr ---\na warning"), "{log}");
     }
 
     /// A stand-in `ansible-playbook` that runs `script` with sh.
@@ -749,6 +782,8 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
                 &[("REGA_ADMIN_PASSWORD".into(), "x".into())],
             )
             .await
+            .unwrap()
+            .into_result()
             .unwrap();
         assert!(env.contains("REGA_ADMIN_PASSWORD=x"), "{env}");
         assert!(env.contains(&format!(
@@ -764,15 +799,20 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
     async fn ansible_failures_are_summarized() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("out"), FAILED).unwrap();
-        let cli = script(tmp.path(), "cat out; exit 2");
-        let err = cli.run(tmp.path(), &[], &[]).await.unwrap_err();
+        let cli = script(tmp.path(), "cat out; echo oops >&2; exit 2");
+        let output = cli.run(tmp.path(), &[], &[]).await.unwrap();
+        assert!(!output.success);
+        assert_eq!(output.stderr, "oops\n");
+        let err = output.into_result().unwrap_err();
         assert_eq!(
             err.to_string(),
             r#"Install Sunshine: Module failed: download "failed""#
         );
         assert!(cli.ready().is_ok());
         let missing = AnsibleCli { binary: None };
-        let err = missing.run(tmp.path(), &[], &[]).await.unwrap_err();
+        let Err(err) = missing.run(tmp.path(), &[], &[]).await else {
+            panic!("ran without ansible-playbook");
+        };
         assert!(err.to_string().contains("REGA_ANSIBLE_PLAYBOOK"));
         // Checked before a machine comes up, too.
         let setup = AnsibleSetup::new(Arc::new(missing));
@@ -808,10 +848,19 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         let env = [("REGA_ADMIN_PASSWORD".to_string(), "x".to_string())];
         for playbook in ["site.yml", "agent.yml"] {
             let args = ["-i", "inventory.json", playbook, "--syntax-check"].map(String::from);
-            cli.run(&dir, &args, &env).await.unwrap();
+            cli.run(&dir, &args, &env)
+                .await
+                .unwrap()
+                .into_result()
+                .unwrap();
         }
         let args = ["-i", "inventory.json", "site.yml", "--list-hosts"].map(String::from);
-        let hosts = cli.run(&dir, &args, &env).await.unwrap();
+        let hosts = cli
+            .run(&dir, &args, &env)
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
         assert!(hosts.contains("gaming-abc123"), "{hosts}");
     }
 }

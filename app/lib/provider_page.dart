@@ -161,7 +161,7 @@ class _ProviderPageState extends State<ProviderPage> {
       if (!m.stoppedItself || m.busy || _busy.containsKey(m.id)) continue;
       if (!_finishing.add(m.id)) continue;
       unawaited(
-        _act(m, 'Finishing the stop…', () => _backend.stopMachine(_id, m.id)),
+        _act(m, 'Finishing the stop…', () => _backend.finishStop(_id, m.id)),
       );
     }
   }
@@ -287,8 +287,29 @@ class _ProviderPageState extends State<ProviderPage> {
       'Destroy',
     );
     if (!ok || !mounted) return;
-    await _act(m, 'Destroying…', () => _backend.destroyMachine(_id, m.id));
-    await _loadOrphans();
+    RegaError? unsaved;
+    await _act(m, 'Destroying…', () async {
+      try {
+        await _backend.destroyMachine(_id, m.id);
+      } on RegaError catch (e) {
+        if (!e.gamesNotSaved) rethrow;
+        unsaved = e;
+      }
+    });
+    if (unsaved case final e? when mounted) {
+      final anyway = await _confirm(
+        'Destroy ${m.name} anyway?',
+        e.message,
+        'Destroy anyway',
+      );
+      if (!anyway || !mounted) return;
+      await _act(
+        m,
+        'Destroying…',
+        () => _backend.destroyMachine(_id, m.id, evenIfUnsaved: true),
+      );
+    }
+    if (mounted) await _loadOrphans();
   }
 
   Future<void> _switch(MachineSummary m) async {

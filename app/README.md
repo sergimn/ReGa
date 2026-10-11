@@ -71,8 +71,12 @@ first (`core/src/aws/`):
     variable, never a file. Sunshine's and the desktop account's passwords
     are generated once and kept in the state bucket
     (`machines/<id>.secrets.json`), so every device uses the same ones. Each
-    run's output is in the machine's folder (`setup.log`, `restore.log`,
-    `final-sync.log`).
+    run's full output, stderr included, is in the machine's folder
+    (`setup.log`, `restore.log`, `final-sync.log`).
+  - While it sets a machine up or saves its games, the app keeps
+    `machines/<id>.setup` in the state bucket fresh (every minute), so
+    other devices show the machine as busy. A marker left by an app that
+    quit counts for 5 minutes.
   - CPU first: an on-demand GPU launch can run on the smallest CPU type
     with 4 GB of RAM or more while it installs everything and restores the
     game library (`agent.yml`, `WaitRestore`), then switch to the GPU type in
@@ -83,14 +87,20 @@ first (`core/src/aws/`):
   - Stop and destroy first have the machine upload its game library
     (`agent.yml`, `FinalSync`). Stop drops D: only when the machine's
     `rega/machines/<id>/final-sync.json` in the library bucket says the
-    upload worked and finished after the instance's last start. A failed
-    upload doesn't block the stop; D: just stays.
+    upload worked and finished after the instance's last start (the app
+    deletes the old record first). A failed upload doesn't block the stop;
+    D: just stays, and the machine says so until a later stop saves its
+    games.
+  - Destroy refuses when the machine's D: may hold games the library
+    doesn't, and says why; the app then asks whether to destroy it anyway,
+    which doesn't try the upload again.
   - Idle stop: after 15 minutes without a stream the machine uploads its
     games and shuts itself down, which EC2 turns into a stop. The app checks
     running machines every minute, and finishes the stop of one that
     stopped itself (record says running, instance stopped, record last
-    saved over 10 minutes ago so it isn't another device starting it). That
-    drops D: by the same rule. Spot machines are never treated this way.
+    saved over 10 minutes ago so it isn't another device starting it, and
+    no change or setup marker on it). That drops D: by the same rule. Spot
+    machines are never treated this way.
 
 All AWS calls stay inside the `rega-claude` IAM policy (see the AWS setup
 guide). Calls go through the `AwsApi` trait, so the provider's logic is

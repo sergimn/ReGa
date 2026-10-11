@@ -8,6 +8,11 @@ String switchedTo(MachineSummary m) => m.switchPricePerHour == null
     ? m.switchType!
     : '${m.switchType} at ${formatPrice(m.switchPricePerHour)}';
 
+/// Shown on a stopped machine that kept its game library disk.
+const libraryKeptNote =
+    "Its games couldn't be saved when it stopped, so it kept its game disk, "
+    'which costs money while stopped. Start and stop it to try again.';
+
 /// One existing machine, with the actions its state allows.
 class MachineTile extends StatelessWidget {
   const MachineTile({
@@ -79,7 +84,8 @@ class MachineTile extends StatelessWidget {
       subtitle: Text(
         '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
         '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionName}'
-        '${m.spot ? ' · Spot' : ''}',
+        '${m.spot ? ' · Spot' : ''}'
+        '${m.libraryKept ? '\n$libraryKeptNote' : ''}',
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

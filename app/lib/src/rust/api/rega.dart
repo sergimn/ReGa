@@ -79,12 +79,21 @@ Future<MachineSummary> startMachine({
   machineId: machineId,
 );
 
-/// Saves the game library and stops the machine; also finishes the stop of
-/// one that stopped itself.
+/// Saves the game library and stops the machine.
 Future<MachineSummary> stopMachine({
   required String providerId,
   required String machineId,
 }) => RustLib.instance.api.crateApiRegaStopMachine(
+  providerId: providerId,
+  machineId: machineId,
+);
+
+/// Finishes the stop of a machine that stopped itself (see
+/// [`MachineSummary::stopped_itself`]); does nothing once it no longer has.
+Future<MachineSummary> finishStop({
+  required String providerId,
+  required String machineId,
+}) => RustLib.instance.api.crateApiRegaFinishStop(
   providerId: providerId,
   machineId: machineId,
 );
@@ -102,13 +111,17 @@ Future<MachineSummary> resizeMachine({
 );
 
 /// Saves the game library of a running machine, then deletes the machine
-/// and its disks. The game library in object storage stays.
+/// and its disks. The game library in object storage stays. Fails with
+/// [`RegaError::games_not_saved`] set when the machine's games couldn't be
+/// saved. `even_if_unsaved` deletes it without trying to save the games.
 Future<void> destroyMachine({
   required String providerId,
   required String machineId,
+  required bool evenIfUnsaved,
 }) => RustLib.instance.api.crateApiRegaDestroyMachine(
   providerId: providerId,
   machineId: machineId,
+  evenIfUnsaved: evenIfUnsaved,
 );
 
 /// Leftover resources in the account that belong to no machine.
@@ -200,9 +213,14 @@ class MachineSummary {
   /// What [`MachineSummary::switch_type`] costs per hour, when known.
   final double? switchPricePerHour;
 
-  /// It stopped on its own (idle) and the app should finish the stop,
-  /// which drops its game library disk once the games are saved.
+  /// It stopped on its own (idle) and the app should finish the stop
+  /// ([`finish_stop`]), which drops its game library disk once the games
+  /// are saved.
   final bool stoppedItself;
+
+  /// Stopped with its game library disk kept, because it couldn't save
+  /// its games when it stopped.
+  final bool libraryKept;
 
   const MachineSummary({
     required this.id,
@@ -217,6 +235,7 @@ class MachineSummary {
     this.switchType,
     this.switchPricePerHour,
     required this.stoppedItself,
+    required this.libraryKept,
   });
 
   @override
@@ -232,7 +251,8 @@ class MachineSummary {
       starting.hashCode ^
       switchType.hashCode ^
       switchPricePerHour.hashCode ^
-      stoppedItself.hashCode;
+      stoppedItself.hashCode ^
+      libraryKept.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -250,7 +270,8 @@ class MachineSummary {
           starting == other.starting &&
           switchType == other.switchType &&
           switchPricePerHour == other.switchPricePerHour &&
-          stoppedItself == other.stoppedItself;
+          stoppedItself == other.stoppedItself &&
+          libraryKept == other.libraryKept;
 }
 
 enum OrphanKind { instance, volume, securityGroup, keyPair, alarm }
@@ -331,20 +352,25 @@ class ProviderInfo {
 class RegaError implements FrbException {
   final String message;
 
-  const RegaError({required this.message});
+  /// Destroying the machine would lose games it couldn't save; asking
+  /// again with `even_if_unsaved` goes ahead.
+  final bool gamesNotSaved;
+
+  const RegaError({required this.message, required this.gamesNotSaved});
 
   @override
   String toString() => message;
 
   @override
-  int get hashCode => message.hashCode;
+  int get hashCode => message.hashCode ^ gamesNotSaved.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is RegaError &&
           runtimeType == other.runtimeType &&
-          message == other.message;
+          message == other.message &&
+          gamesNotSaved == other.gamesNotSaved;
 }
 
 class RegionChoices {

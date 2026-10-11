@@ -20,6 +20,10 @@ pub enum ProviderError {
     SpotNeedsGpu,
     #[error("{0}")]
     InvalidState(String),
+    /// Destroying the machine would lose games its last upload didn't
+    /// save; [`CloudProvider::destroy`] with `even_if_unsaved` goes ahead.
+    #[error("{0}")]
+    GamesNotSaved(String),
     #[error("{0}")]
     Cloud(String),
 }
@@ -74,13 +78,20 @@ pub trait CloudProvider: Send + Sync {
     async fn start(&self, machine_id: &str) -> ProviderResult<Machine>;
 
     /// Saves the game library and stops the machine. The library disk goes
-    /// only once the machine has saved it. Also finishes the stop of a
-    /// machine that stopped itself ([`Machine::stopped_itself`]).
+    /// only once the machine has saved it.
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine>;
 
+    /// Finishes the stop of a machine that stopped itself
+    /// ([`Machine::stopped_itself`]), dropping its library disk if it saved
+    /// its games first. Does nothing if it no longer counts as stopped by
+    /// itself, say because another device has started it since.
+    async fn finish_stop(&self, machine_id: &str) -> ProviderResult<Machine>;
+
     /// Saves the game library of a running machine, then deletes the
-    /// machine and its disks.
-    async fn destroy(&self, machine_id: &str) -> ProviderResult<()>;
+    /// machine and its disks. Refuses with [`ProviderError::GamesNotSaved`]
+    /// when its library disk may hold games the game library doesn't.
+    /// `even_if_unsaved` deletes it without trying to save the games.
+    async fn destroy(&self, machine_id: &str, even_if_unsaved: bool) -> ProviderResult<()>;
 
     /// Resources tagged `Project=ReGa`, in every region, that belong to no
     /// machine in the state store.

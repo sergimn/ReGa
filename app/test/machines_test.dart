@@ -70,7 +70,10 @@ void main() {
     tester,
   ) async {
     final backend = FakeBackend()
-      ..actionError = const RegaError(message: 'Blocked: account');
+      ..actionError = const RegaError(
+        message: 'Blocked: account',
+        gamesNotSaved: false,
+      );
     await open(tester, backend);
     final orphanChecks = backend.calls.where((c) => c == 'orphans').length;
 
@@ -194,23 +197,28 @@ void main() {
   testWidgets('a machine that stopped itself has its stop finished once', (
     tester,
   ) async {
-    final backend = FakeBackend(
-      machines: [
-        withStatus(
-          stockholmMachine,
-          MachineStatus.stopped,
-          stoppedItself: true,
-        ),
-      ],
-    )..actionError = const RegaError(message: 'Terraform failed');
+    final backend =
+        FakeBackend(
+            machines: [
+              withStatus(
+                stockholmMachine,
+                MachineStatus.stopped,
+                stoppedItself: true,
+              ),
+            ],
+          )
+          ..actionError = const RegaError(
+            message: 'Terraform failed',
+            gamesNotSaved: false,
+          );
     await open(tester, backend);
-    expect(backend.calls.where((c) => c == 'stop gaming-1'), hasLength(1));
+    expect(backend.calls.where((c) => c == 'finish gaming-1'), hasLength(1));
     expect(find.text('Terraform failed'), findsOneWidget);
 
     // A failing finish isn't retried on every reload.
     await tester.tap(find.byKey(const ValueKey('offer-t3.medium')));
     await tester.pumpAndSettle();
-    expect(backend.calls.where((c) => c == 'stop gaming-1'), hasLength(1));
+    expect(backend.calls.where((c) => c == 'finish gaming-1'), hasLength(1));
   });
 
   testWidgets('a running machine is watched for stopping itself', (
@@ -220,7 +228,7 @@ void main() {
       machines: [withStatus(stockholmMachine, MachineStatus.running)],
     );
     await open(tester, backend);
-    expect(backend.calls, isNot(contains('stop gaming-1')));
+    expect(backend.calls, isNot(contains('finish gaming-1')));
 
     // Idle: the machine saves its games and shuts down on its own.
     backend.machines[0] = withStatus(
@@ -230,7 +238,7 @@ void main() {
     );
     await tester.pump(const Duration(minutes: 1));
     await tester.pumpAndSettle();
-    expect(backend.calls.where((c) => c == 'stop gaming-1'), hasLength(1));
+    expect(backend.calls.where((c) => c == 'finish gaming-1'), hasLength(1));
     expect(find.text('Stopped'), findsOneWidget);
 
     // Started again, it can stop itself again later.
@@ -243,7 +251,7 @@ void main() {
     );
     await tester.pump(const Duration(minutes: 1));
     await tester.pumpAndSettle();
-    expect(backend.calls.where((c) => c == 'stop gaming-1'), hasLength(2));
+    expect(backend.calls.where((c) => c == 'finish gaming-1'), hasLength(2));
   });
 
   testWidgets('a machine shows what it is doing', (tester) async {
@@ -281,6 +289,47 @@ void main() {
     expect(find.text('No machines yet'), findsOneWidget);
   });
 
+  testWidgets('destroying a machine whose games weren\'t saved asks again', (
+    tester,
+  ) async {
+    final backend = FakeBackend(
+      machines: [withStatus(stockholmMachine, MachineStatus.running)],
+    )..unsaved.add('gaming-1');
+    await open(tester, backend);
+    Future<void> destroy() async {
+      await tester.tap(find.byKey(const ValueKey('destroy-gaming-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('confirm')));
+      await tester.pumpAndSettle();
+    }
+
+    await destroy();
+    expect(find.text('Destroy Gaming anyway?'), findsOneWidget);
+    expect(find.textContaining("couldn't be saved"), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(backend.calls, contains('destroy gaming-1'));
+    expect(backend.calls, isNot(contains('destroy gaming-1 anyway')));
+    expect(find.byKey(const ValueKey('machine-gaming-1')), findsOneWidget);
+    expect(find.textContaining("couldn't be saved"), findsNothing);
+
+    await destroy();
+    await tester.tap(find.byKey(const ValueKey('confirm')));
+    await tester.pumpAndSettle();
+    expect(backend.calls, contains('destroy gaming-1 anyway'));
+    expect(find.text('No machines yet'), findsOneWidget);
+  });
+
+  testWidgets('a machine that kept its game disk says so', (tester) async {
+    final backend = FakeBackend(
+      machines: [
+        withStatus(stockholmMachine, MachineStatus.stopped, libraryKept: true),
+      ],
+    );
+    await open(tester, backend);
+    expect(find.textContaining('kept its game disk'), findsOneWidget);
+  });
+
   testWidgets('spot machines have no stop, only destroy', (tester) async {
     final backend = FakeBackend(
       machines: const [
@@ -295,6 +344,7 @@ void main() {
           busy: false,
           starting: false,
           stoppedItself: false,
+          libraryKept: false,
         ),
       ],
     );
@@ -338,6 +388,7 @@ void main() {
       busy: busy,
       starting: busy,
       stoppedItself: false,
+      libraryKept: false,
     );
     final backend = FakeBackend(machines: [gaming(busy: true)]);
     // The spinner never settles.
@@ -377,6 +428,7 @@ void main() {
           starting: false,
           switchType: 'g4dn.xlarge',
           stoppedItself: false,
+          libraryKept: false,
         ),
       ],
     );
@@ -446,6 +498,7 @@ void main() {
           busy: true,
           starting: false,
           stoppedItself: false,
+          libraryKept: false,
         ),
       ],
     );

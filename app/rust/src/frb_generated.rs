@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 423469869;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 792328796;
 
 // Section: executor
 
@@ -144,13 +144,55 @@ fn wire__crate__api__rega__destroy_machine_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_provider_id = <String>::sse_decode(&mut deserializer);
             let api_machine_id = <String>::sse_decode(&mut deserializer);
+            let api_even_if_unsaved = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::rega::RegaError>(
+                    (move || async move {
+                        let output_ok = crate::api::rega::destroy_machine(
+                            api_provider_id,
+                            api_machine_id,
+                            api_even_if_unsaved,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__rega__finish_stop_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "finish_stop",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            let api_machine_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::rega::RegaError>(
                     (move || async move {
                         let output_ok =
-                            crate::api::rega::destroy_machine(api_provider_id, api_machine_id)
-                                .await?;
+                            crate::api::rega::finish_stop(api_provider_id, api_machine_id).await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -733,6 +775,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
         let mut var_switchType = <Option<String>>::sse_decode(deserializer);
         let mut var_switchPricePerHour = <Option<f64>>::sse_decode(deserializer);
         let mut var_stoppedItself = <bool>::sse_decode(deserializer);
+        let mut var_libraryKept = <bool>::sse_decode(deserializer);
         return crate::api::rega::MachineSummary {
             id: var_id,
             name: var_name,
@@ -746,6 +789,7 @@ impl SseDecode for crate::api::rega::MachineSummary {
             switch_type: var_switchType,
             switch_price_per_hour: var_switchPricePerHour,
             stopped_itself: var_stoppedItself,
+            library_kept: var_libraryKept,
         };
     }
 }
@@ -849,8 +893,10 @@ impl SseDecode for crate::api::rega::RegaError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_message = <String>::sse_decode(deserializer);
+        let mut var_gamesNotSaved = <bool>::sse_decode(deserializer);
         return crate::api::rega::RegaError {
             message: var_message,
+            games_not_saved: var_gamesNotSaved,
         };
     }
 }
@@ -924,16 +970,17 @@ fn pde_ffi_dispatcher_primary_impl(
         1 => wire__crate__api__rega__connect_providers_impl(port, ptr, rust_vec_len, data_len),
         2 => wire__crate__api__rega__delete_orphans_impl(port, ptr, rust_vec_len, data_len),
         3 => wire__crate__api__rega__destroy_machine_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__rega__finish_stop_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1018,6 +1065,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::MachineSummary {
             self.switch_type.into_into_dart().into_dart(),
             self.switch_price_per_hour.into_into_dart().into_dart(),
             self.stopped_itself.into_into_dart().into_dart(),
+            self.library_kept.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1105,7 +1153,11 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::ProviderInfo>
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::rega::RegaError {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [self.message.into_into_dart().into_dart()].into_dart()
+        [
+            self.message.into_into_dart().into_dart(),
+            self.games_not_saved.into_into_dart().into_dart(),
+        ]
+        .into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::rega::RegaError {}
@@ -1317,6 +1369,7 @@ impl SseEncode for crate::api::rega::MachineSummary {
         <Option<String>>::sse_encode(self.switch_type, serializer);
         <Option<f64>>::sse_encode(self.switch_price_per_hour, serializer);
         <bool>::sse_encode(self.stopped_itself, serializer);
+        <bool>::sse_encode(self.library_kept, serializer);
     }
 }
 
@@ -1405,6 +1458,7 @@ impl SseEncode for crate::api::rega::RegaError {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.message, serializer);
+        <bool>::sse_encode(self.games_not_saved, serializer);
     }
 }
 

@@ -57,9 +57,13 @@ abstract class RegaBackend {
 
   Future<MachineSummary> startMachine(String providerId, String machineId);
 
-  /// Saves the game library and stops the machine; also finishes the stop
-  /// of one that stopped itself.
+  /// Saves the game library and stops the machine.
   Future<MachineSummary> stopMachine(String providerId, String machineId);
+
+  /// Finishes the stop of a machine that stopped itself after sitting idle,
+  /// dropping its game library disk if it saved its games first. Leaves a
+  /// machine that someone has started again alone.
+  Future<MachineSummary> finishStop(String providerId, String machineId);
 
   /// A running machine restarts as the new type and is set up again.
   Future<MachineSummary> resizeMachine(
@@ -68,7 +72,14 @@ abstract class RegaBackend {
     String typeName,
   );
 
-  Future<void> destroyMachine(String providerId, String machineId);
+  /// Saves the games of a running machine, then deletes it. Throws a
+  /// [RegaError] with `gamesNotSaved` instead when that would lose games,
+  /// unless `evenIfUnsaved`.
+  Future<void> destroyMachine(
+    String providerId,
+    String machineId, {
+    bool evenIfUnsaved = false,
+  });
 
   Future<List<OrphanSummary>> listOrphans(String providerId);
 
@@ -138,6 +149,10 @@ class RustBackend implements RegaBackend {
       rust.stopMachine(providerId: providerId, machineId: machineId);
 
   @override
+  Future<MachineSummary> finishStop(String providerId, String machineId) =>
+      rust.finishStop(providerId: providerId, machineId: machineId);
+
+  @override
   Future<MachineSummary> resizeMachine(
     String providerId,
     String machineId,
@@ -149,8 +164,15 @@ class RustBackend implements RegaBackend {
   );
 
   @override
-  Future<void> destroyMachine(String providerId, String machineId) =>
-      rust.destroyMachine(providerId: providerId, machineId: machineId);
+  Future<void> destroyMachine(
+    String providerId,
+    String machineId, {
+    bool evenIfUnsaved = false,
+  }) => rust.destroyMachine(
+    providerId: providerId,
+    machineId: machineId,
+    evenIfUnsaved: evenIfUnsaved,
+  );
 
   @override
   Future<List<OrphanSummary>> listOrphans(String providerId) =>

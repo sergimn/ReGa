@@ -109,7 +109,8 @@ impl FakeAws {
         f(&mut self.0.lock().unwrap())
     }
 
-    fn call(&self, what: String) {
+    /// Adds `what` to the account's call log.
+    pub fn call(&self, what: String) {
         self.with(|a| a.calls.push(what));
     }
 }
@@ -360,6 +361,8 @@ pub struct FakeTerraform {
     pub aws: FakeAws,
     /// `apply` fails with this message when set.
     pub fail_apply: Mutex<Option<String>>,
+    /// The variables of every apply that went through, in order.
+    pub applied: Mutex<Vec<MachineVars>>,
     /// Per machine: the instance, root volume and security group in its state.
     owned: Mutex<HashMap<String, (String, String, String)>>,
 }
@@ -369,6 +372,7 @@ impl FakeTerraform {
         Self {
             aws,
             fail_apply: Mutex::new(None),
+            applied: Mutex::new(Vec::new()),
             owned: Mutex::new(HashMap::new()),
         }
     }
@@ -415,6 +419,7 @@ impl Terraform for FakeTerraform {
                 if let Some(e) = self.fail_apply.lock().unwrap().clone() {
                     return Err(ProviderError::Cloud(e));
                 }
+                self.applied.lock().unwrap().push(vars.clone());
                 let owned = self.owned.lock().unwrap().get(&id).cloned();
                 let made = self.aws.with(|a| {
                     let state = match vars.instance_state {
