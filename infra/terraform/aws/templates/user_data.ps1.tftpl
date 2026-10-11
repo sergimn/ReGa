@@ -1,0 +1,27 @@
+<powershell>
+# Runs on every boot (persist below). Must stay idempotent.
+$ErrorActionPreference = "Continue"
+
+# WinRM over HTTPS for Ansible (step 2). The security group only opens 5986
+# to admin_cidrs.
+if (-not (Get-ChildItem WSMan:\localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTPS" })) {
+  $cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My -NotAfter (Get-Date).AddYears(5)
+  New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force | Out-Null
+}
+Set-Item -Path WSMan:\localhost\Service\Auth\Basic -Value $true
+if (-not (Get-NetFirewallRule -Name "ReGa-WinRM-HTTPS" -ErrorAction SilentlyContinue)) {
+  New-NetFirewallRule -Name "ReGa-WinRM-HTTPS" -DisplayName "ReGa WinRM HTTPS" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow | Out-Null
+}
+
+# The game library volume is recreated empty on each start. Bring it online
+# as D: so the restore from S3 (step 4) has somewhere to go. Only EBS disks
+# count: the g4dn instance-store NVMe is also RAW but is wiped on stop.
+$ebs = Get-Disk | Where-Object { $_.FriendlyName -like "*Elastic Block Store*" }
+$ebs | Where-Object { $_.IsOffline } | Set-Disk -IsOffline $false
+$ebs | Where-Object { $_.PartitionStyle -eq "RAW" } | Select-Object -First 1 | ForEach-Object {
+  Initialize-Disk -Number $_.Number -PartitionStyle GPT -PassThru |
+    New-Partition -UseMaximumSize -DriveLetter D |
+    Format-Volume -FileSystem NTFS -NewFileSystemLabel "ReGaLibrary" -Confirm:$false | Out-Null
+}
+</powershell>
+<persist>true</persist>
