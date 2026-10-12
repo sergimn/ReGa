@@ -41,4 +41,4 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 
 ReGa is released under the [MIT License](LICENSE). The vendored Cargokit
 build scripts in `app/rust_builder/cargokit/` keep their own copyright and
-licence (MIT or Apache-2.0), in [their LICENSE file](app/rust_builder/cargokit/LICENSE).
+licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE).
