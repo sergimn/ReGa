@@ -396,7 +396,8 @@ impl Streams {
     ) -> StreamResult<PlayOutcome> {
         progress(PlayStep::Connecting);
         let mut current = self.current.lock().await;
-        if current.as_ref().is_none_or(|c| c.target != target) {
+        let opened = current.as_ref().is_none_or(|c| c.target != target);
+        if opened {
             if let Some(old) = current.take() {
                 self.set_status(None);
                 old.close().await;
@@ -410,6 +411,27 @@ impl Streams {
             *current = Some(connection);
         }
         let connection = current.as_ref().expect("connected above");
+        let result = Self::use_connection(connection, moonlight, progress, pair_timeout).await;
+        if result.is_err() && opened {
+            // A connection this Play made and couldn't use doesn't stay up,
+            // looking like a stream. One an earlier Play made may carry its
+            // stream still.
+            if let Some(connection) = current.take() {
+                self.set_status(None);
+                connection.close().await;
+            }
+        }
+        result
+    }
+
+    /// Pairs Moonlight through `connection` if it isn't, and starts the
+    /// stream.
+    async fn use_connection(
+        connection: &Connection,
+        moonlight: Option<&Moonlight>,
+        progress: &(dyn Fn(PlayStep) + Send + Sync),
+        pair_timeout: Duration,
+    ) -> StreamResult<PlayOutcome> {
         let name = device_name();
         let Some(moonlight) = moonlight else {
             let paired = connection.paired_as(&name).await.unwrap_or(false);
@@ -902,6 +924,9 @@ esac"#;
             .await
             .unwrap_err();
         assert!(err.to_string().contains("didn't start"), "{err}");
+        // Nothing left connected that looks like a stream.
+        assert_eq!(streams.status(), None);
+        assert!(streams.current.lock().await.is_none());
     }
 
     #[tokio::test]
