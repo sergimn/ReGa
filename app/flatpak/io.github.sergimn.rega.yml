@@ -41,7 +41,6 @@ modules:
       - mkdir -p /app/lib/rega /app/bin
       - cp -r bundle/. /app/lib/rega/
       - ln -s /app/lib/rega/rega /app/bin/rega
-      - install -Dm644 LICENSE -t /app/share/licenses/io.github.sergimn.rega
       - install -Dm644 io.github.sergimn.rega.desktop -t /app/share/applications
       - install -Dm644 io.github.sergimn.rega.metainfo.xml -t /app/share/metainfo
       - install -Dm644 rega.svg /app/share/icons/hicolor/scalable/apps/io.github.sergimn.rega.svg
@@ -50,8 +49,6 @@ modules:
       - type: dir
         path: ../build/linux/x64/release/bundle
         dest: bundle
-      - type: file
-        path: ../../LICENSE
       - type: file
         path: io.github.sergimn.rega.desktop
       - type: file
