@@ -3,6 +3,7 @@ name = "rega_core"
 version = "0.1.0"
 edition = "2021"
 description = "Provider-agnostic core of the ReGa desktop app"
+license.workspace = true
 publish = false
 
 [dependencies]
