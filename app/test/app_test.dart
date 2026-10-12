@@ -216,7 +216,10 @@ void main() {
 
   testWidgets('errors show their message and Retry recovers', (tester) async {
     final backend = FakeBackend()
-      ..regionsError = const RegaError(message: 'AWS said no');
+      ..regionsError = const RegaError(
+        message: 'AWS said no',
+        gamesNotSaved: false,
+      );
     await tester.pumpWidget(RegaApp(backend: backend));
     await tester.pumpAndSettle();
     expect(find.text('AWS said no'), findsOneWidget);

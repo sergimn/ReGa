@@ -43,6 +43,8 @@ abstract class RegaBackend {
 
   Future<List<MachineSummary>> listMachines(String providerId);
 
+  /// Creates a machine and sets it up. With `cpuFirst`, an on-demand GPU
+  /// machine is set up on a cheap CPU type, then switched to the GPU.
   Future<MachineSummary> launchMachine(
     String providerId, {
     required String name,
@@ -50,19 +52,34 @@ abstract class RegaBackend {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   });
 
   Future<MachineSummary> startMachine(String providerId, String machineId);
 
+  /// Saves the game library and stops the machine.
   Future<MachineSummary> stopMachine(String providerId, String machineId);
 
+  /// Finishes the stop of a machine that stopped itself after sitting idle,
+  /// dropping its game library disk if it saved its games first. Leaves a
+  /// machine that someone has started again alone.
+  Future<MachineSummary> finishStop(String providerId, String machineId);
+
+  /// A running machine restarts as the new type and is set up again.
   Future<MachineSummary> resizeMachine(
     String providerId,
     String machineId,
     String typeName,
   );
 
-  Future<void> destroyMachine(String providerId, String machineId);
+  /// Saves the games of a running machine, then deletes it. Throws a
+  /// [RegaError] with `gamesNotSaved` instead when that would lose games,
+  /// unless `evenIfUnsaved`.
+  Future<void> destroyMachine(
+    String providerId,
+    String machineId, {
+    bool evenIfUnsaved = false,
+  });
 
   Future<List<OrphanSummary>> listOrphans(String providerId);
 
@@ -112,6 +129,7 @@ class RustBackend implements RegaBackend {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   }) => rust.launchMachine(
     providerId: providerId,
     name: name,
@@ -119,6 +137,7 @@ class RustBackend implements RegaBackend {
     typeName: typeName,
     spot: spot,
     wireguard: wireguard,
+    cpuFirst: cpuFirst,
   );
 
   @override
@@ -128,6 +147,10 @@ class RustBackend implements RegaBackend {
   @override
   Future<MachineSummary> stopMachine(String providerId, String machineId) =>
       rust.stopMachine(providerId: providerId, machineId: machineId);
+
+  @override
+  Future<MachineSummary> finishStop(String providerId, String machineId) =>
+      rust.finishStop(providerId: providerId, machineId: machineId);
 
   @override
   Future<MachineSummary> resizeMachine(
@@ -141,8 +164,15 @@ class RustBackend implements RegaBackend {
   );
 
   @override
-  Future<void> destroyMachine(String providerId, String machineId) =>
-      rust.destroyMachine(providerId: providerId, machineId: machineId);
+  Future<void> destroyMachine(
+    String providerId,
+    String machineId, {
+    bool evenIfUnsaved = false,
+  }) => rust.destroyMachine(
+    providerId: providerId,
+    machineId: machineId,
+    evenIfUnsaved: evenIfUnsaved,
+  );
 
   @override
   Future<List<OrphanSummary>> listOrphans(String providerId) =>

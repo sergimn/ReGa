@@ -57,11 +57,55 @@ first (`core/src/aws/`):
   admin creates it once per account with
   `aws iam create-service-linked-role --aws-service-name events.amazonaws.com`;
   until then launches fail with that command in the error.
-- What runs on a machine after Terraform (the Ansible playbook in
-  `infra/ansible`) plugs in through `MachineSetup` in `core/src/setup.rs`:
-  `after_start` runs after every launch and start, and `before_stop` decides
-  whether the game library disk (D:) is safe to drop. Until it's wired up,
-  stopping keeps D:.
+- After Terraform, the app sets the machine up with the Ansible playbook in
+  `infra/ansible` (`core/src/ansible.rs`, behind `MachineSetup` in
+  `core/src/setup.rs`). The playbook is compiled into the app and written to
+  the machine's folder before each run; `ansible-playbook` comes from
+  `REGA_ANSIBLE_PLAYBOOK` or `PATH`, with the `ansible.windows` and
+  `community.windows` collections where Ansible finds them
+  (`ANSIBLE_COLLECTIONS_PATH` passes through). Launch, start and switch
+  check for it before anything boots.
+  - It waits for Windows to make its Administrator password (up to 30
+    minutes), opens WinRM (5986) to this device's IP only, and runs
+    `site.yml`. The password reaches Ansible through an environment
+    variable, never a file. Sunshine's and the desktop account's passwords
+    are generated once and kept in the state bucket
+    (`machines/<id>.secrets.json`), so every device uses the same ones. Each
+    run's full output, stderr included, is in the machine's folder
+    (`setup.log`, `restore.log`, `final-sync.log`).
+  - While it sets a machine up or saves its games, the app keeps
+    `machines/<id>.setup` in the state bucket fresh (every minute), so
+    other devices show the machine as busy. A marker left by an app that
+    quit counts for 5 minutes.
+  - CPU first: an on-demand GPU launch can run on the smallest CPU type
+    with 4 GB of RAM or more while it installs everything and restores the
+    game library (`agent.yml`, `WaitRestore`), then switch to the GPU type in
+    one Terraform run that keeps D:, and run the setup again for the GPU
+    driver. The UI offers this as a toggle, on by default.
+  - Switching a running machine restarts it as the new type and sets it up
+    again; a stopped one stays stopped.
+  - Stop and destroy first have the machine upload its game library
+    (`agent.yml`, `FinalSync`). Stop drops D: only when the machine's
+    `rega/machines/<id>/final-sync.json` in the library bucket says the
+    upload worked and finished after the instance's last start (the app
+    deletes the old record first). A failed upload doesn't block the stop;
+    D: just stays, and the machine says so until a later stop saves its
+    games.
+  - Destroy refuses when the machine's D: may hold games the library
+    doesn't, and says why; the app then asks whether to destroy it anyway,
+    which doesn't try the upload again. That includes the D: of a spot
+    machine AWS took back, which outlives its instance.
+  - Until a setup has started on a machine (the record's
+    `setup_started`), nothing can have put games on its D:, so stop and
+    destroy skip the upload and treat D: as empty. Once one has started,
+    even if it failed, they upload as usual.
+  - Idle stop: after 15 minutes without a stream the machine uploads its
+    games and shuts itself down, which EC2 turns into a stop. The app checks
+    running machines every minute, and finishes the stop of one that
+    stopped itself (record says running, instance stopped, record last
+    saved over 10 minutes ago so it isn't another device starting it, and
+    no change or setup marker on it). That drops D: by the same rule. Spot
+    machines are never treated this way.
 
 All AWS calls stay inside the `rega-claude` IAM policy (see the AWS setup
 guide). Calls go through the `AwsApi` trait, so the provider's logic is

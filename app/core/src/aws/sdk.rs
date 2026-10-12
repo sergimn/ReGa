@@ -487,6 +487,7 @@ impl AwsApi for SdkApi {
                     state,
                     spot: i.instance_lifecycle() == Some(&InstanceLifecycleType::Spot),
                     public_ip: i.public_ip_address().map(String::from),
+                    launched: i.launch_time().and_then(|t| u64::try_from(t.secs()).ok()),
                 });
             }
         }

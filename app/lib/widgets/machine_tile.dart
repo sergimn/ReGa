@@ -3,6 +3,16 @@ import 'package:flutter/material.dart';
 import '../backend.dart';
 import 'format.dart';
 
+/// The type Switch moves `m` to, with its price when known.
+String switchedTo(MachineSummary m) => m.switchPricePerHour == null
+    ? m.switchType!
+    : '${m.switchType} at ${formatPrice(m.switchPricePerHour)}';
+
+/// Shown on a stopped machine that kept its game library disk.
+const libraryKeptNote =
+    "Its games couldn't be saved when it stopped, so it kept its game disk, "
+    'which costs money while stopped. Start and stop it to try again.';
+
 /// One existing machine, with the actions its state allows.
 class MachineTile extends StatelessWidget {
   const MachineTile({
@@ -22,8 +32,8 @@ class MachineTile extends StatelessWidget {
   /// no action is offered.
   final String? busy;
 
-  /// Start and Switch boot the machine; null while another machine is
-  /// changing, since ReGa brings up one at a time.
+  /// Start and Switch boot the machine (a stopped one only briefly); null
+  /// while another machine is changing, since ReGa brings up one at a time.
   final VoidCallback? onStart;
   final VoidCallback onStop;
   final VoidCallback? onSwitch;
@@ -47,11 +57,16 @@ class MachineTile extends StatelessWidget {
           onPressed: onStart,
           child: const Text('Start'),
         ),
-      if (m.status == MachineStatus.stopped && m.switchType != null)
-        TextButton(
-          key: ValueKey('switch-$id'),
-          onPressed: onSwitch,
-          child: Text(m.offer.isGpu ? 'Switch to CPU' : 'Switch to GPU'),
+      if ((m.status == MachineStatus.stopped ||
+              m.status == MachineStatus.running) &&
+          m.switchType != null)
+        Tooltip(
+          message: switchedTo(m),
+          child: TextButton(
+            key: ValueKey('switch-$id'),
+            onPressed: onSwitch,
+            child: Text(m.offer.isGpu ? 'Switch to CPU' : 'Switch to GPU'),
+          ),
         ),
       if (m.status != MachineStatus.pending &&
           m.status != MachineStatus.stopping)
@@ -69,7 +84,8 @@ class MachineTile extends StatelessWidget {
       subtitle: Text(
         '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
         '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionName}'
-        '${m.spot ? ' · Spot' : ''}',
+        '${m.spot ? ' · Spot' : ''}'
+        '${m.libraryKept ? '\n$libraryKeptNote' : ''}',
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

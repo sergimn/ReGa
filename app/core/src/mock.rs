@@ -264,6 +264,8 @@ impl CloudProvider for MockProvider {
             state: MachineState::Running,
             busy: false,
             starting: false,
+            stopped_itself: false,
+            library_kept: false,
         };
         *next_id += 1;
         self.machines.lock().unwrap().push(machine.clone());
@@ -283,9 +285,9 @@ impl CloudProvider for MockProvider {
         if current.spot {
             return Err(ProviderError::SpotResize);
         }
-        if current.state != MachineState::Stopped {
+        if !matches!(current.state, MachineState::Stopped | MachineState::Running) {
             return Err(ProviderError::InvalidState(
-                "stop the machine before changing its type".into(),
+                "wait until the machine is running or stopped".into(),
             ));
         }
         self.check_gpu_quota(&current.region_id, &machine_type, false)
@@ -322,7 +324,12 @@ impl CloudProvider for MockProvider {
         })
     }
 
-    async fn destroy(&self, machine_id: &str) -> ProviderResult<()> {
+    /// Demo machines never stop by themselves.
+    async fn finish_stop(&self, machine_id: &str) -> ProviderResult<Machine> {
+        self.update(machine_id, |_| Ok(()))
+    }
+
+    async fn destroy(&self, machine_id: &str, _even_if_unsaved: bool) -> ProviderResult<()> {
         let mut machines = self.machines.lock().unwrap();
         let before = machines.len();
         machines.retain(|m| m.id != machine_id);

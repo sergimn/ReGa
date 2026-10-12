@@ -29,6 +29,16 @@ impl MachineType {
     }
 }
 
+/// The smallest CPU type among `types` that runs Windows comfortably (4 GB
+/// of RAM or more): where a GPU machine goes to download games cheaply, and
+/// where a new one is set up first.
+pub fn roomy_cpu_type(types: &[MachineType]) -> Option<&MachineType> {
+    types
+        .iter()
+        .filter(|t| !t.is_gpu() && t.spec.ram_gib >= 4.0)
+        .min_by(|a, b| a.spec.ram_gib.total_cmp(&b.spec.ram_gib))
+}
+
 /// Hourly price of a machine type in one region, in USD.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Price {
@@ -83,6 +93,14 @@ pub struct Machine {
     /// That change is bringing it up, though its instance may still read
     /// stopped. ReGa brings up one machine at a time, so no other starts.
     pub starting: bool,
+    /// It stopped on its own (the idle stop, or the provider's backstop)
+    /// and the app hasn't finished the stop yet: [`crate::CloudProvider::stop`]
+    /// drops its game library disk if the machine saved its games first.
+    pub stopped_itself: bool,
+    /// Stopped with its game library disk kept, because the machine
+    /// couldn't save its games when it stopped. The disk costs storage
+    /// until a later stop saves them.
+    pub library_kept: bool,
 }
 
 /// What the user asked for when launching a machine.
@@ -94,6 +112,9 @@ pub struct LaunchRequest {
     pub disk_gib: u32,
     pub spot: bool,
     pub wireguard: bool,
+    /// For an on-demand GPU type: set the machine up and restore the games
+    /// on a cheap CPU type first, then switch it to the GPU type.
+    pub cpu_first: bool,
 }
 
 /// Where a provider keeps Terraform state and the game library.
