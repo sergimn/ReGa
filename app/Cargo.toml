@@ -1,3 +1,6 @@
 [workspace]
 members = ["core", "rust"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT"

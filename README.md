@@ -36,3 +36,9 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 | Surface | Mist `#F4F7FB` | Night `#0B1220` |
 | Cards | White | Navy `#1C2A4A` |
 | Error | `#CE2C31` | `#F87171` |
+
+## Licence
+
+ReGa is released under the [MIT License](LICENSE). The vendored Cargokit
+build scripts in `app/rust_builder/cargokit/` keep their own copyright and
+licence (MIT or Apache-2.0), in [their LICENSE file](app/rust_builder/cargokit/LICENSE).
