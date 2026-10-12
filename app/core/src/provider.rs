@@ -20,6 +20,10 @@ pub enum ProviderError {
     SpotNeedsGpu,
     #[error("{0}")]
     InvalidState(String),
+    /// Destroying the machine would lose games its last upload didn't
+    /// save; [`CloudProvider::destroy`] with `even_if_unsaved` goes ahead.
+    #[error("{0}")]
+    GamesNotSaved(String),
     #[error("{0}")]
     Cloud(String),
 }
@@ -62,16 +66,32 @@ pub trait CloudProvider: Send + Sync {
     /// Machines tagged `Project=ReGa`, in every region.
     async fn list_machines(&self) -> ProviderResult<Vec<Machine>>;
 
+    /// Creates a machine, starts it and sets it up. Takes a while: Windows
+    /// boots, the setup installs everything and restores the game library.
     async fn launch(&self, request: &LaunchRequest) -> ProviderResult<Machine>;
 
-    /// Changes a stopped on-demand machine's type (the CPU and GPU switch).
+    /// Changes an on-demand machine's type (the CPU and GPU switch). A
+    /// stopped machine stays stopped; a running one restarts as the new
+    /// type, keeping its game library disk, and is set up again.
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine>;
 
     async fn start(&self, machine_id: &str) -> ProviderResult<Machine>;
 
+    /// Saves the game library and stops the machine. The library disk goes
+    /// only once the machine has saved it.
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine>;
 
-    async fn destroy(&self, machine_id: &str) -> ProviderResult<()>;
+    /// Finishes the stop of a machine that stopped itself
+    /// ([`Machine::stopped_itself`]), dropping its library disk if it saved
+    /// its games first. Does nothing if it no longer counts as stopped by
+    /// itself, say because another device has started it since.
+    async fn finish_stop(&self, machine_id: &str) -> ProviderResult<Machine>;
+
+    /// Saves the game library of a running machine, then deletes the
+    /// machine and its disks. Refuses with [`ProviderError::GamesNotSaved`]
+    /// when its library disk may hold games the game library doesn't.
+    /// `even_if_unsaved` deletes it without trying to save the games.
+    async fn destroy(&self, machine_id: &str, even_if_unsaved: bool) -> ProviderResult<()>;
 
     /// Resources tagged `Project=ReGa`, in every region, that belong to no
     /// machine in the state store.

@@ -124,6 +124,48 @@ Describe 'Test-SameBoot' {
   }
 }
 
+Describe 'Get-RestoreWaitState' {
+  BeforeAll {
+    $boot = [datetime]::new(2026, 10, 11, 10, 0, 0, [DateTimeKind]::Utc)
+    $startBy = $boot.AddMinutes(10)
+  }
+
+  It 'follows a restore from this boot' {
+    $running = [pscustomobject]@{ status = 'running'; boot_utc = $boot.ToString('o') }
+    Get-RestoreWaitState -Restore $running -Boot $boot -Now $boot.AddHours(1) -StartBy $startBy | Should -Be 'running'
+    foreach ($status in @('done', 'no-disk', 'failed', 'disk-full')) {
+      $ended = [pscustomobject]@{ status = $status; boot_utc = $boot.AddSeconds(2).ToString('o') }
+      Get-RestoreWaitState -Restore $ended -Boot $boot -Now $boot.AddMinutes(1) -StartBy $startBy | Should -Be 'finished'
+    }
+  }
+
+  It 'gives the boot task time to start' {
+    $older = [pscustomobject]@{ status = 'done'; boot_utc = $boot.AddDays(-1).ToString('o') }
+    Get-RestoreWaitState -Restore $older -Boot $boot -Now $boot.AddMinutes(5) -StartBy $startBy | Should -Be 'starting'
+    Get-RestoreWaitState -Restore $null -Boot $boot -Now $boot.AddMinutes(5) -StartBy $startBy | Should -Be 'starting'
+  }
+
+  It 'stops waiting for a restore that never started' {
+    $older = [pscustomobject]@{ status = 'running'; boot_utc = $boot.AddDays(-1).ToString('o') }
+    Get-RestoreWaitState -Restore $older -Boot $boot -Now $startBy -StartBy $startBy | Should -Be 'none'
+    Get-RestoreWaitState -Restore $null -Boot $boot -Now $startBy.AddMinutes(1) -StartBy $startBy | Should -Be 'none'
+  }
+}
+
+Describe 'Get-RestoreWaitProblem' {
+  It 'is happy only when the games were restored' {
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'done' -TimeoutMinutes 240 -LogPath 'agent.log' | Should -BeNullOrEmpty
+  }
+
+  It 'says why otherwise' {
+    Get-RestoreWaitProblem -Wait 'running' -Status 'running' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'still running after 240 minutes'
+    Get-RestoreWaitProblem -Wait 'none' -Status $null -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'No game library restore started'
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'no-disk' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'no game library disk'
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'disk-full' -TimeoutMinutes 240 -LogPath 'x' | Should -Match "doesn't fit"
+    Get-RestoreWaitProblem -Wait 'finished' -Status 'failed' -TimeoutMinutes 240 -LogPath 'C:\logs\agent.log' | Should -Match 'see C:\\logs\\agent.log'
+  }
+}
+
 Describe 'Resolve-LibraryTarget' {
   It 'derives the bucket from the account' {
     $t = Resolve-LibraryTarget -Config ([pscustomobject]@{ prefix = 'steam-library' }) `

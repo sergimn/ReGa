@@ -15,6 +15,7 @@ fn request(type_name: &str, spot: bool) -> LaunchRequest {
         disk_gib: 128,
         spot,
         wireguard: true,
+        cpu_first: false,
     }
 }
 
@@ -24,15 +25,18 @@ async fn cpu_then_gpu_lifecycle() {
     let m = p.launch(&request("t3.medium", false)).await.unwrap();
     assert_eq!(m.state, MachineState::Running);
 
-    let err = p.resize(&m.id, "g4dn.xlarge").await.unwrap_err();
-    assert!(matches!(err, ProviderError::InvalidState(_)));
-
-    p.stop(&m.id).await.unwrap();
+    // A running machine switches and keeps running.
     let m = p.resize(&m.id, "g4dn.xlarge").await.unwrap();
     assert!(m.machine_type.is_gpu());
+    assert_eq!(m.state, MachineState::Running);
+
+    p.stop(&m.id).await.unwrap();
+    let m = p.resize(&m.id, "t3.medium").await.unwrap();
+    assert!(!m.machine_type.is_gpu());
+    assert_eq!(m.state, MachineState::Stopped);
     p.start(&m.id).await.unwrap();
 
-    p.destroy(&m.id).await.unwrap();
+    p.destroy(&m.id, false).await.unwrap();
     assert!(p.list_machines().await.unwrap().is_empty());
 }
 
@@ -254,8 +258,15 @@ impl CloudProvider for FlakyRegion {
     async fn stop(&self, machine_id: &str) -> rega_core::ProviderResult<rega_core::Machine> {
         self.0.stop(machine_id).await
     }
-    async fn destroy(&self, machine_id: &str) -> rega_core::ProviderResult<()> {
-        self.0.destroy(machine_id).await
+    async fn finish_stop(&self, machine_id: &str) -> rega_core::ProviderResult<rega_core::Machine> {
+        self.0.finish_stop(machine_id).await
+    }
+    async fn destroy(
+        &self,
+        machine_id: &str,
+        even_if_unsaved: bool,
+    ) -> rega_core::ProviderResult<()> {
+        self.0.destroy(machine_id, even_if_unsaved).await
     }
     async fn orphans(&self) -> rega_core::ProviderResult<Vec<rega_core::Orphan>> {
         self.0.orphans().await

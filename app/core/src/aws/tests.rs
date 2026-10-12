@@ -6,10 +6,9 @@ use async_trait::async_trait;
 
 use super::api::BucketInfo;
 use super::fake::{Account, FakeAws, FakeTerraform, FixedIp, ACCOUNT, MY_IP};
-use super::keys::MachineKey;
 use super::record::{self, InstanceState, MachineRecord};
 use super::*;
-use crate::setup::{LibrarySync, MachineAccess, MachineSetup};
+use crate::setup::{MachineAccess, MachineSecrets, MachineSetup};
 
 struct Fixture {
     aws: FakeAws,
@@ -28,7 +27,8 @@ fn fixture(account: Account) -> Fixture {
         terraform.clone(),
         dir.path().join("aws").join(ACCOUNT),
     )
-    .with_ip_lookup(Arc::new(FixedIp));
+    .with_ip_lookup(Arc::new(FixedIp(aws.clone())))
+    .with_password_wait(Duration::from_millis(200), Duration::from_millis(1));
     Fixture {
         aws,
         terraform,
@@ -45,6 +45,7 @@ fn request(type_name: &str, spot: bool) -> LaunchRequest {
         disk_gib: 128,
         spot,
         wireguard: true,
+        cpu_first: false,
     }
 }
 
@@ -365,7 +366,7 @@ async fn a_failed_launch_leaves_a_machine_to_destroy() {
     assert!(f.provider.orphans().await.unwrap().is_empty());
 
     *f.terraform.fail_apply.lock().unwrap() = None;
-    f.provider.destroy(&machines[0].id).await.unwrap();
+    f.provider.destroy(&machines[0].id, false).await.unwrap();
     assert!(f.provider.list_machines().await.unwrap().is_empty());
 }
 
@@ -377,10 +378,6 @@ async fn cpu_then_gpu_lifecycle() {
         .launch(&request("t3.medium", false))
         .await
         .unwrap();
-    assert!(matches!(
-        f.provider.resize(&m.id, "g4dn.xlarge").await,
-        Err(ProviderError::InvalidState(_))
-    ));
 
     let stopped = f.provider.stop(&m.id).await.unwrap();
     assert_eq!(stopped.state, MachineState::Stopped);
@@ -397,7 +394,7 @@ async fn cpu_then_gpu_lifecycle() {
     assert_eq!(started.state, MachineState::Running);
     assert_eq!(started.machine_type.type_name, "g4dn.xlarge");
 
-    f.provider.destroy(&m.id).await.unwrap();
+    f.provider.destroy(&m.id, false).await.unwrap();
     assert!(f.provider.list_machines().await.unwrap().is_empty());
     let left = f
         .aws
@@ -440,7 +437,7 @@ async fn spot_machines_are_destroyed_not_stopped_or_resized() {
     );
     // Terminating first keeps Terraform from cancelling the spot request,
     // which the IAM policy denies.
-    f.provider.destroy(&m.id).await.unwrap();
+    f.provider.destroy(&m.id, false).await.unwrap();
     let terminated = f.position("delete Instance i-1");
     let destroyed = f.position(&format!("terraform destroy {}", m.id));
     assert!(terminated < destroyed);
@@ -483,6 +480,7 @@ async fn orphans_are_tagged_resources_without_a_machine() {
             state: MachineState::Running,
             spot: false,
             public_ip: None,
+            launched: None,
         });
     });
     let orphans = f.provider.orphans().await.unwrap();
@@ -502,76 +500,6 @@ async fn orphans_are_tagged_resources_without_a_machine() {
     let instance = f.position("delete Instance i-lost");
     let volume = f.position("delete Volume vol-lost");
     assert!(instance < volume);
-}
-
-#[derive(Default)]
-struct Recorder {
-    started: std::sync::Mutex<Vec<MachineAccess>>,
-}
-
-#[async_trait]
-impl MachineSetup for Recorder {
-    async fn after_start(&self, machine: &MachineAccess) -> ProviderResult<()> {
-        self.started.lock().unwrap().push(machine.clone());
-        Ok(())
-    }
-
-    async fn before_stop(&self, _machine: &MachineAccess) -> ProviderResult<LibrarySync> {
-        Ok(LibrarySync::Synced)
-    }
-}
-
-#[tokio::test]
-async fn setup_hook_gets_the_password_and_can_drop_the_library_disk() {
-    let mut f = fixture(Account::typical());
-    let recorder = Arc::new(Recorder::default());
-    f.provider = f.provider.with_setup(recorder.clone());
-
-    let m = f
-        .provider
-        .launch(&request("t3.medium", false))
-        .await
-        .unwrap();
-    // Windows has no password yet on the first boot in this fake.
-    let first = recorder.started.lock().unwrap()[0].clone();
-    assert_eq!(first.admin_password, None);
-    assert_eq!(first.public_ip.as_deref(), Some("198.51.100.1"));
-
-    // Encrypt a password for the machine's key, as EC2 does.
-    let pem = String::from_utf8(
-        f.aws
-            .with(|a| {
-                a.object(&state_bucket_name(), &record::key_key(&m.id))
-                    .cloned()
-            })
-            .unwrap(),
-    )
-    .unwrap();
-    let data = encrypt_password(&MachineKey::from_pem(&pem).unwrap(), "Pa55word!");
-    f.aws.with(|a| a.password_data.insert("i-1".into(), data));
-
-    f.provider.stop(&m.id).await.unwrap();
-    assert!(!f.record(&m.id).vars.library_volume_enabled);
-    f.provider.start(&m.id).await.unwrap();
-    let second = recorder.started.lock().unwrap()[1].clone();
-    assert_eq!(second.admin_password.as_deref(), Some("Pa55word!"));
-    assert!(f.record(&m.id).vars.library_volume_enabled);
-}
-
-fn encrypt_password(key: &MachineKey, password: &str) -> String {
-    use aws_lc_rs::rsa::{Pkcs1PublicEncryptingKey, PrivateDecryptingKey};
-    use base64::Engine;
-    let pem = key.to_pem();
-    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    let der = base64::engine::general_purpose::STANDARD
-        .decode(body)
-        .unwrap();
-    let public =
-        Pkcs1PublicEncryptingKey::new(PrivateDecryptingKey::from_pkcs8(&der).unwrap().public_key())
-            .unwrap();
-    let mut out = vec![0; public.ciphertext_size()];
-    let cipher = public.encrypt(password.as_bytes(), &mut out).unwrap();
-    base64::engine::general_purpose::STANDARD.encode(cipher)
 }
 
 fn rfc3339(secs: u64) -> String {
@@ -611,6 +539,7 @@ impl Fixture {
                 state: MachineState::Running,
                 spot: false,
                 public_ip: None,
+                launched: None,
             })
         });
     }
@@ -696,7 +625,7 @@ async fn one_change_per_machine_at_a_time() {
     let err = f.provider.stop(&m.id).await.unwrap_err();
     assert!(err.to_string().contains("still running"), "{err}");
     assert!(matches!(
-        f.provider.destroy(&m.id).await,
+        f.provider.destroy(&m.id, false).await,
         Err(ProviderError::InvalidState(_))
     ));
     drop(acting);
@@ -951,34 +880,6 @@ async fn an_unreadable_record_hides_only_itself() {
     assert_eq!(f.provider.list_machines().await.unwrap(), vec![m]);
 }
 
-struct Failing;
-
-#[async_trait]
-impl MachineSetup for Failing {
-    async fn after_start(&self, _machine: &MachineAccess) -> ProviderResult<()> {
-        Ok(())
-    }
-
-    async fn before_stop(&self, _machine: &MachineAccess) -> ProviderResult<LibrarySync> {
-        Err(ProviderError::Cloud("WinRM timed out".into()))
-    }
-}
-
-#[tokio::test]
-async fn a_failing_setup_hook_doesnt_block_a_stop() {
-    let mut f = fixture(Account::typical());
-    f.provider = f.provider.with_setup(Arc::new(Failing));
-    let m = f
-        .provider
-        .launch(&request("t3.medium", false))
-        .await
-        .unwrap();
-    let stopped = f.provider.stop(&m.id).await.unwrap();
-    assert_eq!(stopped.state, MachineState::Stopped);
-    // Nothing synced D:, so it stays.
-    assert!(f.record(&m.id).vars.library_volume_enabled);
-}
-
 #[tokio::test]
 async fn without_a_setup_hook_no_password_is_fetched() {
     let f = fixture(Account::typical());
@@ -990,4 +891,870 @@ async fn without_a_setup_hook_no_password_is_fetched() {
     f.provider.stop(&m.id).await.unwrap();
     // NoSetup needs no access, so nothing can fail on fetching it.
     assert!(!f.calls().iter().any(|c| c.starts_with("password_data")));
+}
+
+/// A setup that records what it was asked to do, and plays the machine's
+/// agent: before a stop it writes the final-sync record it is given.
+struct Recorder {
+    aws: FakeAws,
+    /// Such as `after_start t3.medium`.
+    events: std::sync::Mutex<Vec<String>>,
+    accesses: std::sync::Mutex<Vec<MachineAccess>>,
+    /// What the agent records before a stop: whether the upload worked,
+    /// and when it finished, in seconds after the instance's last start.
+    final_sync: std::sync::Mutex<Option<(bool, i64)>>,
+    /// `before_stop` fails (say, WinRM timed out) without recording.
+    fail_before_stop: bool,
+    /// The setup fails.
+    fail_after_start: bool,
+    /// The tool the setup runs isn't installed.
+    not_ready: bool,
+    /// The game library restore failed.
+    fail_wait_for_library: bool,
+    /// Another device, which lists the machines while the setup runs.
+    other_device: std::sync::Mutex<Option<Arc<AwsProvider>>>,
+    /// What it saw then: whether the machine was busy, and starting.
+    seen_from_elsewhere: std::sync::Mutex<Vec<(bool, bool)>>,
+}
+
+impl Recorder {
+    /// Records a good upload a minute after each start.
+    fn new(aws: &FakeAws) -> Self {
+        Self {
+            aws: aws.clone(),
+            events: Default::default(),
+            accesses: Default::default(),
+            final_sync: std::sync::Mutex::new(Some((true, 60))),
+            fail_before_stop: false,
+            fail_after_start: false,
+            not_ready: false,
+            fail_wait_for_library: false,
+            other_device: Default::default(),
+            seen_from_elsewhere: Default::default(),
+        }
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+
+    fn note(&self, what: &str, machine: &MachineAccess) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("{what} {}", machine.type_name));
+        self.accesses.lock().unwrap().push(machine.clone());
+    }
+}
+
+#[async_trait]
+impl MachineSetup for Recorder {
+    fn ready(&self) -> ProviderResult<()> {
+        if self.not_ready {
+            return Err(ProviderError::Cloud("Ansible isn't installed".into()));
+        }
+        Ok(())
+    }
+
+    async fn after_start(&self, machine: &MachineAccess) -> ProviderResult<()> {
+        self.note("after_start", machine);
+        let other = self.other_device.lock().unwrap().clone();
+        if let Some(other) = other {
+            let listed = other.list_machines().await?;
+            let m = listed.iter().find(|m| m.id == machine.machine_id).unwrap();
+            self.seen_from_elsewhere
+                .lock()
+                .unwrap()
+                .push((m.busy, m.starting));
+        }
+        if self.fail_after_start {
+            return Err(ProviderError::Cloud(
+                "Install Steam: download failed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn wait_for_library(&self, machine: &MachineAccess) -> ProviderResult<()> {
+        self.note("wait_for_library", machine);
+        if self.fail_wait_for_library {
+            return Err(ProviderError::Cloud(
+                "restoring the game library failed: it doesn't fit".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn before_stop(&self, machine: &MachineAccess) -> ProviderResult<()> {
+        self.note("before_stop", machine);
+        self.aws.call(format!("before_stop {}", machine.machine_id));
+        if self.fail_before_stop {
+            return Err(ProviderError::Cloud("WinRM timed out".into()));
+        }
+        if let Some((synced, after)) = *self.final_sync.lock().unwrap() {
+            write_final_sync(&self.aws, &machine.machine_id, synced, after);
+        }
+        Ok(())
+    }
+}
+
+/// What the agent writes to the library bucket after its last upload.
+fn write_final_sync(aws: &FakeAws, machine_id: &str, synced: bool, after_start: i64) {
+    aws.with(|a| {
+        let instance = a
+            .instances
+            .iter()
+            .find(|i| i.machine_id.as_deref() == Some(machine_id))
+            .unwrap();
+        let finished = instance.launched.unwrap() as i64 + after_start;
+        let json = format!(
+            r#"{{"machine_id": "{machine_id}", "instance_id": "{}", "synced": {synced},
+                "boot_utc": "{}", "finished_utc": "{}", "skipped_apps": [], "failed_apps": []}}"#,
+            instance.id,
+            rfc3339(instance.launched.unwrap()),
+            rfc3339(finished as u64),
+        );
+        a.objects.insert(
+            (library_bucket(ACCOUNT), record::final_sync_key(machine_id)),
+            json.into_bytes(),
+        );
+    });
+}
+
+/// An account whose new machines make their Windows password right away.
+fn ready_account() -> Account {
+    let mut account = Account::typical();
+    account.windows_password = Some(("Pa55word!".into(), 0));
+    account
+}
+
+fn with_setup(account: Account) -> (Fixture, Arc<Recorder>) {
+    let mut f = fixture(account);
+    let recorder = Arc::new(Recorder::new(&f.aws));
+    f.provider = f.provider.with_setup(recorder.clone());
+    (f, recorder)
+}
+
+impl Fixture {
+    fn applies(&self, machine_id: &str) -> usize {
+        let apply = format!("terraform apply {machine_id}");
+        self.calls().iter().filter(|c| **c == apply).count()
+    }
+
+    /// Makes the record look saved long ago, as after a session of play.
+    fn age_record(&self, machine_id: &str) {
+        let mut record = self.record(machine_id);
+        record.saved_at = 0;
+        self.put(
+            record::record_key(machine_id),
+            record.to_json().into_bytes(),
+        );
+    }
+
+    /// What the idle stop (or the backstop alarm) does: Windows shuts down
+    /// and EC2 stops the instance, behind Terraform's back.
+    fn stop_behind_terraforms_back(&self, machine_id: &str) {
+        self.aws.with(|a| {
+            for i in a
+                .instances
+                .iter_mut()
+                .filter(|i| i.machine_id.as_deref() == Some(machine_id))
+            {
+                i.state = MachineState::Stopped;
+            }
+        });
+    }
+}
+
+#[tokio::test]
+async fn setup_runs_once_windows_has_made_its_password() {
+    let mut account = Account::typical();
+    account.windows_password = Some(("Pa55word!".into(), 2));
+    let (f, setup) = with_setup(account);
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    assert_eq!(setup.events(), ["after_start t3.medium"]);
+    let access = setup.accesses.lock().unwrap()[0].clone();
+    assert_eq!(access.admin_password.as_deref(), Some("Pa55word!"));
+    assert_eq!(access.public_ip.as_deref(), Some("198.51.100.1"));
+    assert_eq!(access.dir, f.provider.machine_dir(&m.id));
+    assert_eq!(access.library_bucket, library_bucket(ACCOUNT));
+    assert_eq!(access.library_region, HOME_REGION);
+    assert!(access.wireguard);
+    // WinRM is open to this device only.
+    assert_eq!(f.record(&m.id).vars.admin_cidrs, [format!("{MY_IP}/32")]);
+
+    // The passwords live with the machine, so every device uses the same.
+    let saved = f
+        .aws
+        .with(|a| {
+            a.object(&state_bucket_name(), &record::secrets_key(&m.id))
+                .cloned()
+        })
+        .unwrap();
+    assert_eq!(MachineSecrets::from_json(&saved).unwrap(), access.secrets);
+    f.provider.stop(&m.id).await.unwrap();
+    f.provider.start(&m.id).await.unwrap();
+    let again = setup.accesses.lock().unwrap().last().unwrap().clone();
+    assert_eq!(again.secrets, access.secrets);
+    assert_eq!(
+        setup.events(),
+        [
+            "after_start t3.medium",
+            "before_stop t3.medium",
+            "after_start t3.medium"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_machine_without_a_password_fails_its_setup() {
+    let (f, setup) = with_setup(Account::typical());
+    let err = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("hasn't made its Administrator password"),
+        "{err}"
+    );
+    assert!(setup.events().is_empty());
+    // The machine is there, running, to stop or destroy.
+    let listed = f.provider.list_machines().await.unwrap();
+    assert_eq!(listed[0].state, MachineState::Running);
+}
+
+#[tokio::test]
+async fn without_a_setup_winrm_stays_closed() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    assert!(f.record(&m.id).vars.admin_cidrs.is_empty());
+    // NoSetup needs no access, so nothing can fail on fetching it.
+    f.provider.stop(&m.id).await.unwrap();
+    assert!(!f.calls().iter().any(|c| c.starts_with("password_data")));
+}
+
+#[tokio::test]
+async fn stop_drops_the_library_disk_only_once_the_machine_saved_it() {
+    // What the agent records before the stop, and whether D: goes.
+    for (recorded, dropped) in [
+        (Some((true, 60)), true),
+        (Some((false, 60)), false),
+        // Written before the last start: games installed since aren't in it.
+        (Some((true, -60)), false),
+        (None, false),
+    ] {
+        let (f, setup) = with_setup(ready_account());
+        *setup.final_sync.lock().unwrap() = recorded;
+        let m = f
+            .provider
+            .launch(&request("t3.medium", false))
+            .await
+            .unwrap();
+        let stopped = f.provider.stop(&m.id).await.unwrap();
+        assert_eq!(stopped.state, MachineState::Stopped);
+        let record = f.record(&m.id);
+        assert_eq!(record.vars.instance_state, InstanceState::Stopped);
+        assert_eq!(!record.vars.library_volume_enabled, dropped, "{recorded:?}");
+        assert_eq!(setup.events().last().unwrap(), "before_stop t3.medium");
+    }
+}
+
+#[tokio::test]
+async fn a_failing_upload_doesnt_block_a_stop() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        final_sync: Default::default(),
+        fail_before_stop: true,
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert_eq!(stopped.state, MachineState::Stopped);
+    // Nothing saved D:, so it stays.
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn a_setup_that_cant_run_stops_a_launch_before_it_costs_anything() {
+    let (f, _) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.provider.stop(&m.id).await.unwrap();
+
+    let mut f = f;
+    f.provider = f.provider.with_setup(Arc::new(Recorder {
+        not_ready: true,
+        ..Recorder::new(&f.aws)
+    }));
+    let err = f
+        .provider
+        .launch(&request("g4dn.xlarge", false))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("isn't installed"), "{err}");
+    let err = f.provider.start(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("isn't installed"), "{err}");
+    assert_eq!(f.provider.list_machines().await.unwrap().len(), 1);
+    assert_eq!(f.applies(&m.id), 2);
+    // Switching a stopped machine runs nothing on it, so it still works.
+    f.provider.resize(&m.id, "g4dn.xlarge").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_machine_that_stopped_itself_is_finished_by_stop() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The idle stop: the agent saves the games, then Windows shuts down.
+    write_final_sync(&f.aws, &m.id, true, 900);
+    f.stop_behind_terraforms_back(&m.id);
+    // Just after a save, a stopped instance may be another device starting
+    // it, so it isn't taken for an idle stop yet.
+    let listed = f.provider.list_machines().await.unwrap();
+    assert_eq!(listed[0].state, MachineState::Stopped);
+    assert!(!listed[0].stopped_itself);
+
+    f.age_record(&m.id);
+    let listed = f.provider.list_machines().await.unwrap();
+    assert!(listed[0].stopped_itself);
+    let events = setup.events().len();
+    let done = f.provider.finish_stop(&m.id).await.unwrap();
+    assert!(!done.stopped_itself);
+    // Nothing to upload from a stopped machine: its record decides.
+    assert_eq!(setup.events().len(), events);
+    let record = f.record(&m.id);
+    assert_eq!(record.vars.instance_state, InstanceState::Stopped);
+    assert!(!record.vars.library_volume_enabled);
+    assert!(!f.provider.list_machines().await.unwrap()[0].stopped_itself);
+}
+
+#[tokio::test]
+async fn a_backstop_stop_without_a_saved_library_keeps_the_disk() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The CloudWatch alarm stops it; the agent never ran its final upload.
+    f.stop_behind_terraforms_back(&m.id);
+    f.age_record(&m.id);
+    assert!(f.provider.list_machines().await.unwrap()[0].stopped_itself);
+    let done = f.provider.finish_stop(&m.id).await.unwrap();
+    let record = f.record(&m.id);
+    assert_eq!(record.vars.instance_state, InstanceState::Stopped);
+    assert!(record.vars.library_volume_enabled);
+    // It says so, since the disk now costs money for nothing it knows of.
+    assert!(done.library_kept);
+}
+
+#[tokio::test]
+async fn finishing_a_stop_leaves_a_machine_someone_is_starting_alone() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    write_final_sync(&f.aws, &m.id, true, 900);
+    f.stop_behind_terraforms_back(&m.id);
+    // Its record was saved moments ago, as when another device has just
+    // started it: not a machine that stopped itself, so it's left alone.
+    let applies = f.applies(&m.id);
+    let done = f.provider.finish_stop(&m.id).await.unwrap();
+    assert!(!done.stopped_itself);
+    assert_eq!(f.applies(&m.id), applies);
+    assert_eq!(f.record(&m.id).vars.instance_state, InstanceState::Running);
+
+    // Nor while another device runs its setup on it.
+    f.age_record(&m.id);
+    f.put(
+        record::setup_key(&m.id),
+        terraform::unix_now().to_string().into_bytes(),
+    );
+    let done = f.provider.finish_stop(&m.id).await.unwrap();
+    assert!(done.busy);
+    assert_eq!(f.applies(&m.id), applies);
+
+    // A marker left by a device that quit halfway goes stale.
+    f.put(
+        record::setup_key(&m.id),
+        (terraform::unix_now() - SETUP_STALE_SECS - 1)
+            .to_string()
+            .into_bytes(),
+    );
+    let done = f.provider.finish_stop(&m.id).await.unwrap();
+    assert!(!done.busy);
+    assert_eq!(f.applies(&m.id), applies + 1);
+    assert!(!f.record(&m.id).vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn other_devices_see_a_machine_being_set_up_as_busy() {
+    let (f, setup) = with_setup(ready_account());
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = AwsProvider::new(
+        Arc::new(f.aws.clone()),
+        ACCOUNT.into(),
+        Arc::new(FakeTerraform::new(f.aws.clone())),
+        other_dir.path().to_path_buf(),
+    )
+    .with_ip_lookup(Arc::new(FixedIp(f.aws.clone())));
+    *setup.other_device.lock().unwrap() = Some(Arc::new(other));
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // Busy, and starting, so the other device starts nothing else.
+    assert_eq!(*setup.seen_from_elsewhere.lock().unwrap(), [(true, true)]);
+    let marker = f.aws.with(|a| {
+        a.object(&state_bucket_name(), &record::setup_key(&m.id))
+            .is_some()
+    });
+    assert!(!marker, "the marker goes once the setup is done");
+    assert!(!f.provider.list_machines().await.unwrap()[0].busy);
+}
+
+#[tokio::test]
+async fn a_stop_that_didnt_get_through_cant_drop_the_disk_on_a_switch() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The stop saves the games and its record, then Terraform fails, so
+    // the machine keeps running with a record that says stopped, no D:.
+    *f.terraform.fail_apply.lock().unwrap() = Some("state lock timed out".into());
+    assert!(f.provider.stop(&m.id).await.is_err());
+    *f.terraform.fail_apply.lock().unwrap() = None;
+    let stale = f.record(&m.id);
+    assert_eq!(stale.vars.instance_state, InstanceState::Stopped);
+    assert!(!stale.vars.library_volume_enabled);
+
+    f.provider.resize(&m.id, "t3.large").await.unwrap();
+    let applied = f.terraform.applied.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(applied.instance_type, "t3.large");
+    assert_eq!(applied.instance_state, InstanceState::Running);
+    assert!(applied.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn a_failed_upload_after_an_earlier_one_this_boot_keeps_the_disk() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // A stop uploads the games, then its Terraform run fails.
+    *f.terraform.fail_apply.lock().unwrap() = Some("state lock timed out".into());
+    assert!(f.provider.stop(&m.id).await.is_err());
+    *f.terraform.fail_apply.lock().unwrap() = None;
+
+    // The user plays on and installs more, then stops it from another
+    // network, and this time the upload records nothing.
+    f.aws.with(|a| a.my_ip = Some("203.0.113.9".into()));
+    *setup.final_sync.lock().unwrap() = None;
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    let applied = f.terraform.applied.lock().unwrap().clone();
+    // Opening WinRM to the new IP kept it running, with D:.
+    let opened = applied
+        .iter()
+        .find(|v| v.admin_cidrs == ["203.0.113.9/32"])
+        .unwrap();
+    assert_eq!(opened.instance_state, InstanceState::Running);
+    assert!(opened.library_volume_enabled);
+    // The earlier upload doesn't vouch for the games installed since.
+    let last = applied.last().unwrap();
+    assert_eq!(last.instance_state, InstanceState::Stopped);
+    assert!(last.library_volume_enabled);
+    assert!(stopped.library_kept);
+}
+
+#[tokio::test]
+async fn a_failed_upload_cant_lean_on_a_record_it_couldnt_clear() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // An upload earlier this boot, by a stop whose Terraform run failed.
+    write_final_sync(&f.aws, &m.id, true, 60);
+    // Now S3 won't delete that record, so this upload never starts.
+    f.aws
+        .with(|a| a.undeletable = Some(record::final_sync_key(&m.id)));
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(err.to_string().contains("can't be deleted"), "{err}");
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(stopped.library_kept);
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn destroy_asks_before_deleting_the_disk_of_a_machine_aws_took_back() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("g4dn.xlarge", true))
+        .await
+        .unwrap();
+    // AWS reclaims the spot instance mid-game; D: outlives it.
+    f.aws.with(|a| {
+        for i in a.instances.iter_mut() {
+            i.state = MachineState::Terminated;
+        }
+    });
+    let destroy = format!("terraform destroy {}", m.id);
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(
+        err.to_string().contains("before its instance ended"),
+        "{err}"
+    );
+    assert!(!f.calls().contains(&destroy));
+    f.provider.destroy(&m.id, true).await.unwrap();
+    assert!(f.calls().contains(&destroy));
+}
+
+#[tokio::test]
+async fn a_machine_no_setup_started_on_has_no_games_to_save() {
+    // Windows never makes its password, so the setup never starts.
+    let (f, setup) = with_setup(Account::typical());
+    f.provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    let m = f.provider.list_machines().await.unwrap().remove(0);
+    assert!(!f.record(&m.id).setup_started);
+
+    // Nothing to upload: the stop drops D:, and destroy doesn't ask.
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(!stopped.library_kept);
+    assert!(!f.record(&m.id).vars.library_volume_enabled);
+    f.provider.start(&m.id).await.unwrap_err();
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+    f.provider.destroy(&m.id, false).await.unwrap();
+    assert!(!setup.events().iter().any(|e| e.starts_with("before_stop")));
+}
+
+#[tokio::test]
+async fn a_setup_that_failed_part_way_still_saves_the_games() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        fail_after_start: true,
+        final_sync: Default::default(),
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let err = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Install Steam"), "{err}");
+    let m = f.provider.list_machines().await.unwrap().remove(0);
+    // Every device knows the setup may have put games on D:.
+    assert!(f.record(&m.id).setup_started);
+
+    // It may have restored games and been played on: the upload runs, and
+    // without a good one D: stays.
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(stopped.library_kept);
+    let uploads = setup
+        .events()
+        .iter()
+        .filter(|e| e.starts_with("before_stop"))
+        .count();
+    assert_eq!(uploads, 2);
+}
+
+#[tokio::test]
+async fn destroy_keeps_a_machine_whose_games_it_couldnt_save() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        final_sync: Default::default(),
+        fail_before_stop: true,
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let destroy = format!("terraform destroy {}", m.id);
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(err.to_string().contains("WinRM timed out"), "{err}");
+    assert!(!f.calls().contains(&destroy));
+    let uploads = |f: &Fixture| {
+        f.calls()
+            .iter()
+            .filter(|c| c.starts_with("before_stop"))
+            .count()
+    };
+    assert_eq!(uploads(&f), 1);
+
+    // Stopped, it keeps D: and the games on it.
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(stopped.library_kept);
+    let err = f.provider.destroy(&m.id, false).await.unwrap_err();
+    assert!(matches!(err, ProviderError::GamesNotSaved(_)), "{err}");
+    assert!(!f.calls().contains(&destroy));
+
+    // Unless the user says to go ahead.
+    f.provider.destroy(&m.id, true).await.unwrap();
+    assert!(f.calls().contains(&destroy));
+    assert!(f.provider.list_machines().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn destroying_anyway_doesnt_try_the_upload_again() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        final_sync: Default::default(),
+        fail_before_stop: true,
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.provider.destroy(&m.id, false).await.unwrap_err();
+    let before = f.calls();
+    f.provider.destroy(&m.id, true).await.unwrap();
+    let after = f.calls();
+    assert!(
+        !after[before.len()..]
+            .iter()
+            .any(|c| c.starts_with("before_stop")),
+        "{after:?}"
+    );
+    assert!(f.provider.list_machines().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stopped_machine_whose_games_were_saved_destroys_without_asking() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let stopped = f.provider.stop(&m.id).await.unwrap();
+    assert!(!stopped.library_kept);
+    f.provider.destroy(&m.id, false).await.unwrap();
+}
+
+#[tokio::test]
+async fn switching_a_machine_that_stopped_itself_drops_its_saved_disk() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    write_final_sync(&f.aws, &m.id, true, 900);
+    f.stop_behind_terraforms_back(&m.id);
+    f.age_record(&m.id);
+    f.provider.resize(&m.id, "t3.large").await.unwrap();
+    let record = f.record(&m.id);
+    assert_eq!(record.vars.instance_state, InstanceState::Stopped);
+    assert!(!record.vars.library_volume_enabled);
+}
+
+#[tokio::test]
+async fn a_failed_restore_stops_a_cpu_first_launch_on_the_cpu_type() {
+    let mut f = fixture(ready_account());
+    let setup = Arc::new(Recorder {
+        fail_wait_for_library: true,
+        ..Recorder::new(&f.aws)
+    });
+    f.provider = f.provider.with_setup(setup.clone());
+    let err = f
+        .provider
+        .launch(&LaunchRequest {
+            cpu_first: true,
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("doesn't fit"), "{err}");
+    // Still the cheap type: no GPU hours for a library that isn't there.
+    let listed = f.provider.list_machines().await.unwrap();
+    assert_eq!(listed[0].machine_type.type_name, "t3.medium");
+    assert_eq!(listed[0].state, MachineState::Running);
+}
+
+#[tokio::test]
+async fn spot_machines_never_count_as_stopped_by_themselves() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("g4dn.xlarge", true))
+        .await
+        .unwrap();
+    f.stop_behind_terraforms_back(&m.id);
+    f.age_record(&m.id);
+    assert!(!f.provider.list_machines().await.unwrap()[0].stopped_itself);
+}
+
+#[tokio::test]
+async fn cpu_first_sets_up_on_a_cpu_type_then_switches_to_the_gpu() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&LaunchRequest {
+            cpu_first: true,
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .unwrap();
+    assert_eq!(m.machine_type.type_name, "g4dn.xlarge");
+    assert_eq!(m.state, MachineState::Running);
+    assert_eq!(
+        setup.events(),
+        [
+            "after_start t3.medium",
+            "wait_for_library t3.medium",
+            "after_start g4dn.xlarge"
+        ]
+    );
+    // One machine, switched in place with D: kept.
+    let record = f.record(&m.id);
+    assert_eq!(record.vars.instance_type, "g4dn.xlarge");
+    assert!(record.vars.library_volume_enabled);
+    assert_eq!(f.applies(&m.id), 2);
+    assert_eq!(f.aws.with(|a| a.instances.len()), 1);
+}
+
+#[tokio::test]
+async fn cpu_first_is_only_for_on_demand_gpu_machines_with_a_setup() {
+    // Spot machines can't change type.
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&LaunchRequest {
+            cpu_first: true,
+            ..request("g4dn.xlarge", true)
+        })
+        .await
+        .unwrap();
+    assert_eq!(setup.events(), ["after_start g4dn.xlarge"]);
+    assert_eq!(f.applies(&m.id), 1);
+
+    // Without a setup there is nothing to do on the CPU type.
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&LaunchRequest {
+            cpu_first: true,
+            ..request("g4dn.xlarge", false)
+        })
+        .await
+        .unwrap();
+    assert_eq!(f.record(&m.id).vars.instance_type, "g4dn.xlarge");
+    assert_eq!(f.applies(&m.id), 1);
+}
+
+#[tokio::test]
+async fn switching_a_running_machine_restarts_it_set_up() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let switched = f.provider.resize(&m.id, "g4dn.xlarge").await.unwrap();
+    assert_eq!(switched.state, MachineState::Running);
+    assert!(switched.machine_type.is_gpu());
+    assert_eq!(
+        setup.events(),
+        ["after_start t3.medium", "after_start g4dn.xlarge"]
+    );
+    assert!(f.record(&m.id).vars.library_volume_enabled);
+
+    // A stopped one stays stopped, with nothing to set up.
+    f.provider.stop(&m.id).await.unwrap();
+    let back = f.provider.resize(&m.id, "t3.medium").await.unwrap();
+    assert_eq!(back.state, MachineState::Stopped);
+    assert_eq!(setup.events().last().unwrap(), "before_stop g4dn.xlarge");
+}
+
+#[tokio::test]
+async fn stop_opens_winrm_to_where_this_device_is_now() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The laptop moved to another network while the machine ran.
+    f.aws.with(|a| a.my_ip = Some("192.0.2.9".into()));
+    let before = f.applies(&m.id);
+    f.provider.stop(&m.id).await.unwrap();
+    // One apply to let WinRM in from the new IP before the upload, one to
+    // stop.
+    assert_eq!(f.applies(&m.id), before + 2);
+    assert_eq!(f.record(&m.id).vars.admin_cidrs, ["192.0.2.9/32"]);
+    assert_eq!(setup.events().last().unwrap(), "before_stop t3.medium");
+
+    // From where it started, nothing extra.
+    f.provider.start(&m.id).await.unwrap();
+    let before = f.applies(&m.id);
+    f.provider.stop(&m.id).await.unwrap();
+    assert_eq!(f.applies(&m.id), before + 1);
+}
+
+#[tokio::test]
+async fn destroying_a_running_machine_saves_its_games_first() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("g4dn.xlarge", true))
+        .await
+        .unwrap();
+    f.provider.destroy(&m.id, false).await.unwrap();
+    assert_eq!(setup.events().last().unwrap(), "before_stop g4dn.xlarge");
+    // Before the spot instance is terminated.
+    assert!(
+        f.position(&format!("before_stop {}", m.id)) < f.position("delete Instance i-1"),
+        "{:?}",
+        f.calls()
+    );
+    // Its record of the last upload goes with it.
+    let left = f.aws.with(|a| {
+        a.object(&library_bucket(ACCOUNT), &record::final_sync_key(&m.id))
+            .is_some()
+    });
+    assert!(!left);
 }

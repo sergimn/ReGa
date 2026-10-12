@@ -3,9 +3,10 @@
 //! Every cloud provider implements [`provider::CloudProvider`]. The UI never
 //! talks to a cloud SDK directly: it goes through the bridge crate, which
 //! holds a list of providers and calls into this crate. Machines are made
-//! with Terraform ([`terraform`]); what runs on them afterwards (Ansible)
-//! plugs in through [`setup::MachineSetup`].
+//! with Terraform ([`terraform`]); what runs on them afterwards plugs in
+//! through [`setup::MachineSetup`], which [`ansible`] implements.
 
+pub mod ansible;
 pub mod aws;
 pub mod latency;
 pub mod mock;
