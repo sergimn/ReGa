@@ -4,6 +4,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 
 import 'backend.dart';
+import 'widgets/credentials_dialog.dart';
 import 'widgets/format.dart';
 import 'widgets/machine_card.dart';
 import 'widgets/machine_tile.dart';
@@ -18,13 +19,17 @@ class ProviderPage extends StatefulWidget {
     required this.backend,
     required this.provider,
     this.onReconnect,
+    this.onProviderChanged,
   });
 
   final RegaBackend backend;
   final ProviderInfo provider;
 
-  /// Signs in again, for example after adding credentials.
+  /// Signs in again with the saved credentials, say after a network error.
   final VoidCallback? onReconnect;
+
+  /// The user signed in or out here; this is the provider now.
+  final ValueChanged<ProviderInfo>? onProviderChanged;
 
   @override
   State<ProviderPage> createState() => _ProviderPageState();
@@ -96,6 +101,9 @@ class _ProviderPageState extends State<ProviderPage> {
 
   /// The last failed launch or machine action.
   Object? _actionError;
+
+  /// Why signing out failed.
+  Object? _accountError;
   List<OrphanSummary> _orphans = const [];
   bool _deletingOrphans = false;
 
@@ -356,6 +364,119 @@ class _ProviderPageState extends State<ProviderPage> {
     if (mounted) setState(() => _busy.remove(m.id));
   }
 
+  /// Asks for credentials and signs in with them.
+  Future<void> _enterCredentials() async {
+    setState(() => _accountError = null);
+    final info = await showDialog<ProviderInfo>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          CredentialsDialog(backend: _backend, provider: widget.provider),
+    );
+    if (info != null && mounted) widget.onProviderChanged?.call(info);
+  }
+
+  Future<void> _signOut() async {
+    final name = widget.provider.name;
+    final ok = await _confirm(
+      'Sign out of $name?',
+      'ReGa forgets the saved credentials and shows sample data until you '
+          'enter them again. Your machines in $name stay as they are'
+          '${_stream != null ? ', but Play\'s connection closes' : ''}.',
+      'Sign out',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _accountError = null);
+    try {
+      final info = await _backend.forgetCredentials(_id);
+      if (mounted) widget.onProviderChanged?.call(info);
+    } catch (e) {
+      if (mounted) setState(() => _accountError = e);
+    }
+  }
+
+  /// Who the page is signed in as, or why it shows sample data, and the
+  /// buttons to change that.
+  Widget _account(ThemeData theme) {
+    final p = widget.provider;
+    // Switching accounts in the middle of a change would lose track of it.
+    final idle = !_changing && !_deletingOrphans && _playing == null;
+    final saved = p.hasCredentials || !p.demo;
+    final title = p.demo
+        ? p.notice ?? 'Enter your ${p.name} credentials to use your account.'
+        : 'Signed in as ${p.signedInAs ?? 'your ${p.name} account'}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                p.demo ? Icons.key_outlined : Icons.verified_user_outlined,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, key: const ValueKey('account')),
+                    if (!p.demo && p.notice != null)
+                      Text(
+                        p.notice!,
+                        key: const ValueKey('account-warning'),
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  if (p.demo && p.hasCredentials && widget.onReconnect != null)
+                    TextButton(
+                      key: const ValueKey('reconnect'),
+                      onPressed: idle ? widget.onReconnect : null,
+                      child: const Text('Reconnect'),
+                    ),
+                  if (saved)
+                    TextButton(
+                      key: const ValueKey('change-credentials'),
+                      onPressed: idle ? _enterCredentials : null,
+                      child: const Text('Change credentials'),
+                    )
+                  else
+                    FilledButton(
+                      key: const ValueKey('enter-credentials'),
+                      onPressed: idle ? _enterCredentials : null,
+                      child: const Text('Enter credentials'),
+                    ),
+                  if (saved)
+                    TextButton(
+                      key: const ValueKey('sign-out'),
+                      onPressed: idle ? _signOut : null,
+                      child: const Text('Sign out'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+          if (_accountError case final e?)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.error,
+              ),
+              title: Text('$e'),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<bool> _confirm(String title, String body, String action) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -539,7 +660,7 @@ class _ProviderPageState extends State<ProviderPage> {
       padding: const EdgeInsets.all(24),
       children: [
         Text(widget.provider.name, style: theme.textTheme.headlineMedium),
-        if (widget.provider.demo) ...[
+        if (widget.provider.demo)
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Align(
@@ -550,19 +671,7 @@ class _ProviderPageState extends State<ProviderPage> {
               ),
             ),
           ),
-          if (widget.provider.notice case final notice?)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(notice),
-              trailing: widget.onReconnect == null
-                  ? null
-                  : TextButton(
-                      key: const ValueKey('reconnect'),
-                      onPressed: widget.onReconnect,
-                      child: const Text('Reconnect'),
-                    ),
-            ),
-        ],
+        _account(theme),
         const SizedBox(height: 16),
         SwitchListTile(
           key: const ValueKey('spot-toggle'),

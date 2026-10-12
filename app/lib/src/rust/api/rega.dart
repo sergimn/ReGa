@@ -11,11 +11,27 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `from`
 // These functions are ignored (category: IgnoreBecauseExplicitAttribute): `is_gpu`
 
-/// Signs in to every provider and returns them for the side menu. A
-/// provider without working credentials comes back as demo data, with the
-/// reason. Calling it again reconnects.
+/// Signs in to every provider with the credentials saved in ReGa, and
+/// returns them for the side menu. A provider without working credentials
+/// comes back as demo data, with the reason. Calling it again reconnects.
 Future<List<ProviderInfo>> connectProviders() =>
     RustLib.instance.api.crateApiRegaConnectProviders();
+
+/// Signs in to `provider_id` with what the user typed (by field id) and,
+/// once the cloud accepts it, saves it in the system keyring in place of
+/// what was there. Fails, changing nothing, when the cloud refuses it.
+Future<ProviderInfo> saveCredentials({
+  required String providerId,
+  required Map<String, String> values,
+}) => RustLib.instance.api.crateApiRegaSaveCredentials(
+  providerId: providerId,
+  values: values,
+);
+
+/// Forgets the credentials saved for `provider_id`; it shows demo data
+/// until new ones are entered. Machines in the account are left alone.
+Future<ProviderInfo> forgetCredentials({required String providerId}) =>
+    RustLib.instance.api.crateApiRegaForgetCredentials(providerId: providerId);
 
 /// Machine types sold in `region_id` the chosen way, priced. With `spot` on
 /// that means GPU types only.
@@ -138,6 +154,39 @@ Future<void> deleteOrphans({
   providerId: providerId,
   orphans: orphans,
 );
+
+/// One input of the credentials form.
+class CredentialFieldInfo {
+  final String id;
+  final String label;
+
+  /// Typed hidden; a saved value is never sent back.
+  final bool secret;
+
+  /// The saved value, for a field that isn't secret.
+  final String? value;
+
+  const CredentialFieldInfo({
+    required this.id,
+    required this.label,
+    required this.secret,
+    this.value,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ label.hashCode ^ secret.hashCode ^ value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CredentialFieldInfo &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          label == other.label &&
+          secret == other.secret &&
+          value == other.value;
+}
 
 class MachineOffer {
   final String typeName;
@@ -324,19 +373,39 @@ class ProviderInfo {
   /// True while the provider shows sample data instead of a real account.
   final bool demo;
 
-  /// Why it shows sample data, such as missing credentials.
+  /// Why it shows sample data, such as no credentials entered yet, or
+  /// something to know about the account it's signed in to.
   final String? notice;
+
+  /// What the user fills in to sign in.
+  final List<CredentialFieldInfo> credentialFields;
+
+  /// Credentials are saved for it (even when signing in with them
+  /// failed), so it can offer to sign out.
+  final bool hasCredentials;
+
+  /// Who it's signed in as, such as an IAM user and its account.
+  final String? signedInAs;
 
   const ProviderInfo({
     required this.id,
     required this.name,
     required this.demo,
     this.notice,
+    required this.credentialFields,
+    required this.hasCredentials,
+    this.signedInAs,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^ name.hashCode ^ demo.hashCode ^ notice.hashCode;
+      id.hashCode ^
+      name.hashCode ^
+      demo.hashCode ^
+      notice.hashCode ^
+      credentialFields.hashCode ^
+      hasCredentials.hashCode ^
+      signedInAs.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -346,7 +415,10 @@ class ProviderInfo {
           id == other.id &&
           name == other.name &&
           demo == other.demo &&
-          notice == other.notice;
+          notice == other.notice &&
+          credentialFields == other.credentialFields &&
+          hasCredentials == other.hasCredentials &&
+          signedInAs == other.signedInAs;
 }
 
 /// An error the UI shows as is: a plain message, never a backtrace.

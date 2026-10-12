@@ -28,7 +28,9 @@ flatpak run io.github.sergimn.rega
 ```
 
 The release notes say what your AWS account needs before you launch a
-machine; without AWS credentials the app shows sample data.
+machine. Until you enter an AWS access key in the app, it shows sample data.
+ReGa only ever uses the credentials entered in it, never ones it finds in
+`~/.aws` or the environment, and keeps them in your system keyring.
 
 ## Repository
 

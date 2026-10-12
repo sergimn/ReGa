@@ -22,9 +22,32 @@ literal colours in widgets.
 Every cloud implements `CloudProvider` in `core/src/provider.rs`. AWS is the
 first (`core/src/aws/`):
 
-- Credentials come from the standard AWS chain (environment variables, then
-  `~/.aws` profiles). Without any, the app shows demo data
-  (`MockProvider::demo_aws`) and says why; Reconnect tries again.
+- Credentials are only ever the ones the user enters in the app (the
+  provider's page has Enter credentials, then Change credentials and Sign
+  out). Nothing is picked up from the computer: no environment variables,
+  no `~/.aws` or other CLI configuration, no instance metadata, even when
+  the computer has credentials there. For AWS that is an IAM user's access
+  key ID and secret access key.
+  - Each provider says which fields it needs (`Connector` in
+    `core/src/provider.rs`); the form is built from that, so another cloud
+    only needs a `Connector` of its own.
+  - Save signs in first and only keeps credentials the cloud accepted,
+    replacing what was saved before. The page then says who it's signed in
+    as (for AWS, the IAM user and account), so a wrong account shows.
+  - They are kept in the system keyring (`core/src/credentials.rs`, with
+    `oo7`): the desktop's Secret Service outside a sandbox, and inside the
+    Flatpak a file in the app's data folder, encrypted with a key from the
+    Secret portal (GNOME Keyring provides it on Ubuntu). If they can't be
+    saved, the app stays signed in until it quits and says so.
+  - The AWS SDK is set up by hand from the key (the app doesn't use
+    `aws-config`, which is what reads the environment and `~/.aws`).
+    Terraform gets the key as environment variables, with
+    `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` pointed at
+    `/dev/null` and instance metadata off, so its AWS provider can't find
+    anything else either. Ansible never talks to AWS.
+  - Without saved credentials, or when signing in with them fails, the app
+    shows demo data (`MockProvider::demo_aws`) and says why; Reconnect tries
+    the saved ones again.
 - Regions, GPU quotas (Service Quotas), spot prices and instance offerings
   come from the AWS APIs; on-demand prices from the Price List API.
 - The first time it lists machines, the app creates `rega-tfstate-<account>`
@@ -184,12 +207,23 @@ sudo core/tests/wireguard/server.sh down
 
 It uses the kernel's WireGuard, or `wireguard-go` when the kernel has none.
 
-No cloud credentials are needed to build or test. With credentials set up,
-set `REGA_DEMO=1` to run the app (and the integration test) on demo data
-anyway. Read-only checks against a real account:
+The keyring test of the credentials store (`core/src/credentials.rs`) saves
+to a real keyring, so it only runs with `REGA_TEST_KEYRING=1`.
+`core/tests/with-keyring.sh` (needs `gnome-keyring`) runs a command with a
+throwaway GNOME Keyring and sets that, as CI does:
 
 ```sh
-cargo test -p rega_core --test aws_live -- --ignored --nocapture
+dbus-run-session -- core/tests/with-keyring.sh cargo test --workspace
+```
+
+No cloud credentials are needed to build or test. `REGA_DEMO=1` runs the
+app (and the integration test, as CI does) on demo data without touching
+the keyring. Read-only checks against a real account take an access key
+from variables of their own, never the usual `AWS_*` ones:
+
+```sh
+REGA_TEST_AWS_ACCESS_KEY_ID=... REGA_TEST_AWS_SECRET_ACCESS_KEY=... \
+  cargo test -p rega_core --test aws_live -- --ignored --nocapture
 ```
 
 See `flatpak/README.md` for packaging.

@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1006737817;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 137265203;
 
 // Section: executor
 
@@ -230,6 +230,43 @@ fn wire__crate__api__rega__finish_stop_impl(
                     (move || async move {
                         let output_ok =
                             crate::api::rega::finish_stop(api_provider_id, api_machine_id).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__rega__forget_credentials_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "forget_credentials",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::rega::RegaError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::rega::forget_credentials(api_provider_id).await?;
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
@@ -647,6 +684,45 @@ fn wire__crate__api__rega__resize_machine_impl(
         },
     )
 }
+fn wire__crate__api__rega__save_credentials_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "save_credentials",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            let api_values =
+                <std::collections::HashMap<String, String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::rega::RegaError>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::rega::save_credentials(api_provider_id, api_values).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__rega__start_machine_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -764,6 +840,14 @@ impl SseDecode for flutter_rust_bridge::for_generated::anyhow::Error {
     }
 }
 
+impl SseDecode for std::collections::HashMap<String, String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <Vec<(String, String)>>::sse_decode(deserializer);
+        return inner.into_iter().collect();
+    }
+}
+
 impl SseDecode
     for StreamSink<crate::api::stream::PlayUpdate, flutter_rust_bridge::for_generated::SseCodec>
 {
@@ -786,6 +870,22 @@ impl SseDecode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
+impl SseDecode for crate::api::rega::CredentialFieldInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_label = <String>::sse_decode(deserializer);
+        let mut var_secret = <bool>::sse_decode(deserializer);
+        let mut var_value = <Option<String>>::sse_decode(deserializer);
+        return crate::api::rega::CredentialFieldInfo {
+            id: var_id,
+            label: var_label,
+            secret: var_secret,
+            value: var_value,
+        };
     }
 }
 
@@ -817,6 +917,20 @@ impl SseDecode for Vec<String> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::rega::CredentialFieldInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::rega::CredentialFieldInfo>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -877,6 +991,18 @@ impl SseDecode for Vec<crate::api::rega::ProviderInfo> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::rega::ProviderInfo>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<(String, String)> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<(String, String)>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -1090,12 +1216,28 @@ impl SseDecode for crate::api::rega::ProviderInfo {
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_demo = <bool>::sse_decode(deserializer);
         let mut var_notice = <Option<String>>::sse_decode(deserializer);
+        let mut var_credentialFields =
+            <Vec<crate::api::rega::CredentialFieldInfo>>::sse_decode(deserializer);
+        let mut var_hasCredentials = <bool>::sse_decode(deserializer);
+        let mut var_signedInAs = <Option<String>>::sse_decode(deserializer);
         return crate::api::rega::ProviderInfo {
             id: var_id,
             name: var_name,
             demo: var_demo,
             notice: var_notice,
+            credential_fields: var_credentialFields,
+            has_credentials: var_hasCredentials,
+            signed_in_as: var_signedInAs,
         };
+    }
+}
+
+impl SseDecode for (String, String) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_field0 = <String>::sse_decode(deserializer);
+        let mut var_field1 = <String>::sse_decode(deserializer);
+        return (var_field0, var_field1);
     }
 }
 
@@ -1198,18 +1340,20 @@ fn pde_ffi_dispatcher_primary_impl(
         3 => wire__crate__api__rega__delete_orphans_impl(port, ptr, rust_vec_len, data_len),
         4 => wire__crate__api__rega__destroy_machine_impl(port, ptr, rust_vec_len, data_len),
         5 => wire__crate__api__rega__finish_stop_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__stream__pair_with_pin_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__stream__play_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__rega__forget_credentials_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__stream__pair_with_pin_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__stream__play_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__rega__save_credentials_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1222,13 +1366,36 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        18 => wire__crate__api__stream__stream_status_impl(ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__stream__stream_status_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
 
 // Section: rust2dart
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::rega::CredentialFieldInfo {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.label.into_into_dart().into_dart(),
+            self.secret.into_into_dart().into_dart(),
+            self.value.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::rega::CredentialFieldInfo
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::CredentialFieldInfo>
+    for crate::api::rega::CredentialFieldInfo
+{
+    fn into_into_dart(self) -> crate::api::rega::CredentialFieldInfo {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::rega::MachineOffer {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -1407,6 +1574,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::ProviderInfo {
             self.name.into_into_dart().into_dart(),
             self.demo.into_into_dart().into_dart(),
             self.notice.into_into_dart().into_dart(),
+            self.credential_fields.into_into_dart().into_dart(),
+            self.has_credentials.into_into_dart().into_dart(),
+            self.signed_in_as.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1519,6 +1689,13 @@ impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
     }
 }
 
+impl SseEncode for std::collections::HashMap<String, String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<(String, String)>>::sse_encode(self.into_iter().collect(), serializer);
+    }
+}
+
 impl SseEncode
     for StreamSink<crate::api::stream::PlayUpdate, flutter_rust_bridge::for_generated::SseCodec>
 {
@@ -1539,6 +1716,16 @@ impl SseEncode for bool {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
+impl SseEncode for crate::api::rega::CredentialFieldInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.label, serializer);
+        <bool>::sse_encode(self.secret, serializer);
+        <Option<String>>::sse_encode(self.value, serializer);
     }
 }
 
@@ -1569,6 +1756,16 @@ impl SseEncode for Vec<String> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::rega::CredentialFieldInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::rega::CredentialFieldInfo>::sse_encode(item, serializer);
         }
     }
 }
@@ -1619,6 +1816,16 @@ impl SseEncode for Vec<crate::api::rega::ProviderInfo> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::rega::ProviderInfo>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<(String, String)> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <(String, String)>::sse_encode(item, serializer);
         }
     }
 }
@@ -1799,6 +2006,20 @@ impl SseEncode for crate::api::rega::ProviderInfo {
         <String>::sse_encode(self.name, serializer);
         <bool>::sse_encode(self.demo, serializer);
         <Option<String>>::sse_encode(self.notice, serializer);
+        <Vec<crate::api::rega::CredentialFieldInfo>>::sse_encode(
+            self.credential_fields,
+            serializer,
+        );
+        <bool>::sse_encode(self.has_credentials, serializer);
+        <Option<String>>::sse_encode(self.signed_in_as, serializer);
+    }
+}
+
+impl SseEncode for (String, String) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.0, serializer);
+        <String>::sse_encode(self.1, serializer);
     }
 }
 

@@ -26,16 +26,29 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('demo data says why and can reconnect', (tester) async {
+  testWidgets('saved credentials that failed say why and can reconnect', (
+    tester,
+  ) async {
     final backend = FakeBackend();
+    const failed =
+        "Couldn't sign in to AWS with the saved credentials: timed out";
+    backend.provider = const ProviderInfo(
+      id: 'aws',
+      name: 'AWS',
+      demo: true,
+      notice: failed,
+      credentialFields: awsFields,
+      hasCredentials: true,
+    );
     await open(tester, backend);
-    expect(find.text('No AWS credentials found.'), findsOneWidget);
+    expect(find.text(failed), findsOneWidget);
 
-    backend.provider = const ProviderInfo(id: 'aws', name: 'AWS', demo: false);
+    backend.provider = signedIn();
     await tester.tap(find.byKey(const ValueKey('reconnect')));
     await tester.pumpAndSettle();
     expect(backend.calls.where((c) => c == 'connect'), hasLength(2));
     expect(find.textContaining('Demo data'), findsNothing);
+    expect(find.byKey(const ValueKey('reconnect')), findsNothing);
   });
 
   testWidgets('launch uses the picked region, type and toggles', (

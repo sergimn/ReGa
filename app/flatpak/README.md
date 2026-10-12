@@ -35,9 +35,13 @@ page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
 | `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), Terraform's (BUSL-1.1) in `terraform/`, and the licence notices of the Rust crates in the app and of Rust's standard library, in `rust-crates.txt` and `rust-std.html`. Flutter keeps those of the Dart packages and its engine in `/app/lib/rega/data/flutter_assets/NOTICES.Z` |
 
-Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
-`~/.aws` read-only for credentials and profiles, with the SSO token cache
-writable so an SSO sign-in can refresh it. Nothing else in your home folder.
+Permissions: network, display (Wayland, or X11 as a fallback) and GPU.
+Nothing in your home folder, `~/.aws` included: ReGa only uses the cloud
+credentials entered in the app. It keeps them in the system keyring through
+the Secret portal, which needs no permission: the portal hands the app a key,
+and the app keeps its credentials in a file encrypted with it under
+`~/.var/app/io.github.sergimn.rega/data/keyrings/`. GNOME Keyring provides
+the portal on Ubuntu.
 
 Things to know when the app runs these tools:
 
@@ -150,7 +154,7 @@ crates in the build today ship all of theirs.
   in Moonlight and asks for the PIN Moonlight shows (see the app README's
   Play section).
 - Flathub. It would need the app built from source inside flatpak-builder
-  (Flutter, Dart packages and Cargo crates as offline sources), a review of
-  the `~/.aws` permission, and a word on the bundled Terraform's licence
-  (BUSL-1.1, not open source) next to the app's own (MIT).
+  (Flutter, Dart packages and Cargo crates as offline sources), and a word on
+  the bundled Terraform's licence (BUSL-1.1, not open source) next to the
+  app's own (MIT).
 - aarch64.

@@ -1,20 +1,31 @@
 //! Read-only checks against a real AWS account. Ignored by default (CI has
-//! no credentials); run them with a key in the environment or `~/.aws`:
+//! no credentials). The app itself never reads credentials from the
+//! environment; these tests take an access key from two variables of their
+//! own, so nothing the computer already has is used by accident:
 //!
 //! ```sh
-//! cargo test -p rega_core --test aws_live -- --ignored --nocapture
+//! REGA_TEST_AWS_ACCESS_KEY_ID=... REGA_TEST_AWS_SECRET_ACCESS_KEY=... \
+//!   cargo test -p rega_core --test aws_live -- --ignored --nocapture
 //! ```
 //!
 //! They list and price things. The only change they make is getting the
 //! buckets ready, as the app does the first time it lists machines.
 
+use rega_core::aws::sdk::AccessKey;
 use rega_core::aws::{AwsProvider, ConnectOptions};
 use rega_core::{region, CloudProvider};
 
 async fn connect() -> AwsProvider {
-    AwsProvider::connect(ConnectOptions::from_env())
+    let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+    let key = AccessKey {
+        id: var("REGA_TEST_AWS_ACCESS_KEY_ID"),
+        secret: var("REGA_TEST_AWS_SECRET_ACCESS_KEY"),
+    };
+    let aws = AwsProvider::connect(ConnectOptions::from_env(), &key)
         .await
-        .expect("AWS credentials in the environment or ~/.aws")
+        .expect("signing in with the test access key");
+    println!("signed in as {}", aws.signed_in_as().unwrap_or_default());
+    aws
 }
 
 #[tokio::test(flavor = "multi_thread")]
