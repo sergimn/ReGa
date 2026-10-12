@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'backend.dart';
 import 'provider_page.dart';
 import 'theme.dart';
+import 'widgets/platform_icon.dart';
 
 class RegaApp extends StatelessWidget {
   const RegaApp({super.key, required this.backend});
@@ -112,8 +113,8 @@ class _HomeShellState extends State<HomeShell> {
             destinations: [
               for (final p in providers)
                 NavigationRailDestination(
-                  icon: const Icon(Icons.cloud_outlined),
-                  selectedIcon: const Icon(Icons.cloud),
+                  icon: PlatformIcon(providerId: p.id),
+                  selectedIcon: PlatformIcon(providerId: p.id, selected: true),
                   label: Text(p.name),
                 ),
             ],
