@@ -39,7 +39,6 @@ class PlatformIcon extends StatelessWidget {
       key: ValueKey('platform-logo-$providerId'),
       width: logoSize,
       height: logoSize,
-      filterQuality: FilterQuality.medium,
       // The menu's label already names the platform.
       excludeFromSemantics: true,
     );

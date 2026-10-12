@@ -20,28 +20,41 @@ package of 31 July 2026 (<https://aws.amazon.com/architecture/icons/>):
 Each PNG is its SVG drawn at 32, 64 (`2.0x/`) and 96 px (`3.0x/`), for the
 32 px icon at each screen density, with nothing else changed: AWS's
 guidelines don't allow altering the logo's proportions or colours. To draw
-them again with Chromium, from a folder holding the two SVGs, into `$OUT`
-with its `2.0x/` and `3.0x/` folders (each SVG is 40 px, so it's drawn at
-0.8, 1.6 and 2.4 times):
+them again, from a folder holding the two SVGs, into `$OUT` with its `2.0x/`
+and `3.0x/` folders (each SVG is 40 px, so it's drawn at 0.8, 1.6 and 2.4
+times), use Chrome's headless shell, for instance from
+`npx @puppeteer/browsers install chrome-headless-shell@stable`. Plain
+`chromium --headless` won't do: its window is at least 500 px wide, so it
+only draws the top 2 px of the square.
 
 ```sh
 for pair in AWS-Cloud-logo_32:aws AWS-Cloud-logo_32_Dark:aws-dark; do
   for scale in 0.8: 1.6:2.0x/ 2.4:3.0x/; do
-    chromium --headless --hide-scrollbars --window-size=40,40 \
+    chrome-headless-shell --hide-scrollbars --window-size=40,40 \
       --force-device-scale-factor="${scale%%:*}" \
       --screenshot="$OUT/${scale#*:}${pair#*:}.png" "file://$PWD/${pair%%:*}.svg"
   done
 done
 ```
 
+`test/platform_icon_test.dart` checks each PNG's size, its square's colour,
+and that the logo is drawn on it.
+
 ## Terms
 
 AWS licenses these icons for architecture diagrams and similar material
-(whitepapers, presentations, posters), and its
-[trademark guidelines](https://aws.amazon.com/trademark-guidelines/) ask
-other apps to refer to AWS in plain text, without logos, unless AWS gives
-written permission (trademarks@amazon.com). ReGa uses the logo anyway, as
-the project's owner decided on 12 October 2026, only to show which cloud a
-platform is, unaltered, and on its own background. If AWS asks for it to be
-removed, `PlatformIcon` in `lib/widgets/platform_icon.dart` falls back to a
-plain cloud icon once the AWS entry is taken out of its `logos`.
+(whitepapers, presentations, posters). Its
+[trademark guidelines](https://aws.amazon.com/trademark-guidelines/) license
+AWS customers' apps only the "Powered by AWS" logo (section 3(a)), allow
+fair use in plain text without logos (section 13), and need AWS's written
+permission for anything else (trademarks@amazon.com). ReGa uses this logo
+anyway, as the project's owner decided on 12 October 2026, only to show
+which cloud a platform is, unaltered, and on its own background.
+
+If AWS asks for it to be removed, take out the `aws` entry in
+`PlatformIcon.logos` (`lib/widgets/platform_icon.dart`), so AWS shows a
+plain cloud, then everything that ships or describes the logo: the two
+`assets/platforms/aws/` lines in `pubspec.yaml`, this folder, the AWS logo
+tests in `test/platform_icon_test.dart`, `aws-logo.md` in
+`flatpak/io.github.sergimn.rega.yml` and `flatpak/smoke-test.sh`, and the
+logo's notes in the top-level README and `flatpak/README.md`.
