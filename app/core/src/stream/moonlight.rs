@@ -66,14 +66,14 @@ impl Moonlight {
             }
         }
         let flatpak = flatpak?;
-        let installed = Command::new(&flatpak)
-            .args(["info", FLATHUB_ID])
+        let mut info = Command::new(&flatpak);
+        info.args(["info", FLATHUB_ID])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .status();
-        match tokio::time::timeout(Duration::from_secs(10), installed).await {
+            .kill_on_drop(true);
+        let mut child = spawn(&mut info).await.ok()?;
+        match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
             Ok(Ok(status)) if status.success() => Some(Self {
                 program: flatpak,
                 prefix: vec!["run".into(), FLATHUB_ID.into()],
@@ -91,26 +91,30 @@ impl Moonlight {
 
     /// Starts pairing with `host` using `pin`; it exits 0 once Sunshine
     /// has accepted the PIN. Killed if dropped before then.
-    pub fn pair(&self, host: &str, pin: &str) -> std::io::Result<Child> {
-        self.command(&["pair", host, "--pin", pin])
-            .kill_on_drop(true)
-            .spawn()
+    pub async fn pair(&self, host: &str, pin: &str) -> std::io::Result<Child> {
+        spawn(
+            self.command(&["pair", host, "--pin", pin])
+                .kill_on_drop(true),
+        )
+        .await
     }
 
     /// Whether Moonlight has `host` paired: `list` only works then. Also
     /// false when it can't reach the host at all.
     pub async fn is_paired(&self, host: &str) -> bool {
-        let list = self.command(&["list", host]).kill_on_drop(true).status();
+        let Ok(mut list) = spawn(self.command(&["list", host]).kill_on_drop(true)).await else {
+            return false;
+        };
         matches!(
-            tokio::time::timeout(LIST_TIMEOUT, list).await,
+            tokio::time::timeout(LIST_TIMEOUT, list.wait()).await,
             Ok(Ok(status)) if status.success()
         )
     }
 
     /// Starts streaming `app` from `host` in Moonlight's window. The stream
     /// carries on if ReGa stops waiting for it.
-    pub fn stream(&self, host: &str, app: &str) -> std::io::Result<Child> {
-        self.command(&["stream", host, app]).spawn()
+    pub async fn stream(&self, host: &str, app: &str) -> std::io::Result<Child> {
+        spawn(&mut self.command(&["stream", host, app])).await
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -132,6 +136,21 @@ impl std::fmt::Display for Moonlight {
             write!(f, " {}", arg.to_string_lossy())?;
         }
         Ok(())
+    }
+}
+
+/// Spawns `command`, trying again for a moment while its program is busy
+/// being written, as when an update replaces it.
+async fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut tries = 0;
+    loop {
+        match command.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -237,6 +256,7 @@ pub(crate) mod tests {
         assert!(!moonlight.is_paired("127.0.0.1").await);
         let status = moonlight
             .pair("127.0.0.1", "0420")
+            .await
             .unwrap()
             .wait()
             .await
@@ -245,6 +265,7 @@ pub(crate) mod tests {
         assert!(moonlight.is_paired("127.0.0.1").await);
         moonlight
             .stream("127.0.0.1", "Desktop")
+            .await
             .unwrap()
             .wait()
             .await
@@ -269,6 +290,7 @@ pub(crate) mod tests {
             .unwrap();
         moonlight
             .pair("1.2.3.4", "1234")
+            .await
             .unwrap()
             .wait()
             .await
@@ -283,8 +305,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_missing_program_is_an_error_not_a_panic() {
         let moonlight = Moonlight::program("/nonexistent/moonlight".into());
-        assert!(moonlight.pair("h", "1234").is_err());
+        assert!(moonlight.pair("h", "1234").await.is_err());
         assert!(!moonlight.is_paired("h").await);
-        assert!(moonlight.stream("h", "Desktop").is_err());
+        assert!(moonlight.stream("h", "Desktop").await.is_err());
     }
 }
