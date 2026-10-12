@@ -107,6 +107,41 @@ first (`core/src/aws/`):
     no change or setup marker on it). That drops D: by the same rule. Spot
     machines are never treated this way.
 
+## Play
+
+A running machine has a **Play** button (`core/src/stream/`, with no cloud
+in it; the provider only says where the machine is, through
+`CloudProvider::stream_target`). It:
+
+1. Connects. With WireGuard on, the app runs its own userspace WireGuard
+   client (`tunnel.rs`, on boringtun and smoltcp): no root, no kernel module
+   and no system VPN, so it works in the Flatpak. It forwards Moonlight's
+   ports on 127.0.0.1 (TCP 47984, 47989 and 48010; UDP 47998, 47999, 48000,
+   48002 and 48010) to the machine's tunnel address, plus a free local port
+   to Sunshine's API (47990). A port that's taken, say by a local Sunshine,
+   fails with its number. Moonlight's 1392-byte video packets don't fit the
+   MTU-1400 tunnel, so the tunnel wraps UDP in IPv4 itself and joins
+   fragments again. With WireGuard off, the app first points the Sunshine
+   ports at this device's current IP and Moonlight goes to the public IP.
+2. Pairs Moonlight with the machine's Sunshine, through Sunshine's API
+   (`sunshine.rs`), with the login from the machine's secrets.
+   - Where the app can run Moonlight (`moonlight.rs`: `REGA_MOONLIGHT`,
+     then `moonlight` or `moonlight-qt` on `PATH`, then the Flathub app
+     outside a sandbox), pairing is automatic: the app picks a PIN, runs
+     `moonlight pair` with it and hands Sunshine the same PIN.
+   - Inside ReGa's Flatpak there's no Moonlight to run, so Play ends in a
+     dialog: add the host it shows in Moonlight, then type the PIN Moonlight
+     shows. With WireGuard on, the host is always 127.0.0.1, so that's once
+     per machine.
+3. Starts `moonlight stream <host> Desktop` (automatic only).
+
+While the tunnel is up the machine says "Streaming through WireGuard" and
+offers Disconnect. Stop, destroy and switching a running machine close it
+first, a machine that stopped itself has it closed, and quitting the app
+asks first. One WireGuard key per machine, generated once and kept with the
+machine's secrets in the state bucket, is shared by every device; one
+machine streams to one device at a time anyway.
+
 All AWS calls stay inside the `rega-claude` IAM policy (see the AWS setup
 guide). Calls go through the `AwsApi` trait, so the provider's logic is
 tested against a fake account (`core/src/aws/fake.rs`).
@@ -131,6 +166,21 @@ After changing anything in `rust/src/api/`, regenerate the bindings:
 cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
 flutter_rust_bridge_codegen generate
 ```
+
+The tunnel test (`core/tests/tunnel.rs`) needs a real WireGuard server.
+`core/tests/wireguard/server.sh` (root, `wireguard-tools`, `python3`) sets
+one up like a machine in a network namespace, with echo servers on
+Sunshine's ports; without its variables the test skips, unless
+`REGA_REQUIRE_WG_SERVER=1`, as in CI:
+
+```sh
+sudo core/tests/wireguard/server.sh up > /tmp/wg-test.env
+set -a; . /tmp/wg-test.env; set +a
+REGA_REQUIRE_WG_SERVER=1 cargo test --workspace --test tunnel
+sudo core/tests/wireguard/server.sh down
+```
+
+It uses the kernel's WireGuard, or `wireguard-go` when the kernel has none.
 
 No cloud credentials are needed to build or test. With credentials set up,
 set `REGA_DEMO=1` to run the app (and the integration test) on demo data

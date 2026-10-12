@@ -46,7 +46,7 @@ Optional variables:
 
 | Variable | Default | |
 | --- | --- | --- |
-| `rega_wireguard_client_public_key` | empty | The app's own WireGuard public key. Empty means the playbook makes a client key pair and writes `wireguard-client.conf`. |
+| `rega_wireguard_client_public_key` | empty | The app's WireGuard public key. The app always passes one: its key is generated once per machine and shared by every device through the state bucket. Empty, for running the playbook by hand, means the playbook makes a client key pair and writes `wireguard-client.conf`. |
 | `rega_idle_stop_enabled` | `true` | Shut the machine down after `rega_idle_minutes` (15) with nobody playing. |
 | `rega_library_bucket` / `rega_library_bucket_region` | `rega-games-<account>` / `eu-north-1` | Where the Steam library lives in S3. |
 | `rega_reboot_allowed` | `true` | CI sets it to `false`. |
@@ -57,8 +57,15 @@ Everything the app needs lands in
 `$XDG_DATA_HOME/rega/machines/<machine-id>/` (or `~/.local/share/...`), mode
 0700, never in the repo:
 
-- `connection.json`: Sunshine user and web UI port, WireGuard server public
-  key, addresses, port and MTU.
+- `connection.json`: Sunshine user and web UI port, the SHA-256 of
+  Sunshine's certificate (`sunshine.cert_sha256`, lowercase hex of the DER
+  bytes of `config\credentials\cacert.pem`), and the WireGuard server
+  public key, addresses, port and MTU. After every setup the app copies the
+  server key and the certificate fingerprint to the machine's secrets in
+  the state bucket, so other devices can connect too. The app pins the
+  fingerprint when it calls Sunshine's API, and without WireGuard, where
+  the password would cross the internet, it won't call it until it has
+  one.
 - `sunshine-password`, `desktop-password`, generated at the first run. To
   choose your own, write them there before it.
 - `wireguard-client.conf`, only when no client key was passed. It holds the
@@ -81,6 +88,11 @@ git-ignored.
 The tunnel always runs. Terraform's `wireguard_enabled` decides whether the
 security group lets Moonlight in through it (UDP 51820) or straight to
 Sunshine from the client's IP.
+
+CI's Windows job runs the playbook with a client key from
+`app/core/examples/rega-stream-check.rs`, then has that program open the
+app's own WireGuard tunnel to the runner and call Sunshine's API through it
+with the generated login and the recorded certificate fingerprint.
 
 ### Game library and idle stop
 
