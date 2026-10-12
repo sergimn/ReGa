@@ -140,6 +140,7 @@ void main() {
       find.textContaining('Paired. In Moonlight, open 127.0.0.1'),
       findsOne,
     );
+    expect(find.textContaining('keep it open'), findsOne);
 
     await tester.tap(find.byKey(const ValueKey('pair-close')));
     await tester.pumpAndSettle();
@@ -177,6 +178,15 @@ void main() {
     await play(tester);
 
     expect(find.textContaining('add the host 203.0.113.7'), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('pin')), '1234');
+    await tester.tap(find.byKey(const ValueKey('pair-submit')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Paired. In Moonlight, open 203.0.113.7'),
+      findsOne,
+    );
+    // Moonlight goes straight to the machine, not through ReGa.
+    expect(find.textContaining('keep it open'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('pair-close')));
     await tester.pumpAndSettle();
     expect(find.textContaining(tunnelNote), findsNothing);
@@ -246,6 +256,38 @@ void main() {
     expect(backend.calls, contains('close tunnel'));
     expect(backend.stream, isNull);
     expect(find.textContaining(tunnelNote), findsNothing);
+  });
+
+  testWidgets('quitting while Play connects asks about Play', (tester) async {
+    final backend = FakeBackend(machines: [running]);
+    final updates = StreamController<PlayUpdate>();
+    backend.playUpdates = updates;
+    await tester.pumpWidget(RegaApp(backend: backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('play-gaming-1')));
+    await tester.pump();
+
+    // A spinner runs meanwhile, so pump for the dialog's animation.
+    Future<void> settle() => tester.pump(const Duration(milliseconds: 500));
+    final keep = tester.binding.handleRequestAppExit();
+    await settle();
+    expect(find.text('Quit while Play connects?'), findsOneWidget);
+    expect(find.textContaining('connect to Gaming'), findsOneWidget);
+    expect(find.text('Quit while a change is running?'), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await settle();
+    expect(await keep, AppExitResponse.cancel);
+
+    updates.add(const PlayUpdate(step: PlayStep.done, paired: false));
+    await updates.close();
+    await tester.pumpAndSettle();
+    // Connected now: the question is about the stream.
+    final quit = tester.binding.handleRequestAppExit();
+    await tester.pumpAndSettle();
+    expect(find.text('Quit and end the stream?'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('confirm')));
+    await tester.pumpAndSettle();
+    expect(await quit, AppExitResponse.exit);
   });
 
   testWidgets('quitting with the tunnel up asks first', (tester) async {

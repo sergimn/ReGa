@@ -8,14 +8,20 @@ class PairDialog extends StatefulWidget {
     super.key,
     required this.machineName,
     required this.host,
+    required this.throughTunnel,
     required this.paired,
     required this.onPair,
   });
 
   final String machineName;
 
-  /// What to connect to in Moonlight: 127.0.0.1 through the tunnel.
+  /// What to connect to in Moonlight: 127.0.0.1 through the tunnel, else
+  /// the machine's public IP.
   final String host;
+
+  /// Moonlight reaches the machine through ReGa's WireGuard tunnel, which
+  /// closes with ReGa.
+  final bool throughTunnel;
 
   /// Sunshine already has this device paired. Only a hint: Moonlight may
   /// have forgotten it, so pairing again stays on offer.
@@ -94,8 +100,8 @@ class _PairDialogState extends State<PairDialog> {
               ),
             ] else
               Text(
-                'Paired. In Moonlight, open $host and start Desktop. '
-                'The stream goes through ReGa, so keep it open.',
+                'Paired. In Moonlight, open $host and start Desktop.'
+                '${widget.throughTunnel ? ' The stream goes through ReGa, so keep it open.' : ''}',
               ),
             if (_error case final e?)
               Padding(

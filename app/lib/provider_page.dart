@@ -91,6 +91,9 @@ class _ProviderPageState extends State<ProviderPage> {
   /// What Play is connected to; the WireGuard tunnel, when it has one.
   StreamStatus? _stream;
 
+  /// The machine Play is connecting to, while it does.
+  String? _playing;
+
   /// The last failed launch or machine action.
   Object? _actionError;
   List<OrphanSummary> _orphans = const [];
@@ -126,22 +129,31 @@ class _ProviderPageState extends State<ProviderPage> {
   /// with the tunnel up ends the stream, so ask first.
   Future<AppExitResponse> _confirmExit() async {
     final bool quit;
-    if (_launching || _busy.isNotEmpty || _deletingOrphans) {
+    String name(String machineId) =>
+        _machines.where((m) => m.id == machineId).firstOrNull?.name ??
+        'the machine';
+    if (_launching ||
+        _busy.keys.any((id) => id != _playing) ||
+        _deletingOrphans) {
       quit = await _confirm(
         'Quit while a change is running?',
         'Quitting can stop it halfway. ReGa picks up from there the next '
             'time, and anything left behind shows under Leftover resources.',
         'Quit',
       );
+    } else if (_playing case final machineId?) {
+      quit = await _confirm(
+        'Quit while Play connects?',
+        'Play stops where it is. Press Play again to connect to '
+            '${name(machineId)}.',
+        'Quit',
+      );
     } else if (_backend.streamStatus() case final stream?
         when stream.wireguard) {
-      final name =
-          _machines.where((m) => m.id == stream.machineId).firstOrNull?.name ??
-          'the machine';
       quit = await _confirm(
         'Quit and end the stream?',
-        'The stream from $name goes through the WireGuard tunnel ReGa runs, '
-            'which closes when ReGa quits.',
+        'The stream from ${name(stream.machineId)} goes through the WireGuard '
+            'tunnel ReGa runs, which closes when ReGa quits.',
         'Quit',
       );
     } else {
@@ -183,6 +195,7 @@ class _ProviderPageState extends State<ProviderPage> {
   Future<void> _play(MachineSummary m) async {
     setState(() {
       _busy[m.id] = _playLabel(PlayStep.connecting);
+      _playing = m.id;
       _actionError = null;
     });
     PlayUpdate? done;
@@ -201,14 +214,17 @@ class _ProviderPageState extends State<ProviderPage> {
     if (!mounted) return;
     setState(() {
       _busy.remove(m.id);
+      _playing = null;
       _stream = _backend.streamStatus();
     });
     if (done case PlayUpdate(moonlightHost: final host?, :final paired)) {
+      final throughTunnel = _stream?.wireguard ?? false;
       await showDialog<void>(
         context: context,
         builder: (context) => PairDialog(
           machineName: m.name,
           host: host,
+          throughTunnel: throughTunnel,
           paired: paired,
           onPair: (pin) => _backend.pairWithPin(_id, m.id, pin),
         ),
