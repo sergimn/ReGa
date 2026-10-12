@@ -43,12 +43,14 @@ done
 ok "Windows collections: $(awk '/^(ansible|community)\.windows / { print $1, $2 }' <<<"$out" | paste -sd, -)"
 
 # Ansible can run a module inside the sandbox (it needs a writable temp dir),
-# and the playbooks the app runs resolve every module and role they name.
+# and the playbooks the app runs resolve every module and role they name,
+# with the cleared environment the app runs them in.
 out=$(in_app ansible localhost -m ansible.builtin.ping 2>&1) || fail "ansible can't run a local module: $out"
 grep -q '"ping": "pong"' <<<"$out" || fail "ansible can't run a local module: $out"
 ok "ansible runs a module locally"
-out=$(flatpak run --filesystem="$repo/infra/ansible:ro" --cwd="$repo/infra/ansible" \
-  --command=ansible-playbook "$app" -i inventory.example.yml site.yml agent.yml --syntax-check 2>&1) \
+# shellcheck disable=SC2016 # expanded inside the sandbox
+out=$(flatpak run --filesystem="$repo/infra/ansible:ro" --cwd="$repo/infra/ansible" --command=sh "$app" -c \
+  'exec env -i HOME="$HOME" PATH="$PATH" ansible-playbook -i inventory.example.yml site.yml agent.yml --syntax-check' 2>&1) \
   || fail "the playbooks don't pass a syntax check with the bundled Ansible: $out"
 ok "infra/ansible/site.yml and agent.yml pass a syntax check"
 
