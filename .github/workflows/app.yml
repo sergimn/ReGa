@@ -29,7 +29,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: app-${{ github.ref }}
+  # A release build run by hand gets its own group, so it and a push to the
+  # same branch don't cancel each other while queued.
+  group: app-${{ github.ref }}${{ inputs.release && '-release' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:

@@ -21,7 +21,7 @@ a Flatpak for x86_64 Linux. On Ubuntu:
 ```sh
 sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-wget https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
+wget -O rega-x86_64.flatpak https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
 flatpak install --user rega-x86_64.flatpak   # also pulls its runtime from Flathub
 flatpak run io.github.sergimn.rega
 ```
