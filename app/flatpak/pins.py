@@ -118,7 +118,7 @@ def locked_packages(root: Path) -> dict[str, list[Locked]]:
     entry = None
     for line in read(root, LOCK).replace("\\\n", " ").splitlines():
         line = line.strip()
-        if line.startswith("#") and entry and re.search(rf"-r {Path(REQUIREMENTS).name}\b", line):
+        if line.startswith("#") and entry and re.search(rf"-r (\S*/)?{re.escape(Path(REQUIREMENTS).name)}\b", line):
             packages[entry.name][-1] = entry = replace(entry, direct=True)
         if not line or line.startswith("#"):
             continue
@@ -160,6 +160,7 @@ def marker_environment(runtime: Runtime) -> dict[str, str]:
         "platform_machine": ARCH,
         "platform_python_implementation": "CPython",
         "platform_system": "Linux",
+        "python_full_version": runtime.python,  # see marker_applies()
         "python_version": runtime.python,
         "sys_platform": "linux",
     }
@@ -191,19 +192,35 @@ def marker_applies(marker: str, env: dict[str, str]) -> bool:
             raise SystemExit(f"{LOCK}: pins.py doesn't know the marker {var} for the runtime; "
                              "add it to marker_environment() if the runtime fixes it.")
         if var == "python_version":
-            have, want = version_tuple(env[var]), version_tuple(value)
-        elif op in ("==", "!="):
-            have, want = env[var], value
-        else:
+            return compare_versions(env[var], op, value, token)
+        if var == "python_full_version":
+            # The runtime's patch release moves with its updates, so only a
+            # bound that every 3.13.x falls on the same side of will do; the
+            # bounds uv writes ('< 3.13', '== 3.13.*') are like that.
+            first, last = (compare_versions(f"{env[var]}.{patch}", op, value, token) for patch in (0, 999))
+            if first != last:
+                raise SystemExit(f"{LOCK}: {token} depends on the runtime's Python patch release.")
+            return first
+        if op not in ("==", "!="):
             raise SystemExit(f"{LOCK}: can't compare {var} with {op}")
-        return {"==": have == want, "!=": have != want, "<": have < want, "<=": have <= want,
-                ">": have > want, ">=": have >= want}[op]
+        return (env[var] == value) == (op == "==")
 
-    def version_tuple(version: str) -> tuple[int, ...]:
-        if not re.fullmatch(r"\d+(\.\d+)*", version):
-            raise SystemExit(f"{LOCK}: can't compare python_version with {version!r}")
-        parts = tuple(int(x) for x in version.split("."))
-        return parts + (0,) * (3 - len(parts))  # 3.13 is 3.13.0
+    def compare_versions(have: str, op: str, want: str, token: str) -> bool:
+        """PEP 440 for plain release numbers, and `X.Y.*` prefixes."""
+        prefix = want.endswith(".*")
+        want = want.removesuffix(".*")
+        if not all(re.fullmatch(r"\d+(\.\d+)*", v) for v in (have, want)) or (prefix and op not in ("==", "!=")):
+            raise SystemExit(f"{LOCK}: can't evaluate {token}")
+        a, b = ([int(x) for x in v.split(".")] for v in (have, want))
+        if prefix:
+            a = (a + [0] * len(b))[: len(b)]
+        else:
+            # 3.13 is 3.13.0: trailing zeros don't count.
+            while a and a[-1] == 0:
+                a.pop()
+            while b and b[-1] == 0:
+                b.pop()
+        return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
 
     def expression() -> bool:
         value = term()
@@ -355,6 +372,8 @@ def check(root: Path) -> list[str]:
         if not any(same_version(e.version, pin.version) for e in entries):
             have = " ".join(f"{e.name}=={e.version}" for e in entries) or "nothing"
             errors.append(f"{REQUIREMENTS} pins {pin}, but {LOCK} has {have}; {regenerate}")
+        elif not any(e.direct for e in entries):
+            errors.append(f"{LOCK} doesn't say {pin.name} comes from {REQUIREMENTS}; {regenerate}")
     for name in sorted(n for n, entries in lock.items() if any(e.direct for e in entries)):
         if name not in pins:
             errors.append(f"{LOCK} has {name} from {REQUIREMENTS}, which no longer pins it; {regenerate}")

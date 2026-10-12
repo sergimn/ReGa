@@ -56,13 +56,13 @@ class CheckTest(unittest.TestCase):
     def test_lock_forks_by_python(self):
         # uv can lock a package twice, for different Pythons: the runtime's wins.
         xmltodict = self.locked("xmltodict")
-        self.edit(pins.LOCK, r"^(xmltodict==\S+) ", r"\1 ; python_version >= '3.13' ")
+        self.edit(pins.LOCK, r"^(xmltodict==\S+) ", r"\1 ; python_full_version >= '3.13' ")
         with open(self.root / pins.LOCK, "a") as f:
-            f.write("xmltodict==0.1 ; python_version < '3.13' \\\n    --hash=sha256:" + "0" * 64 + "\n")
+            f.write("xmltodict==0.1 ; python_full_version < '3.13' \\\n    --hash=sha256:" + "0" * 64 + "\n")
         self.assertEqual(pins.check(self.root), [])
         self.assertEqual(pins.locked_for(self.root, pins.RUNTIMES["25.08"])["xmltodict"].version, xmltodict)
         # Two entries that both apply can't be told apart.
-        self.edit(pins.LOCK, r"^xmltodict==0\.1 ; python_version < '3\.13'", "xmltodict==0.1 ; os_name == 'posix'")
+        self.edit(pins.LOCK, r"^xmltodict==0\.1 ; python_full_version < '3\.13'", "xmltodict==0.1 ; os_name == 'posix'")
         with self.assertRaises(SystemExit):
             pins.check(self.root)
 
@@ -93,13 +93,20 @@ class CheckTest(unittest.TestCase):
             ("(sys_platform == 'win32' or python_version < '3.13') and os_name == 'posix'", False),
             ('python_version <= "3.13"', True),
             ("python_version == '3.13.0'", True),
+            ("python_version == '3.13.0.0'", True),
             ("python_version != '3.13'", False),
+            ("python_version != '3.12.*'", True),
+            # The runtime's patch release isn't fixed, but these hold for every one.
+            ("python_full_version >= '3.13'", True),
+            ("python_full_version < '3.13'", False),
+            ("python_full_version == '3.13.*'", True),
+            ("python_full_version < '3.10'", False),
         ]:
             with self.subTest(marker):
                 self.assertEqual(pins.marker_applies(marker, env), applies)
         for marker in ("sys_platform == 'linux' and", "(os_name == 'posix'", "sys_platform ~= 'linux'",
                        "sys_platform < 'linux'", "python_version < '3.13.*'",
-                       "python_full_version >= '3.13'"):
+                       "python_full_version >= '3.13.2'"):
             with self.subTest(marker), self.assertRaises(SystemExit):
                 pins.marker_applies(marker, env)
 
@@ -112,6 +119,15 @@ class CheckTest(unittest.TestCase):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+\n", "")
         self.assertDrift("requirements.lock has pywinrm from infra/ansible/requirements.txt, "
                          "which no longer pins it")
+
+    def test_pin_not_marked_as_direct(self):
+        self.edit(pins.LOCK, r"(^pywinrm==[^#]*)# via -r requirements\.txt", r"\1# via ansible-core")
+        self.assertDrift("doesn't say pywinrm comes from infra/ansible/requirements.txt")
+
+    def test_lock_regenerated_elsewhere(self):
+        lock = self.root / pins.LOCK
+        lock.write_text(lock.read_text().replace("-r requirements.txt", "-r infra/ansible/requirements.txt"))
+        self.assertEqual(pins.check(self.root), [])
 
     def test_same_release_written_longer(self):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==(\S+)", r"pywinrm==\1.0")
