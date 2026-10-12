@@ -1,5 +1,6 @@
-# Packages the Flutter release bundle built by `flutter build linux --release`.
-# Build from app/: see flatpak/README.md.
+# Packages the Flutter release bundle built by `flutter build linux --release`,
+# and the licence notices of the Rust code in it, which rust_notices.py writes
+# next to it. Build from app/: see flatpak/README.md.
 id: io.github.sergimn.rega
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
@@ -42,6 +43,9 @@ modules:
       - cp -r bundle/. /app/lib/rega/
       - ln -s /app/lib/rega/rega /app/bin/rega
       - install -Dm644 LICENSE -t /app/share/licenses/io.github.sergimn.rega
+      # The Rust crates' and standard library's licences ask for their
+      # notices to go with every copy.
+      - install -Dm644 licenses/rust-crates.txt licenses/rust-std.html -t /app/share/licenses/io.github.sergimn.rega
       - install -Dm644 io.github.sergimn.rega.desktop -t /app/share/applications
       - install -Dm644 io.github.sergimn.rega.metainfo.xml -t /app/share/metainfo
       - install -Dm644 rega.svg /app/share/icons/hicolor/scalable/apps/io.github.sergimn.rega.svg
@@ -50,6 +54,9 @@ modules:
       - type: dir
         path: ../build/linux/x64/release/bundle
         dest: bundle
+      - type: dir
+        path: ../build/linux/x64/release/licenses
+        dest: licenses
       - type: file
         path: ../../LICENSE
       - type: file

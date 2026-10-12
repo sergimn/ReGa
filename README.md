@@ -60,4 +60,7 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 
 ReGa is released under the [MIT License](LICENSE). The vendored Cargokit
 build scripts in `app/rust_builder/cargokit/` keep their own copyright and
-licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE).
+licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE). The
+Flatpak ships the notices of the Rust crates and standard library built into
+the app, and Terraform's licence, in `/app/share/licenses/io.github.sergimn.rega/`
+(see [app/flatpak/README.md](app/flatpak/README.md#rust-crate-licences)).

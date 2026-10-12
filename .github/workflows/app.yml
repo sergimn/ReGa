@@ -76,6 +76,10 @@ jobs:
           ansible-galaxy collection install -r requirements.yml
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The Flutter job writes them for the Flatpak; this says sooner when
+      # one can't be.
+      - name: Every crate has a licence text to ship
+        run: python3 flatpak/rust_notices.py check
       # For tests/tunnel.rs: a WireGuard server set up like a ReGa machine,
       # in a network namespace, with the kernel's WireGuard.
       - name: Start a WireGuard test server
@@ -138,13 +142,16 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build linux --release
+      # For the Flatpak, next to the bundle (see flatpak/README.md).
+      - name: Licence texts of the Rust crates and standard library
+        run: python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
       - name: End-to-end test against the Rust core
         run: xvfb-run -a flutter test integration_test -d linux
         # Demo data, without even trying the AWS credential chain.
         env:
           REGA_DEMO: '1'
       # Artifacts drop file permissions, so ship the bundle as a tarball.
-      - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle
+      - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle licenses
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rega-linux-x64

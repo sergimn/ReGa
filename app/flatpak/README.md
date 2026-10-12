@@ -33,7 +33,7 @@ page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
 | `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock`; the app runs the playbook it carries with it |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
-| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), and Terraform's (BUSL-1.1) in `terraform/` |
+| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), Terraform's (BUSL-1.1) in `terraform/`, and the licence notices of the Rust crates in the app and of Rust's standard library, in `rust-crates.txt` and `rust-std.html`. Flutter keeps those of the Dart packages and its engine in `/app/lib/rega/data/flutter_assets/NOTICES.Z` |
 
 Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
 `~/.aws` read-only for credentials and profiles, with the SSO token cache
@@ -66,16 +66,18 @@ that first, from `app/`:
 
 ```sh
 flutter build linux --release
+python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
 flatpak-builder --user --install --install-deps-from=flathub --force-clean \
   build/flatpak flatpak/io.github.sergimn.rega.yml
 dbus-run-session -- flatpak/smoke-test.sh
 ```
 
-The smoke test checks the installed app: Terraform and Ansible run in the
-sandbox, the Windows collections are there, the playbooks in
-`infra/ansible` pass a syntax check, and the app draws its window (on demo data, on a private
-Xvfb display over X11, whatever your desktop runs). It needs Xvfb and
-xdotool.
+The smoke test checks the installed app: the licences are there (the Rust
+crates' for the `Cargo.lock` you built from), Terraform and Ansible run in
+the sandbox, the Windows collections are there, the playbooks in
+`infra/ansible` pass a syntax check, and the app draws its window (on demo
+data, on a private Xvfb display over X11, whatever your desktop runs). It
+needs Xvfb and xdotool.
 
 ## Pins
 
@@ -98,6 +100,48 @@ in CI and fails when the manifest no longer matches the lock, the lock no
 longer matches `requirements.txt`, or the bundled Terraform isn't the one
 CI tests the module with.
 
+## Rust crate licences
+
+The crates in the app's Rust core and Rust's standard library (MIT,
+Apache-2.0, BSD and the like) ask for their notices and licence texts to go
+with every copy. `rust_notices.py write DIR` puts two files in `DIR`:
+
+- `rust-crates.txt`: the crates and versions `cargo tree` finds for the
+  build (normal and build dependencies of `rega_bridge` on x86_64 Linux),
+  then the licence texts each crate ships, vendored code's too (aws-lc in
+  `aws-lc-sys`, say), each text once under all the crates that ship it.
+- `rust-std.html`: the standard library's notices, copied from the Rust
+  toolchain that builds the core (`share/doc/rust/COPYRIGHT-library.html`
+  in its sysroot).
+
+CI writes them after every build, from the crates cargo downloaded, so they
+always match `Cargo.lock` and Renovate's crate updates need nothing by hand.
+The smoke test checks the installed `rust-crates.txt` was written for the
+`Cargo.lock` of your checkout.
+
+`python3 flatpak/rust_notices.py check` (the App workflow's Rust job runs it)
+fails, saying what to do, when:
+
+- A crate is under a licence that isn't in `ACCEPTED`, the ones whose terms
+  a binary meets by shipping the notice. Read its terms before adding it.
+- A crate ships no licence text of its own. Copy its text from its
+  repository, at the commit the error names, into `rust-licenses/<crate>/`,
+  and add the crate to `UNSHIPPED` with its licence and that commit.
+- A crate's Cargo.toml has only a `license-file`, no licence: read the file
+  and add the crate to `LICENSE_FILE_ONLY` with the file's sha256.
+- One of those crates changes its licence, or that file.
+
+Texts checked in here can go stale, so for them the check warns rather
+than failing (on GitHub, as an annotation on the run and the PR): when an
+`UNSHIPPED` crate is published from a new commit, or an `aws-lc-sys` update
+arrives for `LEFT_OUT` (the licences of vendored code that aws-lc's own
+licence points at but the crate leaves out), see whether the text changed
+and update the entry.
+
+It doesn't check that a crate's files cover every licence in an AND: a crate
+under `MIT AND Unicode-3.0` that ships only the MIT text would pass. The
+crates in the build today ship all of theirs.
+
 ## Not done yet
 
 - Launching Moonlight from inside the sandbox. The Moonlight Flatpak is a
@@ -109,7 +153,4 @@ CI tests the module with.
   (Flutter, Dart packages and Cargo crates as offline sources), a review of
   the `~/.aws` permission, and a word on the bundled Terraform's licence
   (BUSL-1.1, not open source) next to the app's own (MIT).
-- The licence notices of the Rust crates built into the app (generated with
-  something like cargo-about). Flutter already bundles those of the Dart
-  packages and the engine, in `flutter_assets/NOTICES.Z`.
 - aarch64.
