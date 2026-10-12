@@ -22,13 +22,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::future::{join_all, try_join_all};
 
-use crate::ansible::AnsibleSetup;
+use crate::ansible::{self, AnsibleSetup};
 use crate::model::{
     roomy_cpu_type, Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan,
     Price, Region, ResourceKind, StorageLocation,
 };
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
 use crate::setup::{MachineAccess, MachineSecrets, MachineSetup, NoSetup};
+use crate::stream::{self, StreamTarget, WireGuardPeer};
 use crate::terraform::{self, io_error, Backend, LockInfo, RunMarker, Terraform};
 use api::{AwsApi, BucketInfo, Instance};
 use cache::TtlCache;
@@ -624,17 +625,45 @@ impl AwsProvider {
         Ok(Some(key))
     }
 
-    /// The passwords the setup gives the machine, made the first time.
+    /// The passwords the setup gives the machine and its WireGuard key,
+    /// made the first time.
     async fn secrets(&self, machine_id: &str) -> ProviderResult<MachineSecrets> {
         let key = record::secrets_key(machine_id);
         if let Some(json) = self.api.get_object(&self.state_bucket(), &key).await? {
-            return MachineSecrets::from_json(&json);
+            let mut secrets = MachineSecrets::from_json(&json)?;
+            // Saved by an app from before the WireGuard client.
+            if secrets.add_missing_key()? {
+                self.save_secrets(machine_id, &secrets).await?;
+            }
+            return Ok(secrets);
         }
         let secrets = MachineSecrets::generate()?;
-        self.api
-            .put_object(&self.state_bucket(), &key, secrets.to_json().into_bytes())
-            .await?;
+        self.save_secrets(machine_id, &secrets).await?;
         Ok(secrets)
+    }
+
+    async fn save_secrets(&self, machine_id: &str, secrets: &MachineSecrets) -> ProviderResult<()> {
+        self.api
+            .put_object(
+                &self.state_bucket(),
+                &record::secrets_key(machine_id),
+                secrets.to_json().into_bytes(),
+            )
+            .await
+    }
+
+    /// Keeps what the setup learnt about the machine (its WireGuard key and
+    /// Sunshine's certificate) with its secrets, so every device can connect,
+    /// not only the one that ran the setup. Saves only on a change.
+    async fn learn_connection(&self, access: &MachineAccess) -> ProviderResult<()> {
+        let Some(details) = self.setup.connection(access).await? else {
+            return Ok(());
+        };
+        let mut secrets = self.secrets(&access.machine_id).await?;
+        if secrets.learn(&details) {
+            self.save_secrets(&access.machine_id, &secrets).await?;
+        }
+        Ok(())
     }
 
     async fn terraform_env(&self) -> ProviderResult<Vec<(String, String)>> {
@@ -920,6 +949,7 @@ impl AwsProvider {
                     self.save_record(record).await?;
                 }
                 self.setup.after_start(&access).await?;
+                self.learn_connection(&access).await?;
                 if wait_for_library {
                     self.setup.wait_for_library(&access).await?;
                 }
@@ -1600,6 +1630,68 @@ impl CloudProvider for AwsProvider {
             }
             _ => Ok(()),
         }
+    }
+
+    async fn stream_target(&self, machine_id: &str) -> ProviderResult<StreamTarget> {
+        // Before taking this device's own claim, which counts as busy.
+        let busy = self.snapshot().await?.busy.contains(machine_id);
+        let _acting = self.begin(machine_id)?;
+        let mut record = self.record(machine_id).await?;
+        let instance = self.instance_of(&record).await?;
+        let name = &record.name;
+        let Some(public_ip) = instance
+            .filter(|i| i.state == MachineState::Running)
+            .and_then(|i| i.public_ip)
+        else {
+            return Err(ProviderError::InvalidState(format!(
+                "{name} isn't running; start it first"
+            )));
+        };
+        if busy {
+            return Err(ProviderError::InvalidState(format!(
+                "{name} is busy with a change; wait for it to finish"
+            )));
+        }
+        let secrets = self.secrets(machine_id).await?;
+        let wireguard = record.vars.wireguard_enabled;
+        let set_up_first = || {
+            ProviderError::InvalidState(format!(
+                "{name} hasn't been set up for streaming yet. Start it again to set it up"
+            ))
+        };
+        let wireguard = if wireguard {
+            let server_public_key = secrets
+                .wireguard_server_public_key
+                .clone()
+                .ok_or_else(set_up_first)?;
+            let ip: std::net::IpAddr = public_ip.parse().map_err(|_| {
+                ProviderError::Cloud(format!("{name} has an odd public IP: {public_ip}"))
+            })?;
+            Some(WireGuardPeer {
+                endpoint: (ip, ansible::WIREGUARD_PORT).into(),
+                server_public_key,
+                client_private_key: secrets.wireguard_private_key.clone(),
+                client_address: stream::CLIENT_ADDRESS,
+                server_address: stream::SERVER_ADDRESS,
+                mtu: stream::TUNNEL_MTU,
+            })
+        } else {
+            // The password crosses the internet, so only to the certificate
+            // the setup saw.
+            if secrets.sunshine_cert_sha256.is_none() {
+                return Err(set_up_first());
+            }
+            self.open_to_me(&mut record).await?;
+            None
+        };
+        Ok(StreamTarget {
+            machine_id: machine_id.into(),
+            public_ip,
+            sunshine_user: stream::SUNSHINE_USER.into(),
+            sunshine_password: secrets.sunshine_password,
+            sunshine_cert_sha256: secrets.sunshine_cert_sha256,
+            wireguard,
+        })
     }
 
     async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {

@@ -76,9 +76,24 @@ jobs:
           ansible-galaxy collection install -r requirements.yml
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      # For tests/tunnel.rs: a WireGuard server set up like a ReGa machine,
+      # in a network namespace, with the kernel's WireGuard.
+      - name: Start a WireGuard test server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools
+          # The runner's user writes the file, not root.
+          # shellcheck disable=SC2024
+          sudo core/tests/wireguard/server.sh up > "$RUNNER_TEMP/wg-test.env"
+      - name: cargo test
+        run: |
+          set -a
+          . "$RUNNER_TEMP/wg-test.env"
+          set +a
+          cargo test --workspace --locked
         env:
           REGA_REQUIRE_ANSIBLE: '1'
+          REGA_REQUIRE_WG_SERVER: '1'
 
   flutter:
     name: Flutter (analyze, test, Linux build)

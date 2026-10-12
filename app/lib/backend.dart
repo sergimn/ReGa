@@ -1,3 +1,8 @@
+import 'dart:async';
+
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
+    show AnyhowException;
+
 import 'src/rust/api/rega.dart' as rust;
 import 'src/rust/api/rega.dart'
     show
@@ -5,7 +10,10 @@ import 'src/rust/api/rega.dart'
         MachineSummary,
         OrphanSummary,
         ProviderInfo,
+        RegaError,
         RegionChoices;
+import 'src/rust/api/stream.dart' as stream;
+import 'src/rust/api/stream.dart' show PlayUpdate, StreamStatus;
 
 export 'src/rust/api/rega.dart'
     show
@@ -18,6 +26,7 @@ export 'src/rust/api/rega.dart'
         RegaError,
         RegionChoices,
         RegionOption;
+export 'src/rust/api/stream.dart' show PlayStep, PlayUpdate, StreamStatus;
 
 /// Everything the UI needs from the core. Widgets depend on this interface
 /// so tests can swap in a fake without loading the Rust library.
@@ -84,6 +93,21 @@ abstract class RegaBackend {
   Future<List<OrphanSummary>> listOrphans(String providerId);
 
   Future<void> deleteOrphans(String providerId, List<OrphanSummary> orphans);
+
+  /// Connects to a running machine (through its WireGuard tunnel when it
+  /// has one), pairs Moonlight if needed and starts the stream, reporting
+  /// each step. The last update is [PlayStep.done]; a failure ends the
+  /// stream with a [RegaError] instead.
+  Stream<PlayUpdate> play(String providerId, String machineId);
+
+  /// Hands the PIN Moonlight shows to the machine Play connected to.
+  Future<void> pairWithPin(String providerId, String machineId, String pin);
+
+  /// What Play is connected to, if anything.
+  StreamStatus? streamStatus();
+
+  /// Ends Play's connection, and with it a stream through the tunnel.
+  Future<void> closeTunnel();
 }
 
 /// Calls into the Rust core through flutter_rust_bridge.
@@ -181,6 +205,35 @@ class RustBackend implements RegaBackend {
   @override
   Future<void> deleteOrphans(String providerId, List<OrphanSummary> orphans) =>
       rust.deleteOrphans(providerId: providerId, orphans: orphans);
+
+  @override
+  Stream<PlayUpdate> play(String providerId, String machineId) => stream
+      .play(providerId: providerId, machineId: machineId)
+      .transform(
+        StreamTransformer.fromHandlers(
+          // The core sends its failures as plain messages.
+          handleError: (e, trace, sink) => sink.addError(
+            e is AnyhowException
+                ? RegaError(message: e.message, gamesNotSaved: false)
+                : e,
+            trace,
+          ),
+        ),
+      );
+
+  @override
+  Future<void> pairWithPin(String providerId, String machineId, String pin) =>
+      stream.pairWithPin(
+        providerId: providerId,
+        machineId: machineId,
+        pin: pin,
+      );
+
+  @override
+  StreamStatus? streamStatus() => stream.streamStatus();
+
+  @override
+  Future<void> closeTunnel() => stream.closeTunnel();
 }
 
 extension MachineOfferX on MachineOffer {

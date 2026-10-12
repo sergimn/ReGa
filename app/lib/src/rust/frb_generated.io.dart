@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/rega.dart';
+import 'api/stream.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -22,6 +23,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw);
+
+  @protected
+  RustStreamSink<PlayUpdate> dco_decode_StreamSink_play_update_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -32,6 +39,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RegionOption dco_decode_box_autoadd_region_option(dynamic raw);
+
+  @protected
+  StreamStatus dco_decode_box_autoadd_stream_status(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
@@ -85,6 +95,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RegionOption? dco_decode_opt_box_autoadd_region_option(dynamic raw);
 
   @protected
+  StreamStatus? dco_decode_opt_box_autoadd_stream_status(dynamic raw);
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
@@ -92,6 +105,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OrphanSummary dco_decode_orphan_summary(dynamic raw);
+
+  @protected
+  PlayStep dco_decode_play_step(dynamic raw);
+
+  @protected
+  PlayUpdate dco_decode_play_update(dynamic raw);
 
   @protected
   ProviderInfo dco_decode_provider_info(dynamic raw);
@@ -106,6 +125,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RegionOption dco_decode_region_option(dynamic raw);
 
   @protected
+  StreamStatus dco_decode_stream_status(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
 
   @protected
@@ -113,6 +135,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void dco_decode_unit(dynamic raw);
+
+  @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<PlayUpdate> sse_decode_StreamSink_play_update_Sse(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
@@ -125,6 +155,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RegionOption sse_decode_box_autoadd_region_option(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  StreamStatus sse_decode_box_autoadd_stream_status(
     SseDeserializer deserializer,
   );
 
@@ -192,6 +227,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  StreamStatus? sse_decode_opt_box_autoadd_stream_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
@@ -199,6 +239,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OrphanSummary sse_decode_orphan_summary(SseDeserializer deserializer);
+
+  @protected
+  PlayStep sse_decode_play_step(SseDeserializer deserializer);
+
+  @protected
+  PlayUpdate sse_decode_play_update(SseDeserializer deserializer);
 
   @protected
   ProviderInfo sse_decode_provider_info(SseDeserializer deserializer);
@@ -213,6 +259,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RegionOption sse_decode_region_option(SseDeserializer deserializer);
 
   @protected
+  StreamStatus sse_decode_stream_status(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
@@ -220,6 +269,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_decode_unit(SseDeserializer deserializer);
+
+  @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_play_update_Sse(
+    RustStreamSink<PlayUpdate> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
@@ -233,6 +294,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_region_option(
     RegionOption self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_stream_status(
+    StreamStatus self,
     SseSerializer serializer,
   );
 
@@ -312,6 +379,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_stream_status(
+    StreamStatus? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
@@ -319,6 +392,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_orphan_summary(OrphanSummary self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_play_step(PlayStep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_play_update(PlayUpdate self, SseSerializer serializer);
 
   @protected
   void sse_encode_provider_info(ProviderInfo self, SseSerializer serializer);
@@ -331,6 +410,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_region_option(RegionOption self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_stream_status(StreamStatus self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

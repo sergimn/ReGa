@@ -10,6 +10,7 @@ use rega_core::{
     ProviderError, Region, ResourceKind, DEFAULT_DISK_GIB,
 };
 
+use crate::api::stream;
 use crate::registry;
 
 /// An error the UI shows as is: a plain message, never a backtrace.
@@ -324,9 +325,11 @@ pub async fn start_machine(provider_id: String, machine_id: String) -> RegaResul
     view(entry.provider(), machine).await
 }
 
-/// Saves the game library and stops the machine.
+/// Saves the game library and stops the machine, closing Play's
+/// connection to it first.
 pub async fn stop_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
+    stream::close_for(&provider_id, &machine_id).await;
     let machine = entry.provider().stop(&machine_id).await?;
     view(entry.provider(), machine).await
 }
@@ -347,6 +350,8 @@ pub async fn resize_machine(
     type_name: String,
 ) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
+    // A running machine restarts with a new IP.
+    stream::close_for(&provider_id, &machine_id).await;
     let machine = entry.provider().resize(&machine_id, &type_name).await?;
     view(entry.provider(), machine).await
 }
@@ -361,6 +366,7 @@ pub async fn destroy_machine(
     even_if_unsaved: bool,
 ) -> RegaResult<()> {
     let entry = registry::entry(&provider_id)?;
+    stream::close_for(&provider_id, &machine_id).await;
     entry
         .provider()
         .destroy(&machine_id, even_if_unsaved)
@@ -491,12 +497,12 @@ fn summary(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Once;
 
     /// Every test runs on the same demo provider.
-    fn demo() {
+    pub(crate) fn demo() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| registry::set(vec![registry::Entry::demo("tests")]));
     }

@@ -1,16 +1,30 @@
 name: Ansible
 
+# The Windows job also checks the app's WireGuard tunnel and Sunshine client
+# against the machine the playbook sets up, so their code triggers it too.
 on:
   pull_request:
     paths:
       - "infra/ansible/**"
       - "infra/terraform/aws/templates/**"
+      - "app/core/src/stream/**"
+      - "app/core/src/ansible.rs"
+      - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
   push:
     branches: [main]
     paths:
       - "infra/ansible/**"
       - "infra/terraform/aws/templates/**"
+      - "app/core/src/stream/**"
+      - "app/core/src/ansible.rs"
+      - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
 
 permissions:
@@ -21,6 +35,9 @@ env:
   PESTER_VERSION: 5.9.1
   # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
   PSSCRIPTANALYZER_VERSION: 1.25.0
+  # renovate: datasource=rust-version depName=rust
+  RUST_VERSION: 1.98.1
+  CARGO_TERM_COLOR: always
 
 jobs:
   lint:
@@ -72,17 +89,51 @@ jobs:
           $result = Invoke-Pester tests/pester -Output Detailed -PassThru
           if ($result.FailedCount -gt 0) { exit 1 }
 
+  stream-check:
+    name: Build the stream check
+    # app/core/examples/rega-stream-check.rs, which the Windows job runs to
+    # reach Sunshine through the app's own WireGuard tunnel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # rustup comes with the runner image.
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: app
+      - run: cargo build --locked -p rega_core --example rega-stream-check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rega-stream-check
+          path: app/target/debug/examples/rega-stream-check
+          if-no-files-found: error
+
   windows:
     name: Playbook on Windows Server 2022
     # Runs the real playbook against the runner itself, from Ansible inside
     # WSL, over WinRM HTTPS set up by Terraform's boot script. No AWS: the
     # NVIDIA driver and the S3 sync can't be exercised here.
+    needs: stream-check
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rega-stream-check
+          path: stream-check
 
       - name: Pester (Windows PowerShell 5.1)
         shell: powershell
@@ -132,6 +183,10 @@ jobs:
           python3 -m venv ~/venv
           ~/venv/bin/pip install --quiet -r ~/ansible/requirements.lock
           ~/venv/bin/ansible-galaxy collection install -r ~/ansible/requirements.yml
+          # The app's WireGuard key, as the app passes it to the playbook.
+          # Artifacts drop the executable bit.
+          install -m 755 stream-check/rega-stream-check ~/rega-stream-check
+          ~/rega-stream-check keygen ~/wireguard-client.key > ~/wireguard-client.pub
           cat > ~/ansible/inventory.yml <<INVENTORY
           rega:
             hosts:
@@ -149,7 +204,8 @@ jobs:
           set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)"
 
       - name: Run it again; nothing should change
         shell: wsl-bash {0}
@@ -159,10 +215,22 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)" \
             --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
+
+      # WSL 1 shares the runner's network, so the machine's WireGuard port
+      # is 127.0.0.1:51820.
+      - name: Reach Sunshine through the app's WireGuard tunnel
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          secrets=~/.local/share/rega/machines/ci
+          # With the app's key, the playbook makes no client config.
+          test ! -e "$secrets/wireguard-client.conf"
+          ~/rega-stream-check check "$secrets" ~/wireguard-client.key 127.0.0.1:51820
 
       - name: Run the agent actions the app uses
         shell: wsl-bash {0}

@@ -7,6 +7,7 @@ import 'backend.dart';
 import 'widgets/format.dart';
 import 'widgets/machine_card.dart';
 import 'widgets/machine_tile.dart';
+import 'widgets/pair_dialog.dart';
 import 'widgets/region_picker.dart';
 
 /// One provider: purchase toggles, region picker, machine types, launch,
@@ -87,6 +88,12 @@ class _ProviderPageState extends State<ProviderPage> {
   /// finish, so a failing one isn't retried on every reload.
   final Set<String> _finishing = {};
 
+  /// What Play is connected to; the WireGuard tunnel, when it has one.
+  StreamStatus? _stream;
+
+  /// The machine Play is connecting to, while it does.
+  String? _playing;
+
   /// The last failed launch or machine action.
   Object? _actionError;
   List<OrphanSummary> _orphans = const [];
@@ -118,17 +125,40 @@ class _ProviderPageState extends State<ProviderPage> {
     super.dispose();
   }
 
-  /// Quitting in the middle of a change can stop it halfway, so ask first.
+  /// Quitting in the middle of a change can stop it halfway, and quitting
+  /// with the tunnel up ends the stream, so ask first.
   Future<AppExitResponse> _confirmExit() async {
-    if (!_launching && _busy.isEmpty && !_deletingOrphans) {
+    final bool quit;
+    String name(String machineId) =>
+        _machines.where((m) => m.id == machineId).firstOrNull?.name ??
+        'the machine';
+    if (_launching ||
+        _busy.keys.any((id) => id != _playing) ||
+        _deletingOrphans) {
+      quit = await _confirm(
+        'Quit while a change is running?',
+        'Quitting can stop it halfway. ReGa picks up from there the next '
+            'time, and anything left behind shows under Leftover resources.',
+        'Quit',
+      );
+    } else if (_playing case final machineId?) {
+      quit = await _confirm(
+        'Quit while Play connects?',
+        'Play stops where it is. Press Play again to connect to '
+            '${name(machineId)}.',
+        'Quit',
+      );
+    } else if (_backend.streamStatus() case final stream?
+        when stream.wireguard) {
+      quit = await _confirm(
+        'Quit and end the stream?',
+        'The stream from ${name(stream.machineId)} goes through the WireGuard '
+            'tunnel ReGa runs, which closes when ReGa quits.',
+        'Quit',
+      );
+    } else {
       return AppExitResponse.exit;
     }
-    final quit = await _confirm(
-      'Quit while a change is running?',
-      'Quitting can stop it halfway. ReGa picks up from there the next time, '
-          'and anything left behind shows under Leftover resources.',
-      'Quit',
-    );
     return quit ? AppExitResponse.exit : AppExitResponse.cancel;
   }
 
@@ -136,6 +166,75 @@ class _ProviderPageState extends State<ProviderPage> {
   void _machinesChanged() {
     _schedulePoll();
     _finishSelfStops();
+    _checkStream();
+  }
+
+  /// Keeps the stream status current, and closes the tunnel to a machine
+  /// that is no longer running (say, it stopped itself when idle).
+  Future<void> _checkStream() async {
+    final stream = _backend.streamStatus();
+    final mine = stream != null && stream.providerId == _id;
+    final gone =
+        mine &&
+        !_machines.any(
+          (m) => m.id == stream.machineId && m.status == MachineStatus.running,
+        );
+    if (gone) await _backend.closeTunnel();
+    if (mounted) setState(() => _stream = _backend.streamStatus());
+  }
+
+  String _playLabel(PlayStep step) => switch (step) {
+    PlayStep.connecting || PlayStep.done => 'Connecting…',
+    PlayStep.pairing => 'Pairing…',
+    PlayStep.startingMoonlight => 'Starting Moonlight…',
+  };
+
+  /// Connects to the machine, pairs Moonlight and starts the stream,
+  /// showing each step on the machine. Where ReGa can't run Moonlight (as
+  /// in its Flatpak), it ends by asking for the PIN Moonlight shows.
+  Future<void> _play(MachineSummary m) async {
+    setState(() {
+      _busy[m.id] = _playLabel(PlayStep.connecting);
+      _playing = m.id;
+      _actionError = null;
+    });
+    PlayUpdate? done;
+    try {
+      await for (final update in _backend.play(_id, m.id)) {
+        if (!mounted) return;
+        if (update.step == PlayStep.done) {
+          done = update;
+        } else {
+          setState(() => _busy[m.id] = _playLabel(update.step));
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy.remove(m.id);
+      _playing = null;
+      _stream = _backend.streamStatus();
+    });
+    if (done case PlayUpdate(moonlightHost: final host?, :final paired)) {
+      final throughTunnel = _stream?.wireguard ?? false;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => PairDialog(
+          machineName: m.name,
+          host: host,
+          throughTunnel: throughTunnel,
+          paired: paired,
+          onPair: (pin) => _backend.pairWithPin(_id, m.id, pin),
+        ),
+      );
+    }
+  }
+
+  Future<void> _disconnect() async {
+    await _backend.closeTunnel();
+    if (mounted) setState(() => _stream = _backend.streamStatus());
   }
 
   void _schedulePoll() {
@@ -600,6 +699,13 @@ class _ProviderPageState extends State<ProviderPage> {
                 ),
                 onSwitch: _changing ? null : () => _switch(m),
                 onDestroy: () => _destroy(m),
+                onPlay: _launching || _busy.isNotEmpty ? null : () => _play(m),
+                throughTunnel:
+                    _stream != null &&
+                    _stream!.providerId == _id &&
+                    _stream!.machineId == m.id &&
+                    _stream!.wireguard,
+                onDisconnect: _disconnect,
               ),
           if (_orphans.isNotEmpty) ..._orphanSection(theme),
         ],

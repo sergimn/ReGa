@@ -79,7 +79,8 @@ Future<MachineSummary> startMachine({
   machineId: machineId,
 );
 
-/// Saves the game library and stops the machine.
+/// Saves the game library and stops the machine, closing Play's
+/// connection to it first.
 Future<MachineSummary> stopMachine({
   required String providerId,
   required String machineId,
