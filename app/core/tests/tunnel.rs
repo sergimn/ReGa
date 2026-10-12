@@ -122,7 +122,15 @@ async fn moonlight_ports_reach_a_real_wireguard_server() {
 
     // A burst like a video keyframe: the machine sends 300 video packets
     // back to back, each in two fragments.
-    let video = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    // Room for the whole burst, so a reader that falls behind on a busy CI
+    // runner doesn't drop it itself.
+    let video = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+    video.set_recv_buffer_size(4 << 20).unwrap();
+    video.set_nonblocking(true).unwrap();
+    video
+        .bind(&SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())
+        .unwrap();
+    let video = UdpSocket::from_std(video.into()).unwrap();
     video.connect(("127.0.0.1", 47998)).await.unwrap();
     let count = 300;
     let started = Instant::now();
