@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 792328796;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1006737817;
 
 // Section: executor
 
@@ -47,6 +47,43 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
+fn wire__crate__api__stream__close_tunnel_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "close_tunnel",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let output_ok = Ok::<_, ()>({
+                            crate::api::stream::close_tunnel().await;
+                        })?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__rega__connect_providers_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -401,6 +438,93 @@ fn wire__crate__api__rega__machine_offers_impl(
         },
     )
 }
+fn wire__crate__api__stream__pair_with_pin_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "pair_with_pin",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            let api_machine_id = <String>::sse_decode(&mut deserializer);
+            let api_pin = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::rega::RegaError>(
+                    (move || async move {
+                        let output_ok = crate::api::stream::pair_with_pin(
+                            api_provider_id,
+                            api_machine_id,
+                            api_pin,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__stream__play_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "play",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider_id = <String>::sse_decode(&mut deserializer);
+            let api_machine_id = <String>::sse_decode(&mut deserializer);
+            let api_updates = <StreamSink<
+                crate::api::stream::PlayUpdate,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let output_ok = Ok::<_, ()>({
+                            crate::api::stream::play(api_provider_id, api_machine_id, api_updates)
+                                .await;
+                        })?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__rega__probe_latency_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -600,8 +724,55 @@ fn wire__crate__api__rega__stop_machine_impl(
         },
     )
 }
+fn wire__crate__api__stream__stream_status_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "stream_status",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::stream::stream_status())?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 
 // Section: dart2rust
+
+impl SseDecode for flutter_rust_bridge::for_generated::anyhow::Error {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::anyhow::anyhow!("{}", inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<crate::api::stream::PlayUpdate, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
 
 impl SseDecode for String {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -827,6 +998,17 @@ impl SseDecode for Option<crate::api::rega::RegionOption> {
     }
 }
 
+impl SseDecode for Option<crate::api::stream::StreamStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::stream::StreamStatus>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<u32> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -869,6 +1051,34 @@ impl SseDecode for crate::api::rega::OrphanSummary {
             region_name: var_regionName,
             machine_id: var_machineId,
             name: var_name,
+        };
+    }
+}
+
+impl SseDecode for crate::api::stream::PlayStep {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::stream::PlayStep::Connecting,
+            1 => crate::api::stream::PlayStep::Pairing,
+            2 => crate::api::stream::PlayStep::StartingMoonlight,
+            3 => crate::api::stream::PlayStep::Done,
+            _ => unreachable!("Invalid variant for PlayStep: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::stream::PlayUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_step = <crate::api::stream::PlayStep>::sse_decode(deserializer);
+        let mut var_moonlightHost = <Option<String>>::sse_decode(deserializer);
+        let mut var_paired = <bool>::sse_decode(deserializer);
+        return crate::api::stream::PlayUpdate {
+            step: var_step,
+            moonlight_host: var_moonlightHost,
+            paired: var_paired,
         };
     }
 }
@@ -939,6 +1149,22 @@ impl SseDecode for crate::api::rega::RegionOption {
     }
 }
 
+impl SseDecode for crate::api::stream::StreamStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_providerId = <String>::sse_decode(deserializer);
+        let mut var_machineId = <String>::sse_decode(deserializer);
+        let mut var_host = <String>::sse_decode(deserializer);
+        let mut var_wireguard = <bool>::sse_decode(deserializer);
+        return crate::api::stream::StreamStatus {
+            provider_id: var_providerId,
+            machine_id: var_machineId,
+            host: var_host,
+            wireguard: var_wireguard,
+        };
+    }
+}
+
 impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -967,20 +1193,23 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__rega__connect_providers_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__rega__delete_orphans_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__rega__destroy_machine_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__rega__finish_stop_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
+        1 => wire__crate__api__stream__close_tunnel_impl(port, ptr, rust_vec_len, data_len),
+        2 => wire__crate__api__rega__connect_providers_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__rega__delete_orphans_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__rega__destroy_machine_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__rega__finish_stop_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__rega__init_app_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__rega__launch_machine_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__rega__list_machines_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__rega__list_orphans_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__rega__machine_offers_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__stream__pair_with_pin_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__stream__play_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__rega__probe_latency_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__rega__region_choices_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__rega__resize_machine_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__rega__start_machine_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__rega__stop_machine_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -993,6 +1222,7 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
+        18 => wire__crate__api__stream__stream_status_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1128,6 +1358,48 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::OrphanSummary>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::stream::PlayStep {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Connecting => 0.into_dart(),
+            Self::Pairing => 1.into_dart(),
+            Self::StartingMoonlight => 2.into_dart(),
+            Self::Done => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::stream::PlayStep {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stream::PlayStep>
+    for crate::api::stream::PlayStep
+{
+    fn into_into_dart(self) -> crate::api::stream::PlayStep {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::stream::PlayUpdate {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.step.into_into_dart().into_dart(),
+            self.moonlight_host.into_into_dart().into_dart(),
+            self.paired.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::stream::PlayUpdate
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stream::PlayUpdate>
+    for crate::api::stream::PlayUpdate
+{
+    fn into_into_dart(self) -> crate::api::stream::PlayUpdate {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::rega::ProviderInfo {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -1214,6 +1486,45 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rega::RegionOption>
 {
     fn into_into_dart(self) -> crate::api::rega::RegionOption {
         self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::stream::StreamStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.provider_id.into_into_dart().into_dart(),
+            self.machine_id.into_into_dart().into_dart(),
+            self.host.into_into_dart().into_dart(),
+            self.wireguard.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::stream::StreamStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::stream::StreamStatus>
+    for crate::api::stream::StreamStatus
+{
+    fn into_into_dart(self) -> crate::api::stream::StreamStatus {
+        self
+    }
+}
+
+impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(format!("{:?}", self), serializer);
+    }
+}
+
+impl SseEncode
+    for StreamSink<crate::api::stream::PlayUpdate, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
     }
 }
 
@@ -1403,6 +1714,16 @@ impl SseEncode for Option<crate::api::rega::RegionOption> {
     }
 }
 
+impl SseEncode for Option<crate::api::stream::StreamStatus> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::stream::StreamStatus>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<u32> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1444,6 +1765,33 @@ impl SseEncode for crate::api::rega::OrphanSummary {
     }
 }
 
+impl SseEncode for crate::api::stream::PlayStep {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::stream::PlayStep::Connecting => 0,
+                crate::api::stream::PlayStep::Pairing => 1,
+                crate::api::stream::PlayStep::StartingMoonlight => 2,
+                crate::api::stream::PlayStep::Done => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::stream::PlayUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::stream::PlayStep>::sse_encode(self.step, serializer);
+        <Option<String>>::sse_encode(self.moonlight_host, serializer);
+        <bool>::sse_encode(self.paired, serializer);
+    }
+}
+
 impl SseEncode for crate::api::rega::ProviderInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1481,6 +1829,16 @@ impl SseEncode for crate::api::rega::RegionOption {
         <Option<u32>>::sse_encode(self.rtt_ms, serializer);
         <f64>::sse_encode(self.price_per_hour, serializer);
         <f64>::sse_encode(self.one_off_cost, serializer);
+    }
+}
+
+impl SseEncode for crate::api::stream::StreamStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.provider_id, serializer);
+        <String>::sse_encode(self.machine_id, serializer);
+        <String>::sse_encode(self.host, serializer);
+        <bool>::sse_encode(self.wireguard, serializer);
     }
 }
 
