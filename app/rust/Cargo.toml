@@ -3,6 +3,7 @@ name = "rega_bridge"
 version = "0.1.0"
 edition = "2021"
 description = "flutter_rust_bridge layer between the Flutter UI and rega_core"
+license.workspace = true
 publish = false
 
 [lib]
