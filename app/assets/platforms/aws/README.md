@@ -24,10 +24,10 @@ them again, from a folder holding the two SVGs, into `$OUT` with its `2.0x/`
 and `3.0x/` folders (each SVG is 40 px, so it's drawn at 0.8, 1.6 and 2.4
 times), use Chrome's headless shell, for instance from
 `npx @puppeteer/browsers install chrome-headless-shell@stable`, with the
-path it prints on your `PATH`. Plain `chromium --headless` won't do: its
-page is about 87 px shorter than its window (room for a browser toolbar it
-doesn't show), so a 40 px window leaves a page 1 or 2 px tall and only the
-top of the square is drawn.
+folder of the program it prints on your `PATH`. Plain `chromium --headless`
+won't do: its page is about 87 px shorter than its window (room for a
+browser toolbar it doesn't show), so a 40 px window leaves a page 1 or 2 px
+tall and only the top of the square is drawn.
 
 ```sh
 for pair in AWS-Cloud-logo_32:aws AWS-Cloud-logo_32_Dark:aws-dark; do
