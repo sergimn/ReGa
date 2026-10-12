@@ -12,12 +12,30 @@ you with Moonlight and Sunshine, and stops it when you stop playing.
 
 ![The ReGa desktop app](docs/screenshot.png)
 
+## Install
+
+ReGa is an early preview: it launches and sets up the machine, but doesn't
+stream it yet. Each [release](https://github.com/sergimn/ReGa/releases) has
+a Flatpak for x86_64 Linux. On Ubuntu:
+
+```sh
+sudo apt install flatpak
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+wget -O rega-x86_64.flatpak https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
+flatpak install --user rega-x86_64.flatpak   # also pulls its runtime from Flathub
+flatpak run io.github.sergimn.rega
+```
+
+The release notes say what your AWS account needs before you launch a
+machine; without AWS credentials the app shows sample data.
+
 ## Repository
 
 | Path | What |
 | --- | --- |
-| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak ([how to install it](app/flatpak/README.md#install)). See [app/README.md](app/README.md). |
-| `infra/` | Terraform (and later Ansible) that creates and configures the cloud machine. |
+| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak (see [app/flatpak/README.md](app/flatpak/README.md)). See [app/README.md](app/README.md). |
+| `infra/` | Terraform and Ansible that create and configure the cloud machine. |
+| `docs/releases/` | Release notes, one file per version. |
 
 Checks, pinned versions and dependency updates: see [CONTRIBUTING.md](CONTRIBUTING.md).
 

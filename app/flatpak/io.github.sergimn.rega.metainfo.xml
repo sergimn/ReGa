@@ -13,8 +13,9 @@
       ReGa is an early preview of an app that sets up a Windows gaming
       machine in your own cloud account and streams it to your desktop with
       Moonlight. This version suggests an AWS region by latency and price,
-      and launches, resizes, stops and destroys machines; setting up the
-      stream comes in a later release.
+      launches, resizes, stops and destroys machines, and installs Steam and
+      Sunshine on them; connecting Moonlight to the stream comes in a later
+      release.
     </p>
     <p>
       It reads your AWS credentials from ~/.aws. Without them it shows
@@ -42,6 +43,15 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="0.1.0" date="2026-10-11"/>
+    <release version="0.0.1" date="2026-10-12">
+      <description>
+        <p>
+          First preview. Launches, resizes, stops and destroys gaming
+          machines on AWS, sets them up with Steam and Sunshine, and saves
+          their games to your own S3 bucket before they stop. It doesn't
+          connect Moonlight yet.
+        </p>
+      </description>
+    </release>
   </releases>
 </component>

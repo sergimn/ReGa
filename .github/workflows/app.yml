@@ -5,15 +5,33 @@ on:
     branches: [main]
     # The app compiles the Terraform module and the Ansible playbook in, and
     # the Flatpak bundles Terraform at the version terraform.yml tests with.
-    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
+    # docs/releases holds the notes the version check asks for.
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', 'docs/releases/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
   pull_request:
-    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', 'docs/releases/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
+  # The Release workflow runs all of this on the tag and publishes the
+  # Flatpak the run builds.
+  workflow_call:
+    inputs:
+      release:
+        description: Build what gets published, from a cold start (no caches).
+        type: boolean
+        default: false
+  # To try a release build, uncached, without tagging anything.
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Build what gets published, from a cold start (no caches).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: app-${{ github.ref }}
+  # A release build run by hand gets its own group, so it and a push to the
+  # same branch don't cancel each other while queued.
+  group: app-${{ github.ref }}${{ inputs.release && '-release' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -41,7 +59,9 @@ jobs:
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy --no-self-update
           rustup default "$RUST_VERSION"
+      # No caches on a release, like the Flutter job below.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.release }}
         with:
           workspaces: app
       # The setup tests syntax-check the embedded playbooks with the real
@@ -84,8 +104,11 @@ jobs:
           sysroot=$(rustc --print sysroot)
           ln -s "$sysroot" "$(dirname "$sysroot")/stable-$(rustc -vV | sed -n 's/^host: //p')"
           rustup run stable rustc --version | grep -F "rustc $RUST_VERSION "
-      # cargokit builds the Rust core inside Flutter's build folder.
+      # cargokit builds the Rust core inside Flutter's build folder. A
+      # release builds without caches, so nothing an earlier run left in one
+      # ends up in the bundle it publishes.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.release }}
         with:
           workspaces: |
             app -> build/linux/x64/release/plugins/rega_bridge/cargokit_build
@@ -94,7 +117,7 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
-          cache: true
+          cache: ${{ !inputs.release }}
       - run: flutter pub get --enforce-lockfile
       - run: dart format --output=none --set-exit-if-changed lib test integration_test
       - run: flutter analyze
@@ -150,7 +173,9 @@ jobs:
           persist-credentials: false
       - name: Bundled tools match the repo's pins
         run: python3 flatpak/pins.py check
-      - name: Pin check tests
+      - name: The version agrees everywhere and has release notes
+        run: python3 flatpak/release.py check
+      - name: Pin and release check tests
         run: python3 -m unittest discover -s flatpak -v
       - name: Validate the desktop file and metainfo
         run: |
