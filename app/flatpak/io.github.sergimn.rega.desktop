@@ -5,4 +5,5 @@ Comment=Play games on a cloud machine you own
 Exec=rega
 Icon=io.github.sergimn.rega
 Categories=Game;
+Keywords=cloud;gaming;streaming;moonlight;sunshine;steam;aws;
 Terminal=false

@@ -10,7 +10,7 @@ app/
   test/          widget tests against a fake backend (no Rust, no cloud)
   integration_test/  runs the real app against the Rust core
   rust_builder/  cargokit glue that builds rust/ during `flutter build`
-  flatpak/       Flatpak manifest, desktop file, metainfo
+  flatpak/       Flatpak manifest, desktop file, metainfo, pin check, smoke test
   assets/        app icon (SVG and PNG sizes) and the palette swatch
 ```
 
@@ -45,10 +45,12 @@ first (`core/src/aws/`):
   devices that launch at about the same time, before either one's Terraform
   has taken its state lock, can still both get through, since nothing in S3
   serialises them yet.
-- If the app quits mid-change, Terraform keeps going outside the Flatpak
-  and finishes. A run that was killed leaves its state lock behind; the next
+- If the app quits mid-change, Terraform keeps going and finishes (in the
+  Flatpak too). A run that was killed leaves its state lock behind; the next
   change to that machine removes it when this computer took it and the run
-  is gone, or when it is over two hours old.
+  is gone, or when it is over two hours old. A run started by an earlier
+  Flatpak sandbox can't be seen from a new one, so it counts as gone only
+  after a reboot.
 - Leftovers are resources tagged `Project=ReGa` that no machine's Terraform
   state names, such as an instance a killed run made. They show up under
   "Leftover resources", with a button to delete them.
@@ -61,7 +63,7 @@ first (`core/src/aws/`):
   `infra/ansible` (`core/src/ansible.rs`, behind `MachineSetup` in
   `core/src/setup.rs`). The playbook is compiled into the app and written to
   the machine's folder before each run; `ansible-playbook` comes from
-  `REGA_ANSIBLE_PLAYBOOK` or `PATH`, with the `ansible.windows` and
+  `REGA_ANSIBLE_PLAYBOOK` or `PATH` (the Flatpak bundles it), with the `ansible.windows` and
   `community.windows` collections where Ansible finds them
   (`ANSIBLE_COLLECTIONS_PATH` passes through). Launch, start and switch
   check for it before anything boots.

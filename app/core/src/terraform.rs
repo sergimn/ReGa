@@ -152,7 +152,9 @@ impl Terraform for TerraformCli {
         // Output goes to files, not pipes, and Terraform gets its own process
         // group: if the app quits mid-run, Terraform can still finish and
         // release its state lock instead of dying on a closed pipe.
-        let id = std::process::id();
+        // Unique per run: in a Flatpak sandbox the app's pid is always the
+        // same, and a run from an earlier sandbox may still be writing here.
+        let id = format!("{}-{}", std::process::id(), unique_suffix());
         let out_path = dir.join(format!(".terraform-{id}.out"));
         let err_path = dir.join(format!(".terraform-{id}.err"));
         let create = |path: &Path| {
@@ -208,16 +210,41 @@ pub struct RunMarker {
     pub start_ticks: u64,
     /// Unix seconds.
     pub started: u64,
+    /// The pid namespace `pid` belongs to. Each Flatpak sandbox has its own,
+    /// so a run started by an earlier sandbox can't be seen from this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_namespace: Option<String>,
+    /// The boot the run started in. No run outlives a reboot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
 }
 
 impl RunMarker {
-    /// The marker for running process `pid` (Linux).
+    /// The marker for running process `pid` (Linux), a child of this app.
     pub fn of(pid: u32) -> Option<Self> {
         Some(Self {
             pid,
             start_ticks: start_ticks(pid)?,
             started: unix_now(),
+            pid_namespace: pid_namespace(),
+            boot_id: boot_id(),
         })
+    }
+
+    /// Whether this app can tell if the run is still going: it can't see
+    /// processes in another sandbox that is still up in the same boot. When
+    /// the app quits, the Flatpak sandbox stays up until Terraform exits, so
+    /// such a run may well be alive, holding its lock.
+    fn is_visible(&self) -> bool {
+        let other_namespace = matches!(
+            (&self.pid_namespace, pid_namespace()),
+            (Some(theirs), Some(ours)) if *theirs != ours
+        );
+        let same_boot = matches!(
+            (&self.boot_id, boot_id()),
+            (Some(theirs), Some(ours)) if *theirs == ours
+        );
+        !(other_namespace && same_boot)
     }
 
     fn to_json(&self) -> String {
@@ -229,6 +256,24 @@ impl RunMarker {
     pub fn is_running(&self) -> bool {
         start_ticks(self.pid) == Some(self.start_ticks)
     }
+}
+
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
+}
+
+fn pid_namespace() -> Option<String> {
+    std::fs::read_link("/proc/self/ns/pid")
+        .ok()
+        .map(|link| link.to_string_lossy().into_owned())
+}
+
+fn boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|id| id.trim().to_string())
 }
 
 /// Field 22 of `/proc/<pid>/stat`.
@@ -245,14 +290,19 @@ pub fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The marker of the last run in `dir`, if it didn't clean up after itself.
+/// The marker of the last run in `dir`, if it didn't clean up after itself
+/// and this app can tell whether that run is alive. A run it can't see
+/// counts as no evidence either way; its state lock speaks for it.
 pub async fn run_marker(dir: &Path) -> Option<RunMarker> {
     let json = tokio::fs::read(dir.join(RUN_MARKER)).await.ok()?;
-    serde_json::from_slice(&json).ok()
+    serde_json::from_slice::<RunMarker>(&json)
+        .ok()
+        .filter(RunMarker::is_visible)
 }
 
 /// Waits while an earlier Terraform run in `dir` is still going, such as one
-/// that kept running after the app was closed. Returns its marker when that
+/// that kept running after the app was closed (outside Flatpak; see
+/// [`run_marker`] for runs in another sandbox). Returns its marker when that
 /// run is gone without cleaning up, which means it was killed and may have
 /// left its state lock behind.
 pub async fn wait_for_earlier_run(
@@ -575,6 +625,8 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
         let marker = marker.expect("the run writes its marker");
         assert!(marker.is_running());
         assert!(marker.started > 0);
+        assert_eq!(marker.pid_namespace, pid_namespace());
+        assert_eq!(marker.boot_id, boot_id());
         run.await.unwrap().unwrap();
         assert!(!marker.is_running());
         assert_eq!(run_marker(dir.path()).await, None);
@@ -611,6 +663,52 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
         assert_eq!(
             wait_for_earlier_run(dir.path(), Duration::ZERO).await,
             Ok(Some(dead))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_in_another_sandbox_is_no_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |marker: &RunMarker| {
+            std::fs::write(dir.path().join(RUN_MARKER), marker.to_json()).unwrap();
+        };
+        // Started by an earlier Flatpak sandbox in this boot, which stays up
+        // while its Terraform runs: the pid means nothing here, so the run is
+        // neither waited for nor taken for dead.
+        let elsewhere = RunMarker {
+            pid: u32::MAX,
+            start_ticks: 1,
+            started: unix_now(),
+            pid_namespace: Some("pid:[1]".into()),
+            boot_id: boot_id(),
+        };
+        assert!(boot_id().is_some() && pid_namespace().is_some());
+        write(&elsewhere);
+        assert_eq!(run_marker(dir.path()).await, None);
+        assert_eq!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Ok(None)
+        );
+        // From an earlier boot, it's dead whichever sandbox ran it.
+        let before_reboot = RunMarker {
+            boot_id: Some("an earlier boot".into()),
+            ..elsewhere.clone()
+        };
+        write(&before_reboot);
+        assert_eq!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Ok(Some(before_reboot))
+        );
+        // Markers written before these fields existed read as this app's.
+        let older_app = RunMarker {
+            pid_namespace: None,
+            boot_id: None,
+            ..elsewhere
+        };
+        write(&older_app);
+        assert_eq!(
+            wait_for_earlier_run(dir.path(), Duration::ZERO).await,
+            Ok(Some(older_app))
         );
     }
 
