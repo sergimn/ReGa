@@ -13,6 +13,23 @@
     - name: Wait for WinRM
       ansible.builtin.wait_for_connection:
         timeout: 900
+
+    # The roles reboot the machine as needed. Each reboot starts the library
+    # restore's boot task, and the next one would cut that restore short.
+    # While this note is there, a restore on a later boot waits for the
+    # setup to end; the note goes once the roles are done. It's bookkeeping,
+    # so it never counts as a change.
+    - name: Note on the machine that a setup has started
+      ansible.windows.win_powershell:
+        parameters:
+          Path: "{{ rega_state_dir }}\\setup.json"
+        script: |
+          param([string]$Path)
+          $Ansible.Changed = $false
+          New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+          $started = [datetime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+          $json = [pscustomobject]@{ started_utc = $started } | ConvertTo-Json
+          [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
   roles:
     - role: base
     - role: steam
@@ -21,6 +38,14 @@
     - role: library_agent
     - role: gpu
   post_tasks:
+    # The roles won't reboot the machine again, so a restore that started on
+    # one of their reboots can go ahead.
+    - name: Let the library restore go ahead
+      ansible.windows.win_file:
+        path: "{{ rega_state_dir }}\\setup.json"
+        state: absent
+      changed_when: false
+
     - name: Write the connection details for the app
       ansible.builtin.copy:
         dest: "{{ rega_secrets_dir }}/connection.json"

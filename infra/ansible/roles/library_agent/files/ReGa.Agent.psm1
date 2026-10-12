@@ -170,17 +170,33 @@ function Test-SameBoot {
   return ([Math]::Abs(($value - $Boot.ToUniversalTime()).TotalSeconds) -lt 60)
 }
 
+function Test-SetupHold {
+  # Pure: whether this boot's library restore should wait for a setup to
+  # end. site.yml writes setup.json as it starts and deletes it as it ends.
+  # A setup that started before this boot is the one that rebooted the
+  # machine, and its next reboot would cut a restore short. One older than
+  # HoldMinutes is taken to have died.
+  param($Setup, [datetime]$Boot, [datetime]$Now, [int]$HoldMinutes)
+  try {
+    $started = ConvertTo-UtcDate (Get-PropertyValue $Setup 'started_utc')
+  } catch {
+    return $false
+  }
+  if ($null -eq $started) { return $false }
+  return ($started -lt $Boot.ToUniversalTime() -and $Now.ToUniversalTime() -lt $started.AddMinutes($HoldMinutes))
+}
+
 function Get-RestoreWaitState {
   # Pure: where this boot's library restore is. The boot task writes
   # restore.json as it starts, so until StartBy a missing or older record
   # means it hasn't started yet.
-  #   running   the restore is copying
+  #   running   the restore is copying, or waiting for a setup to end
   #   starting  no record for this boot yet, but it may still start
   #   finished  it ended this boot (done, no-disk, failed or disk-full)
   #   none      no restore started this boot
   param($Restore, [datetime]$Boot, [datetime]$Now, [datetime]$StartBy)
   if (Test-SameBoot (Get-PropertyValue $Restore 'boot_utc') $Boot) {
-    if ((Get-PropertyValue $Restore 'status') -eq 'running') { return 'running' }
+    if ((Get-PropertyValue $Restore 'status') -in @('running', 'waiting')) { return 'running' }
     return 'finished'
   }
   if ($Now -lt $StartBy) { return 'starting' }

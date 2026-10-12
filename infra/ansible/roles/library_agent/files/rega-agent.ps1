@@ -4,6 +4,7 @@
 
 .DESCRIPTION
   Restore     (boot, SYSTEM)  Copy the Steam library from S3 to the library disk.
+              On a boot from a setup's reboot, wait for the setup to end first.
   Tick        (every minute, SYSTEM)  Track idle time, upload finished
               downloads, stop the machine after idle_minutes with nobody streaming.
   FinalSync   (app, over WinRM)  Upload the library and record the outcome
@@ -44,6 +45,7 @@ if ($null -eq $config) { throw "Missing agent config $ConfigPath" }
 $stateDir = $config.state_dir
 $statePath = Join-Path $stateDir 'agent.json'
 $restorePath = Join-Path $stateDir 'restore.json'
+$setupPath = Join-Path $stateDir 'setup.json'
 $libraryPath = $config.library.path
 $steamApps = Join-Path $libraryPath 'steamapps'
 $marker = Get-RestoredMarkerPath $libraryPath
@@ -196,6 +198,21 @@ switch ($Action) {
   'Restore' {
     $boot = Get-BootTime
     $status = [ordered]@{ status = 'running'; boot_utc = (ConvertTo-IsoString $boot); started_utc = (ConvertTo-IsoString ([datetime]::UtcNow)) }
+    # On a boot from a setup's reboot, wait for the setup to end: its next
+    # reboot would cut the restore short. Waiting isn't activity, so a setup
+    # that died doesn't keep the machine up.
+    $holdMinutes = [int](Get-PropertyValue $config 'setup_hold_minutes' 120)
+    if (Test-SetupHold -Setup (Read-JsonFile $setupPath) -Boot $boot -Now ([datetime]::UtcNow) -HoldMinutes $holdMinutes) {
+      $status.status = 'waiting'
+      Write-JsonFile $restorePath ([pscustomobject]$status)
+      Write-ReGaLog 'A setup rebooted this machine; the restore waits for it to end.'
+      while (Test-SetupHold -Setup (Read-JsonFile $setupPath) -Boot $boot -Now ([datetime]::UtcNow) -HoldMinutes $holdMinutes) {
+        Start-Sleep -Seconds 10
+      }
+      Write-ReGaLog 'Done waiting for the setup; restoring.'
+      $status.status = 'running'
+      $status.started_utc = (ConvertTo-IsoString ([datetime]::UtcNow))
+    }
     Write-JsonFile $restorePath ([pscustomobject]$status)
     $result = 'failed'
     try {

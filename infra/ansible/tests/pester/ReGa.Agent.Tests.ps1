@@ -124,6 +124,40 @@ Describe 'Test-SameBoot' {
   }
 }
 
+Describe 'Test-SetupHold' {
+  BeforeAll {
+    $boot = [datetime]::new(2026, 10, 11, 10, 0, 0, [DateTimeKind]::Utc)
+  }
+
+  It 'holds the restore on a boot from a setup that is still running' {
+    $setup = [pscustomobject]@{ started_utc = $boot.AddMinutes(-20).ToString('o') }
+    Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(1) -HoldMinutes 120 | Should -BeTrue
+    Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(90) -HoldMinutes 120 | Should -BeTrue
+  }
+
+  It 'reads the start time as PowerShell 7 parses it, too' {
+    $setup = [pscustomobject]@{ started_utc = $boot.AddMinutes(-20) }
+    Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(1) -HoldMinutes 120 | Should -BeTrue
+  }
+
+  It "doesn't hold a restore when the setup started on this boot" {
+    # A start: the boot task can run after site.yml has written its note.
+    $setup = [pscustomobject]@{ started_utc = $boot.AddMinutes(2).ToString('o') }
+    Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(3) -HoldMinutes 120 | Should -BeFalse
+  }
+
+  It 'lets the restore go once the setup has ended or died' {
+    Test-SetupHold -Setup $null -Boot $boot -Now $boot.AddMinutes(1) -HoldMinutes 120 | Should -BeFalse
+    $setup = [pscustomobject]@{ started_utc = $boot.AddMinutes(-20).ToString('o') }
+    Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(110) -HoldMinutes 120 | Should -BeFalse
+  }
+
+  It 'ignores a note it cannot read' {
+    Test-SetupHold -Setup ([pscustomobject]@{}) -Boot $boot -Now $boot -HoldMinutes 120 | Should -BeFalse
+    Test-SetupHold -Setup ([pscustomobject]@{ started_utc = 'soon' }) -Boot $boot -Now $boot -HoldMinutes 120 | Should -BeFalse
+  }
+}
+
 Describe 'Get-RestoreWaitState' {
   BeforeAll {
     $boot = [datetime]::new(2026, 10, 11, 10, 0, 0, [DateTimeKind]::Utc)
@@ -133,6 +167,10 @@ Describe 'Get-RestoreWaitState' {
   It 'follows a restore from this boot' {
     $running = [pscustomobject]@{ status = 'running'; boot_utc = $boot.ToString('o') }
     Get-RestoreWaitState -Restore $running -Boot $boot -Now $boot.AddHours(1) -StartBy $startBy | Should -Be 'running'
+    # One waiting for a setup to end hasn't finished either, and mustn't be
+    # started again.
+    $waiting = [pscustomobject]@{ status = 'waiting'; boot_utc = $boot.ToString('o') }
+    Get-RestoreWaitState -Restore $waiting -Boot $boot -Now $boot.AddHours(1) -StartBy $startBy | Should -Be 'running'
     foreach ($status in @('done', 'no-disk', 'failed', 'disk-full')) {
       $ended = [pscustomobject]@{ status = $status; boot_utc = $boot.AddSeconds(2).ToString('o') }
       Get-RestoreWaitState -Restore $ended -Boot $boot -Now $boot.AddMinutes(1) -StartBy $startBy | Should -Be 'finished'

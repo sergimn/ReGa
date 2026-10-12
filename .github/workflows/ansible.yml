@@ -249,6 +249,45 @@ jobs:
           cat wait-restore.log
           grep -q 'no game library disk' wait-restore.log
 
+      # The runner can't reboot, so act as if a setup that started before
+      # this boot had rebooted it: the boot task's restore must wait for that
+      # setup to end, so the setup's next reboot can't cut it short.
+      - name: Hold the restore while a setup reboots the machine
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert($condition, $message) { if (-not $condition) { throw $message } ; "ok: $message" }
+          $state = 'C:\ProgramData\ReGa\state'
+          # The agent replaces restore.json as it goes; a read can miss it.
+          function Get-RestoreStatus {
+            try { (Get-Content "$state\restore.json" -Raw | ConvertFrom-Json).status } catch { $null }
+          }
+          function Wait-RestoreStatus($statuses, $seconds) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while ((Get-RestoreStatus) -notin $statuses -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+            Get-RestoreStatus
+          }
+
+          Assert (-not (Test-Path "$state\setup.json")) 'the setup let the restore go ahead when it ended'
+
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          $note = @{ started_utc = $boot.AddMinutes(-10).ToString('o') } | ConvertTo-Json
+          [IO.File]::WriteAllText("$state\setup.json", $note)
+          Start-ScheduledTask -TaskName ReGa-LibraryRestore
+          $status = Wait-RestoreStatus @('waiting') 60
+          Assert ($status -eq 'waiting') "the boot task's restore waits for the setup ($status)"
+          Start-Sleep -Seconds 20
+          Assert ((Get-RestoreStatus) -eq 'waiting') 'it keeps waiting while the setup runs'
+          $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action StartRestore | ConvertFrom-Json
+          Assert (-not $start.started) "the setup's StartRestore doesn't start a second restore"
+
+          Remove-Item "$state\setup.json"
+          # With no library disk on the runner, the restore gives up after
+          # rega_restore_wait_minutes (1).
+          $status = Wait-RestoreStatus @('no-disk', 'done', 'failed', 'disk-full') 180
+          Assert ($status -eq 'no-disk') "the restore goes ahead once the setup ends ($status)"
+          Get-Content C:\ProgramData\ReGa\logs\agent.log | Select-Object -Last 5
+
       - name: Check the machine
         shell: powershell
         run: |
