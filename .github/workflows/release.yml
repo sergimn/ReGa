@@ -1,0 +1,87 @@
+name: Release
+
+# Publishes a GitHub Release when a version tag is pushed:
+#
+#   git tag v0.0.1 && git push origin v0.0.1
+#
+# The tag has to be on main and match the app's version (see
+# app/flatpak/release.py). The App workflow then runs in full on the tagged
+# commit, without caches, and the Flatpak bundle it built and tested is
+# published with a SHA256SUMS file and the notes in docs/releases/.
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      notes: ${{ steps.release.outputs.notes }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          # main's history, to check the tag is on it.
+          fetch-depth: 0
+      - name: The tag is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "::error::$GITHUB_REF_NAME isn't on main; tag a commit of main."; exit 1; }
+      - name: The tag matches the app's version and has release notes
+        id: release
+        run: python3 app/flatpak/release.py check --tag "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+  app:
+    name: App
+    needs: check
+    permissions:
+      contents: read
+    # A reusable workflow named with ./ comes from the same commit as this
+    # one, not from the runner's files. zizmor prefers the newer `$/` form,
+    # which actionlint doesn't accept yet.
+    uses: ./.github/workflows/app.yml # zizmor: ignore[self-repository]
+    with:
+      release: true
+
+  publish:
+    name: Publish
+    needs: [check, app]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # For the release notes; gh also finds the repo from it.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # The bundle the App workflow built, installed and smoke-tested.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rega-flatpak
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+          NOTES: ${{ needs.check.outputs.notes }}
+        run: |
+          # The same name in every release, so
+          # releases/latest/download/rega-x86_64.flatpak always works.
+          mv dist/rega.flatpak dist/rega-x86_64.flatpak
+          (cd dist && sha256sum rega-x86_64.flatpak > SHA256SUMS && cat SHA256SUMS)
+          gh release create "$TAG" --verify-tag --title "ReGa $VERSION" --notes-file "$NOTES" \
+            dist/rega-x86_64.flatpak dist/SHA256SUMS

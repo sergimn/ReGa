@@ -5,16 +5,24 @@ ReGa ships as the Flatpak `io.github.sergimn.rega`, for x86_64, on the
 
 ## Install
 
-Every CI run of the App workflow builds `rega.flatpak`; download the
-`rega-flatpak` artifact from the run's page. On Ubuntu:
+Each [release](https://github.com/sergimn/ReGa/releases) has the bundle as
+`rega-x86_64.flatpak`. On Ubuntu:
 
 ```sh
 sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-unzip rega-flatpak.zip
-flatpak install --user rega.flatpak     # also pulls the runtime from Flathub
+curl -LO https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
+flatpak install --user rega-x86_64.flatpak     # also pulls the runtime from Flathub
 flatpak run io.github.sergimn.rega
 ```
+
+To update, install a newer bundle the same way. Uninstalling
+(`flatpak uninstall --user io.github.sergimn.rega`) doesn't touch your AWS
+account, so destroy the machines you no longer want in the app first.
+
+For a build of something unreleased, every CI run of the App workflow also
+builds `rega.flatpak`: download the `rega-flatpak` artifact from the run's
+page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 
 ## What's inside
 
