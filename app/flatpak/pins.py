@@ -21,7 +21,7 @@ import json
 import re
 import sys
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +62,8 @@ class Locked:
     version: str
     marker: str
     hashes: frozenset[str]
+    # Pinned in requirements.txt, not only pulled in by something that is.
+    direct: bool
 
 
 @dataclass(frozen=True)
@@ -108,12 +110,16 @@ def python_pins(root: Path) -> dict[str, Pin]:
     return pins
 
 
-def locked_packages(root: Path) -> dict[str, Locked]:
-    """Every package in requirements.lock, by name, as uv writes them:
-    `name==version [; marker] --hash=sha256:...`, one or more hashes."""
-    packages = {}
+def locked_packages(root: Path) -> dict[str, list[Locked]]:
+    """Every entry in requirements.lock, by name, as uv writes them:
+    `name==version [; marker] --hash=sha256:...`, then `# via` comments.
+    A name can have several entries, for different markers."""
+    packages: dict[str, list[Locked]] = {}
+    entry = None
     for line in read(root, LOCK).replace("\\\n", " ").splitlines():
         line = line.strip()
+        if line.startswith("#") and entry and re.search(rf"-r {Path(REQUIREMENTS).name}\b", line):
+            packages[entry.name][-1] = entry = replace(entry, direct=True)
         if not line or line.startswith("#"):
             continue
         m = re.fullmatch(
@@ -125,9 +131,24 @@ def locked_packages(root: Path) -> dict[str, Locked]:
             raise SystemExit(f"{LOCK}: expected `name==version --hash=sha256:...`, not {line[:80]!r}")
         name = normalize(m.group(1))
         hashes = frozenset(re.findall(r"sha256:([0-9a-f]{64})", m.group(4)))
-        packages[name] = Locked(name, m.group(2), m.group(3) or "", hashes)
+        entry = Locked(name, m.group(2), m.group(3) or "", hashes, direct=False)
+        packages.setdefault(name, []).append(entry)
     if not packages:
         raise SystemExit(f"{LOCK}: no packages")
+    return packages
+
+
+def locked_for(root: Path, runtime: Runtime) -> dict[str, Locked]:
+    """The lock's entry for each package that the runtime needs."""
+    env = marker_environment(runtime)
+    packages = {}
+    for name, entries in locked_packages(root).items():
+        applies = [e for e in entries if marker_applies(e.marker, env)]
+        if len(applies) > 1:
+            raise SystemExit(f"{LOCK} has {len(applies)} entries of {name} for the runtime; "
+                             "pins.py can't tell which one pip would take.")
+        if applies:
+            packages[name] = applies[0]
     return packages
 
 
@@ -167,13 +188,22 @@ def marker_applies(marker: str, env: dict[str, str]) -> bool:
     def compare(token: str) -> bool:
         var, op, value = re.fullmatch(r"([a-z_]+)\s*(\S+?)\s*['\"](.*)['\"]", token).groups()
         if var not in env:
-            raise SystemExit(f"{LOCK}: pins.py doesn't know the marker {var}; add it to marker_environment().")
-        if op in ("==", "!="):
-            return (env[var] == value) == (op == "==")
-        if var != "python_version":
+            raise SystemExit(f"{LOCK}: pins.py doesn't know the marker {var} for the runtime; "
+                             "add it to marker_environment() if the runtime fixes it.")
+        if var == "python_version":
+            have, want = version_tuple(env[var]), version_tuple(value)
+        elif op in ("==", "!="):
+            have, want = env[var], value
+        else:
             raise SystemExit(f"{LOCK}: can't compare {var} with {op}")
-        have, want = (tuple(int(x) for x in v.split(".")) for v in (env[var], value))
-        return {"<": have < want, "<=": have <= want, ">": have > want, ">=": have >= want}[op]
+        return {"==": have == want, "!=": have != want, "<": have < want, "<=": have <= want,
+                ">": have > want, ">=": have >= want}[op]
+
+    def version_tuple(version: str) -> tuple[int, ...]:
+        if not re.fullmatch(r"\d+(\.\d+)*", version):
+            raise SystemExit(f"{LOCK}: can't compare python_version with {version!r}")
+        parts = tuple(int(x) for x in version.split("."))
+        return parts + (0,) * (3 - len(parts))  # 3.13 is 3.13.0
 
     def expression() -> bool:
         value = term()
@@ -283,6 +313,8 @@ def wheel_rank(filename: str, runtime: Runtime) -> tuple | None:
     ranks = []
     for py, abi, platform in wheel_tags(filename)[2]:
         if platform == "any":
+            if abi != "none":
+                continue
             platform_rank = (1, 0, 0)
         elif (glibc := manylinux_glibc(platform)) and glibc <= runtime.glibc:
             platform_rank = (0, -glibc[0], -glibc[1])
@@ -316,12 +348,16 @@ def check(root: Path) -> list[str]:
         errors.append(f"The Flatpak bundles Terraform {bundled} but CI tests the module with {ci}.")
 
     lock = locked_packages(root)
-    for pin in python_pins(root).values():
-        locked = lock.get(pin.name)
-        if locked is None or not same_version(locked.version, pin.version):
-            have = f"{locked.name}=={locked.version}" if locked else "nothing"
-            errors.append(f"{REQUIREMENTS} pins {pin}, but {LOCK} has {have}; "
-                          "regenerate the lock with the command in its header.")
+    pins = python_pins(root)
+    regenerate = "regenerate the lock with the command in its header."
+    for pin in pins.values():
+        entries = lock.get(pin.name, [])
+        if not any(same_version(e.version, pin.version) for e in entries):
+            have = " ".join(f"{e.name}=={e.version}" for e in entries) or "nothing"
+            errors.append(f"{REQUIREMENTS} pins {pin}, but {LOCK} has {have}; {regenerate}")
+    for name in sorted(n for n, entries in lock.items() if any(e.direct for e in entries)):
+        if name not in pins:
+            errors.append(f"{LOCK} has {name} from {REQUIREMENTS}, which no longer pins it; {regenerate}")
 
     runtime_name = runtime_version(root)
     runtime = RUNTIMES.get(runtime_name)
@@ -337,7 +373,7 @@ def check(root: Path) -> list[str]:
     sources = module_sources(text)
 
     if runtime:
-        if f"/lib/python{runtime.python}/" not in text:
+        if f"-p ${{FLATPAK_DEST}}/lib/python{runtime.python}/site-packages " not in text:
             errors.append(f"{ANSIBLE_MODULE} installs for another Python than the runtime's {runtime.python}.")
         wheels: dict[str, tuple[str, Source]] = {}
         for source in (s for s in sources if s.filename.endswith(".whl")):
@@ -348,8 +384,7 @@ def check(root: Path) -> list[str]:
             if wheel_rank(source.filename, runtime) is None:
                 errors.append(f"{ANSIBLE_MODULE} has {source.filename}, which doesn't install on the "
                               f"{runtime_name} runtime (Python {runtime.python}, {ARCH}).")
-        env = marker_environment(runtime)
-        wanted = {name: p for name, p in lock.items() if marker_applies(p.marker, env)}
+        wanted = locked_for(root, runtime)
         for name, locked in sorted(wanted.items()):
             if name not in wheels:
                 errors.append(f"{LOCK} has {name}=={locked.version}; {ANSIBLE_MODULE} has nothing.")
@@ -382,11 +417,8 @@ def fetch_json(url: str) -> dict:
 def resolve_wheels(root: Path, runtime: Runtime) -> list[Source]:
     """For each package the lock has for the runtime, the wheel pip would
     install there, from the files on PyPI whose sha256 the lock lists."""
-    env = marker_environment(runtime)
     sources = []
-    for name, locked in sorted(locked_packages(root).items()):
-        if not marker_applies(locked.marker, env):
-            continue
+    for name, locked in sorted(locked_for(root, runtime).items()):
         release = fetch_json(f"https://pypi.org/pypi/{name}/{locked.version}/json")
         files = {u["filename"]: u for u in release["urls"]
                  if u["packagetype"] == "bdist_wheel" and u["digests"]["sha256"] in locked.hashes}

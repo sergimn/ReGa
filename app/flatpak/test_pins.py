@@ -33,7 +33,8 @@ class CheckTest(unittest.TestCase):
             self.assertIn(fragment, errors)
 
     def locked(self, name):
-        return pins.locked_packages(self.root)[name].version
+        [entry] = pins.locked_packages(self.root)[name]
+        return entry.version
 
     def test_repo_matches(self):
         self.assertEqual(pins.check(pins.ROOT), [])
@@ -51,6 +52,19 @@ class CheckTest(unittest.TestCase):
     def test_lock_package_removed(self):
         self.edit(pins.LOCK, r"^xmltodict==.*\n(?:\s+.*\n)*", "")
         self.assertDrift("ansible.yml has xmltodict-", "which infra/ansible/requirements.lock doesn't have")
+
+    def test_lock_forks_by_python(self):
+        # uv can lock a package twice, for different Pythons: the runtime's wins.
+        xmltodict = self.locked("xmltodict")
+        self.edit(pins.LOCK, r"^(xmltodict==\S+) ", r"\1 ; python_version >= '3.13' ")
+        with open(self.root / pins.LOCK, "a") as f:
+            f.write("xmltodict==0.1 ; python_version < '3.13' \\\n    --hash=sha256:" + "0" * 64 + "\n")
+        self.assertEqual(pins.check(self.root), [])
+        self.assertEqual(pins.locked_for(self.root, pins.RUNTIMES["25.08"])["xmltodict"].version, xmltodict)
+        # Two entries that both apply can't be told apart.
+        self.edit(pins.LOCK, r"^xmltodict==0\.1 ; python_version < '3\.13'", "xmltodict==0.1 ; os_name == 'posix'")
+        with self.assertRaises(SystemExit):
+            pins.check(self.root)
 
     def test_wheel_not_in_lock(self):
         self.edit(pins.ANSIBLE_MODULE, r"(pywinrm-[^\"]+\"\n\s+sha256:) \S+", r"\1 " + "0" * 64)
@@ -78,11 +92,14 @@ class CheckTest(unittest.TestCase):
             ("sys_platform == 'win32' or python_version >= '3.10'", True),
             ("(sys_platform == 'win32' or python_version < '3.13') and os_name == 'posix'", False),
             ('python_version <= "3.13"', True),
+            ("python_version == '3.13.0'", True),
+            ("python_version != '3.13'", False),
         ]:
             with self.subTest(marker):
                 self.assertEqual(pins.marker_applies(marker, env), applies)
         for marker in ("sys_platform == 'linux' and", "(os_name == 'posix'", "sys_platform ~= 'linux'",
-                       "sys_platform < 'linux'"):
+                       "sys_platform < 'linux'", "python_version < '3.13.*'",
+                       "python_full_version >= '3.13'"):
             with self.subTest(marker), self.assertRaises(SystemExit):
                 pins.marker_applies(marker, env)
 
@@ -90,6 +107,11 @@ class CheckTest(unittest.TestCase):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+", "pywinrm==9.9.9")
         self.assertDrift(f"pins pywinrm==9.9.9, but infra/ansible/requirements.lock has "
                          f"pywinrm=={self.locked('pywinrm')}; regenerate the lock")
+
+    def test_pin_removed_from_requirements(self):
+        self.edit(pins.REQUIREMENTS, r"^pywinrm==\S+\n", "")
+        self.assertDrift("requirements.lock has pywinrm from infra/ansible/requirements.txt, "
+                         "which no longer pins it")
 
     def test_same_release_written_longer(self):
         self.edit(pins.REQUIREMENTS, r"^pywinrm==(\S+)", r"pywinrm==\1.0")
@@ -161,6 +183,8 @@ class BestWheelTest(unittest.TestCase):
             "x-1-cp312-cp312-manylinux_2_17_x86_64.whl",
             "x-1-cp313-cp313-win_amd64.whl",
             "x-1-py2-none-any.whl",
+            "x-1-cp313-cp313-any.whl",
+            "x-1-cp313-abi3-any.whl",
         ))
 
 
