@@ -73,6 +73,17 @@ async fn tcp_echo(addr: SocketAddr, payload: &[u8]) -> Vec<u8> {
     back
 }
 
+/// Echoes `payload` on a connection that stays open.
+async fn quiet_echo(stream: &mut TcpStream, payload: &[u8]) -> Vec<u8> {
+    stream.write_all(payload).await.unwrap();
+    let mut back = vec![0u8; payload.len()];
+    tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut back))
+        .await
+        .expect("TCP echo timed out")
+        .unwrap();
+    back
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn moonlight_ports_reach_a_real_wireguard_server() {
     let Some(peer) = server() else { return };
@@ -85,6 +96,14 @@ async fn moonlight_ports_reach_a_real_wireguard_server() {
     let api = tunnel.local_addr(Protocol::Tcp, SUNSHINE_API_PORT).unwrap();
     assert_eq!(api.ip(), Ipv4Addr::LOCALHOST);
     assert_ne!(api.port(), SUNSHINE_API_PORT);
+
+    // A connection that goes quiet, like Moonlight's pairing request while
+    // the user types the PIN. Checked at the end, past the tunnel's
+    // 30-second TCP timeout.
+    let mut quiet = TcpStream::connect(api).await.unwrap();
+    let quiet_since = Instant::now();
+    assert_eq!(quiet_echo(&mut quiet, b"hello").await, b"hello");
+
     assert_eq!(tcp_echo(api, &big).await, big);
     for port in MOONLIGHT_TCP_PORTS {
         let local = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -149,6 +168,14 @@ async fn moonlight_ports_reach_a_real_wireguard_server() {
     let back = seen.iter().filter(|s| **s).count();
     eprintln!("burst: {back}/{count} in {:?}", started.elapsed());
     assert!(back * 100 >= count * 95, "only {back} of {count} arrived");
+
+    tokio::time::sleep_until((quiet_since + Duration::from_secs(40)).into()).await;
+    assert_eq!(
+        quiet_echo(&mut quiet, b"still here").await,
+        b"still here",
+        "a quiet connection was cut"
+    );
+    drop(quiet);
 
     tunnel.close().await;
     // The ports are free again for the next Play.

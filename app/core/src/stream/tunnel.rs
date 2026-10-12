@@ -50,10 +50,14 @@ const MAX_DATAGRAM: usize = 65536;
 const UDP_BUFFER: usize = 4 << 20;
 /// Bytes buffered each way for each TCP connection.
 const TCP_BUFFER: usize = 64 * 1024;
-/// A connection the machine doesn't answer, or stops acknowledging while
-/// data waits, is reset after this long, so it doesn't hold its local
-/// socket for as long as the tunnel runs.
+/// A connection the machine stops answering is reset after this long, so it
+/// doesn't hold its local socket for as long as the tunnel runs.
 const TCP_TIMEOUT: Duration = Duration::from_secs(30);
+/// smoltcp counts the timeout from the machine's last packet even when
+/// nothing waits to be sent, so a quiet connection (Moonlight's pairing
+/// request while the user types the PIN) is probed this often to keep the
+/// machine answering.
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -774,6 +778,7 @@ async fn tcp_stack(shared: Arc<Shared>, mut accepted: mpsc::Receiver<(TcpStream,
                 );
                 socket.set_nagle_enabled(false);
                 socket.set_timeout(Some(TCP_TIMEOUT.into()));
+                socket.set_keep_alive(Some(TCP_KEEP_ALIVE.into()));
                 let remote = (IpAddress::Ipv4(shared.server), remote_port);
                 if socket.connect(iface.context(), remote, local_port).is_err() {
                     continue;
