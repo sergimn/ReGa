@@ -222,7 +222,8 @@ jobs:
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # The setup wrote its note for the library restore and deleted it.
           for task in 'Note on the machine that a setup has started' 'Let the library restore go ahead'; do
-            grep -A1 -F "TASK [$task]" second-run.log | grep -F 'ok: [ci]' > /dev/null
+            grep -A1 -F "TASK [$task]" second-run.log | grep -F 'ok: [ci]' > /dev/null ||
+              { echo "::error::'$task' wasn't ok on the second run"; exit 1; }
           done
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"

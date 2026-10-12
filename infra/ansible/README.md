@@ -178,16 +178,17 @@ Each of those reboots starts the boot task too, and the next one would cut
 its restore short. So `site.yml` writes `C:\ProgramData\ReGa\state\setup.json`
 as it starts, and deletes it once the roles and their reboots are done or
 as soon as a role fails. A restore on a boot that came after that note
-waits, with status `waiting`, until the note goes.
+waits, with status `waiting`, until the note goes, or at most
+`rega_setup_hold_minutes` (120) after that setup started.
 
-The note stays when the setup died or the machine stopped answering. The
-restore then waits until `rega_setup_hold_minutes` (120) after that setup
-started, or, if a setup runs again on the same boot, until that one ends,
-since it may reboot too. Waiting isn't activity, so the idle stop still
-stops a machine whose setup died. A restore isn't held back on the boot a
-setup starts on: on a start, or after a setup that failed, the setup's
-first reboot can still cut that boot's restore short, and the restore on
-the next boot waits.
+The note stays when the setup died or the machine stopped answering, so
+the restore waits until those 120 minutes are up, unless a setup runs
+again on the same boot: the restore then waits for that one to end, since
+it may reboot too. Waiting isn't activity, so the idle stop still stops a
+machine whose setup died. A restore that isn't already waiting isn't held
+back by a setup that starts on its boot: on a start, or after a setup that
+failed, the setup's first reboot can still cut that boot's restore short,
+and the restore on the next boot waits.
 
 WaitRestore gives the boot task `rega_restore_start_minutes` (5) to start a
 restore and waits up to `rega_restore_timeout_minutes` (240) for it. It fails,
