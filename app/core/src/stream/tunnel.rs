@@ -50,6 +50,10 @@ const MAX_DATAGRAM: usize = 65536;
 const UDP_BUFFER: usize = 4 << 20;
 /// Bytes buffered each way for each TCP connection.
 const TCP_BUFFER: usize = 64 * 1024;
+/// A connection the machine doesn't answer, or stops acknowledging while
+/// data waits, is reset after this long, so it doesn't hold its local
+/// socket for as long as the tunnel runs.
+const TCP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -243,20 +247,29 @@ impl Tunnel {
             .build()
             .map_err(|e| TunnelError::Start(e.to_string()))?;
         let guard = runtime.enter();
-        let to_tokio = |e: io::Error| TunnelError::Start(e.to_string());
-        let mut udp_sockets = HashMap::new();
-        for (socket, remote_port) in udp {
-            let socket = Arc::new(UdpSocket::from_std(socket).map_err(to_tokio)?);
-            udp_sockets.insert(remote_port, socket);
-        }
-        let tcp = tcp
-            .into_iter()
-            .map(|(l, port)| Ok((TcpListener::from_std(l)?, port)))
-            .collect::<io::Result<Vec<_>>>()
-            .map_err(to_tokio)?;
+        let registered = (|| {
+            let udp = udp
+                .into_iter()
+                .map(|(socket, port)| Ok((port, Arc::new(UdpSocket::from_std(socket)?))))
+                .collect::<io::Result<HashMap<_, _>>>()?;
+            let tcp = tcp
+                .into_iter()
+                .map(|(l, port)| Ok((TcpListener::from_std(l)?, port)))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok::<_, io::Error>((udp, tcp, UdpSocket::from_std(outside)?))
+        })();
+        let (udp_sockets, tcp, outside) = match registered {
+            Ok(registered) => registered,
+            Err(e) => {
+                drop(guard);
+                // Dropping a runtime inside the app's would panic.
+                runtime.shutdown_background();
+                return Err(TunnelError::Start(e.to_string()));
+            }
+        };
         let shared = Arc::new(Shared {
             wg: Mutex::new(tunn),
-            outside: UdpSocket::from_std(outside).map_err(to_tokio)?,
+            outside,
             endpoint: peer.endpoint,
             client: peer.client_address,
             server: peer.server_address,
@@ -663,6 +676,7 @@ impl Connection {
             }
         }
         if let Some(to_local) = &self.to_local {
+            let mut local_gone = false;
             while socket.can_recv() {
                 match to_local.try_reserve() {
                     Ok(permit) => {
@@ -675,13 +689,17 @@ impl Connection {
                     // it catches up.
                     Err(mpsc::error::TrySendError::Full(())) => break,
                     Err(mpsc::error::TrySendError::Closed(())) => {
+                        // What's left unread has nowhere to go.
                         socket.abort();
                         self.local_done = true;
+                        local_gone = true;
                         break;
                     }
                 }
             }
-            if !socket.may_recv() && !socket.can_recv() && socket.state() != tcp::State::SynSent {
+            let received_all =
+                !socket.may_recv() && !socket.can_recv() && socket.state() != tcp::State::SynSent;
+            if local_gone || received_all {
                 self.to_local = None;
                 moved = true;
             }
@@ -755,6 +773,7 @@ async fn tcp_stack(shared: Arc<Shared>, mut accepted: mpsc::Receiver<(TcpStream,
                     tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
                 );
                 socket.set_nagle_enabled(false);
+                socket.set_timeout(Some(TCP_TIMEOUT.into()));
                 let remote = (IpAddress::Ipv4(shared.server), remote_port);
                 if socket.connect(iface.context(), remote, local_port).is_err() {
                     continue;
@@ -945,9 +964,10 @@ mod tests {
         let stray = tokio::time::timeout(Duration::from_millis(300), video.recv(&mut buf));
         assert!(stray.await.is_err(), "a reply arrived twice");
 
+        let video_port = tunnel.local_addr(Protocol::Udp, 47998).unwrap();
         tunnel.close().await;
         // Closing frees the ports for the next tunnel.
-        let again = Tunnel::open_with(&peer, &[Forward::udp(any, 47998)]).unwrap();
+        let again = Tunnel::open_with(&peer, &[Forward::udp(video_port, 47998)]).unwrap();
         drop(again);
         drop(video);
         drop(audio);
