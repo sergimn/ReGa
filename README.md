@@ -14,15 +14,16 @@ you with Moonlight and Sunshine, and stops it when you stop playing.
 
 ## Install
 
-ReGa is an early preview: it launches and sets up the machine, but doesn't
-stream it yet. Each [release](https://github.com/sergimn/ReGa/releases) has
-a Flatpak for x86_64 Linux. On Ubuntu:
+ReGa is an early preview, not yet tried on a real GPU machine. Each
+[release](https://github.com/sergimn/ReGa/releases) has a Flatpak for x86_64
+Linux. On Ubuntu:
 
 ```sh
 sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 wget -O rega-x86_64.flatpak https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
 flatpak install --user rega-x86_64.flatpak   # also pulls its runtime from Flathub
+flatpak install --user flathub com.moonlight_stream.Moonlight   # to play
 flatpak run io.github.sergimn.rega
 ```
 

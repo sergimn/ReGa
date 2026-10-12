@@ -13,6 +13,7 @@ sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 wget -O rega-x86_64.flatpak https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
 flatpak install --user rega-x86_64.flatpak     # also pulls the runtime from Flathub
+flatpak install --user flathub com.moonlight_stream.Moonlight   # to play
 flatpak run io.github.sergimn.rega
 ```
 
@@ -101,7 +102,9 @@ CI tests the module with.
 
 - Launching Moonlight from inside the sandbox. The Moonlight Flatpak is a
   separate app, so starting it needs either a host permission or bundling
-  Moonlight here; that's a decision for when the app starts streams.
+  Moonlight here. Until then, Play pairs by hand: ReGa shows the host to add
+  in Moonlight and asks for the PIN Moonlight shows (see the app README's
+  Play section).
 - Flathub. It would need the app built from source inside flatpak-builder
   (Flutter, Dart packages and Cargo crates as offline sources), a review of
   the `~/.aws` permission, and a word on the bundled Terraform's licence
