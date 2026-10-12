@@ -19,9 +19,11 @@ in_app() { flatpak run --command="$1" "$app" "${@:2}"; }
 
 flatpak info "$app" >/dev/null || fail "$app isn't installed"
 
-# Terraform's licence, which asks to ship with every copy of it.
-in_app test -s "/app/share/licenses/$app/terraform/LICENSE.txt" || fail "Terraform's licence isn't installed"
-ok "Terraform's licence is installed"
+# ReGa's licence, and Terraform's, which asks to ship with every copy of it.
+for file in LICENSE terraform/LICENSE.txt; do
+  in_app test -s "/app/share/licenses/$app/$file" || fail "$file isn't in /app/share/licenses/$app"
+done
+ok "licences installed"
 
 # Terraform, at the version the manifest pins.
 terraform=$(sed -n 's|.*releases\.hashicorp\.com/terraform/\([0-9.]*\)/.*|\1|p' "$here/$app.yml")

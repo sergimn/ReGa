@@ -24,7 +24,7 @@ flatpak run io.github.sergimn.rega
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
 | `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock`; the app runs the playbook it carries with it |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
-| `/app/share/licenses/io.github.sergimn.rega/terraform` | Terraform's licence (BUSL-1.1) |
+| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), and Terraform's (BUSL-1.1) in `terraform/` |
 
 Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
 `~/.aws` read-only for credentials and profiles, with the SSO token cache
@@ -98,6 +98,7 @@ CI tests the module with.
   (Flutter, Dart packages and Cargo crates as offline sources), a review of
   the `~/.aws` permission, and a word on the bundled Terraform's licence
   (BUSL-1.1, not open source) next to the app's own (MIT).
-- Shipping ReGa's own licence under `/app/share/licenses` once the repo has
-  its `LICENSE` file (the metainfo already declares MIT).
+- The licence notices of the Rust crates built into the app (generated with
+  something like cargo-about). Flutter already bundles those of the Dart
+  packages and the engine, in `flutter_assets/NOTICES.Z`.
 - aarch64.
