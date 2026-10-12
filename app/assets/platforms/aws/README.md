@@ -23,9 +23,11 @@ guidelines don't allow altering the logo's proportions or colours. To draw
 them again, from a folder holding the two SVGs, into `$OUT` with its `2.0x/`
 and `3.0x/` folders (each SVG is 40 px, so it's drawn at 0.8, 1.6 and 2.4
 times), use Chrome's headless shell, for instance from
-`npx @puppeteer/browsers install chrome-headless-shell@stable`. Plain
-`chromium --headless` won't do: its window is at least 500 px wide, so it
-only draws the top 2 px of the square.
+`npx @puppeteer/browsers install chrome-headless-shell@stable`, with the
+path it prints on your `PATH`. Plain `chromium --headless` won't do: its
+page is about 87 px shorter than its window (room for a browser toolbar it
+doesn't show), so a 40 px window leaves a page 1 or 2 px tall and only the
+top of the square is drawn.
 
 ```sh
 for pair in AWS-Cloud-logo_32:aws AWS-Cloud-logo_32_Dark:aws-dark; do
@@ -37,8 +39,10 @@ for pair in AWS-Cloud-logo_32:aws AWS-Cloud-logo_32_Dark:aws-dark; do
 done
 ```
 
-`test/platform_icon_test.dart` checks each PNG's size, its square's colour,
-and that the logo is drawn on it.
+`test/platform_icon_test.dart` checks each PNG's size, its square's colour
+in the corners, and that the logo covers as much of the square as it does
+in these files (8.6 to 9.9%), which a blank, cropped or half-drawn image
+doesn't.
 
 ## Terms
 
@@ -53,8 +57,9 @@ which cloud a platform is, unaltered, and on its own background.
 
 If AWS asks for it to be removed, take out the `aws` entry in
 `PlatformIcon.logos` (`lib/widgets/platform_icon.dart`), so AWS shows a
-plain cloud, then everything that ships or describes the logo: the two
-`assets/platforms/aws/` lines in `pubspec.yaml`, this folder, the AWS logo
-tests in `test/platform_icon_test.dart`, `aws-logo.md` in
-`flatpak/io.github.sergimn.rega.yml` and `flatpak/smoke-test.sh`, and the
-logo's notes in the top-level README and `flatpak/README.md`.
+plain cloud, then everything that ships or describes the logo: the
+`assets/platforms/aws/` lines in `pubspec.yaml` and the comment above them,
+this folder, the AWS logo tests in `test/platform_icon_test.dart`,
+`aws-logo.md` in `flatpak/io.github.sergimn.rega.yml` and
+`flatpak/smoke-test.sh`, and the logo's mentions in the READMEs (the
+repository's, the app's and `flatpak/README.md`).

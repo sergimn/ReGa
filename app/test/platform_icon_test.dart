@@ -111,11 +111,12 @@ void main() {
               reason: '$variant: square',
             );
           }
-          // The logo takes about a tenth of the square; a blank or
-          // half-drawn image has far less or far more.
+          // The logo covers 8.6 to 9.9% of each square. A blank one, or
+          // one drawn without the smile, has less; one drawn too big for
+          // its square, cut off at the edge, has more.
           expect(
             _shareOffCorner(rgba),
-            inInclusiveRange(0.05, 0.2),
+            inInclusiveRange(0.075, 0.115),
             reason: '$variant: logo',
           );
           image.dispose();
