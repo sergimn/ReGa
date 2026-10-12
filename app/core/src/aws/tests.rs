@@ -761,6 +761,44 @@ async fn a_lock_left_by_a_killed_run_here_is_cleared() {
 }
 
 #[tokio::test]
+async fn a_run_from_another_flatpak_sandbox_keeps_its_lock() {
+    let f = fixture(Account::typical());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The app quit mid-run and was opened again: the run goes on in the old
+    // sandbox, whose processes this one can't see.
+    let started = terraform::unix_now() - 30;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    let marker = serde_json::json!({
+        "pid": 2,
+        "start_ticks": 1,
+        "started": started,
+        "pid_namespace": "pid:[1]",
+        "boot_id": boot.trim(),
+    });
+    std::fs::write(
+        f.provider.machine_dir(&m.id).join("terraform.pid"),
+        marker.to_string(),
+    )
+    .unwrap();
+    let host = terraform::host_name().unwrap();
+    f.put(
+        record::lock_key(&m.id),
+        lock(&format!("me@{host}"), started + 2),
+    );
+    assert!(f.provider.list_machines().await.unwrap()[0].busy);
+
+    f.provider.stop(&m.id).await.unwrap();
+    assert!(!f
+        .calls()
+        .contains(&format!("delete_object {}", record::lock_key(&m.id))));
+    assert!(f.has(&record::lock_key(&m.id)));
+}
+
+#[tokio::test]
 async fn another_devices_live_lock_is_left_alone() {
     let f = fixture(Account::typical());
     let m = f
@@ -788,6 +826,8 @@ fn stale_locks() {
         pid: 1,
         start_ticks: 1,
         started: now - 100,
+        pid_namespace: None,
+        boot_id: None,
     };
     // Fresh and nobody known to be dead: held.
     assert!(!stale_at(&created(now - 90), None, Some("pc"), now));

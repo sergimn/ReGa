@@ -4,6 +4,7 @@
   <name>ReGa</name>
   <summary>Play games on a cloud machine you own</summary>
   <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
   <developer id="io.github.sergimn">
     <name>Sergi</name>
   </developer>
@@ -11,12 +12,34 @@
     <p>
       ReGa is an early preview of an app that sets up a Windows gaming
       machine in your own cloud account and streams it to your desktop with
-      Moonlight. This version shows machine types, prices and regions from
-      sample data; launching machines comes in a later release.
+      Moonlight. This version suggests an AWS region by latency and price,
+      and launches, resizes, stops and destroys machines; setting up the
+      stream comes in a later release.
+    </p>
+    <p>
+      It reads your AWS credentials from ~/.aws. Without them it shows
+      sample data.
     </p>
   </description>
   <url type="homepage">https://github.com/sergimn/ReGa</url>
+  <url type="bugtracker">https://github.com/sergimn/ReGa/issues</url>
+  <url type="vcs-browser">https://github.com/sergimn/ReGa</url>
   <launchable type="desktop-id">io.github.sergimn.rega.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Machine types with their specs and prices, and the region picker</caption>
+      <image>https://raw.githubusercontent.com/sergimn/ReGa/main/docs/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <!-- From the palette in lib/theme.dart: deep teal and aqua. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#0F766E</color>
+    <color type="primary" scheme_preference="dark">#5EEAD4</color>
+  </branding>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="0.1.0" date="2026-10-11"/>

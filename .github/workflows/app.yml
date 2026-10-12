@@ -3,10 +3,11 @@ name: App
 on:
   push:
     branches: [main]
-    # The app compiles the Terraform module and the Ansible playbook in.
-    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/app.yml']
+    # The app compiles the Terraform module and the Ansible playbook in, and
+    # the Flatpak bundles Terraform at the version terraform.yml tests with.
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
   pull_request:
-    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/app.yml']
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
 
 permissions:
   contents: read
@@ -151,4 +152,47 @@ jobs:
         with:
           bundle: rega.flatpak
           manifest-path: app/flatpak/io.github.sergimn.rega.yml
+          artifact-name: rega-flatpak
           cache: false
+
+  flatpak-metadata:
+    name: Flatpak pins and metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Bundled tools match the repo's pins
+        run: python3 flatpak/pins.py check
+      - name: Pin check tests
+        run: python3 -m unittest discover -s flatpak -v
+      - name: Validate the desktop file and metainfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream desktop-file-utils
+          desktop-file-validate flatpak/io.github.sergimn.rega.desktop
+          appstreamcli validate --no-net flatpak/io.github.sergimn.rega.metainfo.xml
+
+  flatpak-install:
+    name: Flatpak installed on Ubuntu
+    # Installs the bundle the way a user would, runtime from Flathub, and
+    # checks the bundled tools and the app inside the sandbox.
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rega-flatpak
+          path: app
+      - name: Install Flatpak
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak xvfb xdotool
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - run: flatpak install --user -y --noninteractive rega.flatpak
+      - run: dbus-run-session -- flatpak/smoke-test.sh

@@ -16,7 +16,7 @@ you with Moonlight and Sunshine, and stops it when you stop playing.
 
 | Path | What |
 | --- | --- |
-| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak. See [app/README.md](app/README.md). |
+| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak ([how to install it](app/flatpak/README.md#install)). See [app/README.md](app/README.md). |
 | `infra/` | Terraform (and later Ansible) that creates and configures the cloud machine. |
 
 Checks, pinned versions and dependency updates: see [CONTRIBUTING.md](CONTRIBUTING.md).

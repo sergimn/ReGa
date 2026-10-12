@@ -193,7 +193,9 @@ jobs:
               ci:
                 ansible_host: 127.0.0.1
                 ansible_user: regaci
-                ansible_password: "$(cat ci-password)"
+                # !unsafe: the random password can hold "{%" or "{{", which
+                # Ansible would otherwise read as a template.
+                ansible_password: !unsafe "$(cat ci-password)"
           INVENTORY
 
       - name: Run the playbook

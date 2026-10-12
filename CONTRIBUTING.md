@@ -35,6 +35,7 @@ check one:
 | Rust crates, Dart packages, Terraform providers | `Cargo.lock`, `pubspec.lock`, `.terraform.lock.hcl` (checksums), which CI uses read-only |
 | Sunshine, the virtual display driver, the AWS CLI, WireGuard | version and SHA-256 in the Ansible role defaults |
 | Terraform in the Flatpak | version and SHA-256 in the manifest |
+| Ansible in the Flatpak | `app/flatpak/ansible.yml`, generated from the Ansible lock and `requirements.yml` with a SHA-256 for every file |
 | Rust, Flutter, Terraform, TFLint, Python and runner images in CI | exact version |
 
 Tools that only accept a version (the toolchains, Pester, PSScriptAnalyzer,
@@ -102,6 +103,10 @@ found and what is waiting.
   regenerated, and Flutter updates need `app/pubspec.lock` regenerated with
   the new Flutter (`flutter pub get`), since CI uses it read-only. None of
   these merges on its own.
+- Ansible: the Flatpak bundles the versions in `infra/ansible/requirements.lock`
+  and `requirements.yml`, so a PR that changes them needs
+  `python3 app/flatpak/pins.py update` run and its result committed (the PR
+  says so, and CI fails until then). These don't merge on their own either.
 - Not tracked: the AWS CLI (it releases several times a week, and its MSI
   has no published hash to update from) and WireGuard for Windows. Update
   their version and SHA-256 in the Ansible role defaults by hand.
