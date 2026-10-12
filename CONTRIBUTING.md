@@ -127,7 +127,9 @@ A release is a `v` tag on main; the Release workflow
    what's new, what doesn't work yet. They become the GitHub release's text.
 
 `python3 app/flatpak/release.py check` (CI runs it) fails until all of these
-agree. Once the PR has merged, tag its merge commit and push the tag:
+agree. To try the uncached build a release does, run the App workflow by
+hand (Actions, App, Run workflow) with "release" ticked. Once the PR has
+merged, tag its merge commit and push the tag:
 
 ```sh
 git tag v0.0.1 origin/main

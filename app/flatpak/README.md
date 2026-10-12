@@ -11,7 +11,7 @@ Each [release](https://github.com/sergimn/ReGa/releases) has the bundle as
 ```sh
 sudo apt install flatpak
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-curl -LO https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
+wget https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
 flatpak install --user rega-x86_64.flatpak     # also pulls the runtime from Flathub
 flatpak run io.github.sergimn.rega
 ```

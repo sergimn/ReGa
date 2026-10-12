@@ -17,6 +17,13 @@ on:
         description: Build what gets published, from a cold start (no caches).
         type: boolean
         default: false
+  # To try a release build, uncached, without tagging anything.
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Build what gets published, from a cold start (no caches).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,7 +57,9 @@ jobs:
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy --no-self-update
           rustup default "$RUST_VERSION"
+      # No caches on a release, like the Flutter job below.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.release }}
         with:
           workspaces: app
       # The setup tests syntax-check the embedded playbooks with the real
