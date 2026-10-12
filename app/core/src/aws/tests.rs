@@ -1821,7 +1821,8 @@ async fn destroying_a_running_machine_saves_its_games_first() {
 /// The server key and certificate fingerprint a setup reads off the machine.
 fn learnt() -> ConnectionDetails {
     ConnectionDetails {
-        wireguard_server_public_key: Some("v++jn5TbyumgcnDNP7I1lcyU/BnB04Gsu/qedNNanzA=".into()),
+        // A stand-in: 32 zero bytes, written the way WireGuard writes keys.
+        wireguard_server_public_key: Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()),
         sunshine_cert_sha256: Some("ab".repeat(32)),
     }
 }

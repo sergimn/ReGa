@@ -848,12 +848,17 @@ mod tests {
     fn keys_round_trip_like_wg() {
         let private = generate_private_key().unwrap();
         assert_eq!(private.len(), 44);
-        assert_ne!(private, generate_private_key().unwrap());
-        // `wg pubkey` of a known key.
+        let other = generate_private_key().unwrap();
+        assert_ne!(private, other);
+        // The public keys are X25519's, as WireGuard needs: each private key
+        // with the other's public key makes the same shared secret.
+        let secret = |key: &str| StaticSecret::from(decode_key(key).unwrap());
+        let public = |key: &str| PublicKey::from(decode_key(&public_key(key).unwrap()).unwrap());
         assert_eq!(
-            public_key("YJ7D0kLqiOz7f7ae4YdxE9BmQwPFkn6p9VHZq4u0DFA=").unwrap(),
-            "v++jn5TbyumgcnDNP7I1lcyU/BnB04Gsu/qedNNanzA="
+            secret(&private).diffie_hellman(&public(&other)).as_bytes(),
+            secret(&other).diffie_hellman(&public(&private)).as_bytes()
         );
+        assert_eq!(public_key(&private).unwrap().len(), 44);
         assert!(public_key("short").is_err());
     }
 

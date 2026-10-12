@@ -646,9 +646,9 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert_eq!(summarize_failure("", ""), "Ansible failed");
     }
 
-    /// A WireGuard private key, and what `wg pubkey` makes of it.
-    const CLIENT_KEY: &str = "YJ7D0kLqiOz7f7ae4YdxE9BmQwPFkn6p9VHZq4u0DFA=";
-    const CLIENT_PUBLIC_KEY: &str = "v++jn5TbyumgcnDNP7I1lcyU/BnB04Gsu/qedNNanzA=";
+    /// A stand-in for the server's public key: 32 zero bytes, written the
+    /// way WireGuard writes keys.
+    const SERVER_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     fn machine(dir: &Path) -> MachineAccess {
         MachineAccess {
@@ -665,7 +665,7 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
             secrets: MachineSecrets {
                 sunshine_password: "sun".into(),
                 desktop_password: "desk-Rg7".into(),
-                wireguard_private_key: CLIENT_KEY.into(),
+                wireguard_private_key: tunnel::generate_private_key().unwrap(),
                 wireguard_server_public_key: None,
                 sunshine_cert_sha256: None,
             },
@@ -675,7 +675,8 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
     #[test]
     fn the_inventory_never_holds_the_password() {
         let dir = Path::new("/data/m");
-        let text = inventory(&machine(dir), &dir.join("secrets")).unwrap();
+        let m = machine(dir);
+        let text = inventory(&m, &dir.join("secrets")).unwrap();
         assert!(!text.contains("Pa55word!"));
         let json: Value = serde_json::from_str(&text).unwrap();
         let host = &json["rega"]["hosts"]["gaming-abc123"];
@@ -689,8 +690,12 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert_eq!(host["rega_library_bucket_region"], "eu-north-1");
         assert_eq!(host["rega_idle_minutes"], 15);
         // Only the public half of the app's WireGuard key.
-        assert_eq!(host["rega_wireguard_client_public_key"], CLIENT_PUBLIC_KEY);
-        assert!(!text.contains(CLIENT_KEY));
+        let key = &m.secrets.wireguard_private_key;
+        assert_eq!(
+            host["rega_wireguard_client_public_key"],
+            tunnel::public_key(key).unwrap()
+        );
+        assert!(!text.contains(key.as_str()));
 
         let mut stopped = machine(dir);
         stopped.public_ip = None;
@@ -718,7 +723,7 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         "mtu": "1400",
         "port": "51820",
         "server_address": "10.213.37.1",
-        "server_public_key": "{CLIENT_PUBLIC_KEY}"
+        "server_public_key": "{SERVER_PUBLIC_KEY}"
     }}
 }}"#,
             cert = "AB".repeat(32)
@@ -727,7 +732,7 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert_eq!(
             details,
             ConnectionDetails {
-                wireguard_server_public_key: Some(CLIENT_PUBLIC_KEY.into()),
+                wireguard_server_public_key: Some(SERVER_PUBLIC_KEY.into()),
                 sunshine_cert_sha256: Some("ab".repeat(32)),
             }
         );
@@ -750,12 +755,12 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert!(setup.connection(&m).await.is_err());
         let secrets = tmp.path().join("secrets");
         std::fs::create_dir_all(&secrets).unwrap();
-        let json = format!(r#"{{"wireguard": {{"server_public_key": "{CLIENT_PUBLIC_KEY}"}}}}"#);
+        let json = format!(r#"{{"wireguard": {{"server_public_key": "{SERVER_PUBLIC_KEY}"}}}}"#);
         std::fs::write(secrets.join("connection.json"), json).unwrap();
         let details = setup.connection(&m).await.unwrap().unwrap();
         assert_eq!(
             details.wireguard_server_public_key.as_deref(),
-            Some(CLIENT_PUBLIC_KEY)
+            Some(SERVER_PUBLIC_KEY)
         );
     }
 
