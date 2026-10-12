@@ -132,10 +132,11 @@ fails, saying what to do, when:
 - One of those crates changes its licence, or that file.
 
 Texts checked in here can go stale, so for them the check warns rather
-than failing (on GitHub, as an annotation on the run and the PR): when an `UNSHIPPED` crate is published from a new
-commit, or an `aws-lc-sys` update arrives for `LEFT_OUT` (the licences of
-vendored code that aws-lc's own licence points at but the crate leaves
-out), see whether the text changed and update the entry.
+than failing (on GitHub, as an annotation on the run and the PR): when an
+`UNSHIPPED` crate is published from a new commit, or an `aws-lc-sys` update
+arrives for `LEFT_OUT` (the licences of vendored code that aws-lc's own
+licence points at but the crate leaves out), see whether the text changed
+and update the entry.
 
 It doesn't check that a crate's files cover every licence in an AND: a crate
 under `MIT AND Unicode-3.0` that ships only the MIT text would pass. The
