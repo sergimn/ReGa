@@ -19,10 +19,14 @@ in_app() { flatpak run --command="$1" "$app" "${@:2}"; }
 
 flatpak info "$app" >/dev/null || fail "$app isn't installed"
 
-# ReGa's licence, and Terraform's, which asks to ship with every copy of it.
-for file in LICENSE terraform/LICENSE.txt; do
+# ReGa's licence, Terraform's, which asks to ship with every copy of it, and
+# the Rust crates', written for the Cargo.lock the app was built from.
+for file in LICENSE terraform/LICENSE.txt rust-crates.txt; do
   in_app test -s "/app/share/licenses/$app/$file" || fail "$file isn't in /app/share/licenses/$app"
 done
+lock=$(sha256sum "$repo/app/Cargo.lock" | cut -d' ' -f1)
+in_app grep -qF "app/Cargo.lock, sha256 $lock," "/app/share/licenses/$app/rust-crates.txt" \
+  || fail "rust-crates.txt isn't for this app/Cargo.lock; write it again with flatpak/rust_notices.py"
 ok "licences installed"
 
 # Terraform, at the version the manifest pins.
