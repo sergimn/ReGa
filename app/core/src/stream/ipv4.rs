@@ -160,11 +160,11 @@ fn packet(
 fn checksum(parts: &[&[u8]]) -> u16 {
     let mut sum: u32 = 0;
     for part in parts {
-        let mut words = part.chunks_exact(2);
-        for word in &mut words {
-            sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+        let (words, rest) = part.as_chunks::<2>();
+        for word in words {
+            sum += u32::from(u16::from_be_bytes(*word));
         }
-        if let [last] = words.remainder() {
+        if let [last] = rest {
             sum += u32::from(*last) << 8;
         }
     }
