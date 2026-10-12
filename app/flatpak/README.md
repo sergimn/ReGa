@@ -131,8 +131,8 @@ fails, saying what to do, when:
   and add the crate to `LICENSE_FILE_ONLY` with the file's sha256.
 - One of those crates changes its licence, or that file.
 
-Texts checked in here can go stale, so for them the check prints a note
-rather than failing: when an `UNSHIPPED` crate is published from a new
+Texts checked in here can go stale, so for them the check warns rather
+than failing (on GitHub, as an annotation on the run and the PR): when an `UNSHIPPED` crate is published from a new
 commit, or an `aws-lc-sys` update arrives for `LEFT_OUT` (the licences of
 vendored code that aws-lc's own licence points at but the crate leaves
 out), see whether the text changed and update the entry.
