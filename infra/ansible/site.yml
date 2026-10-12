@@ -13,13 +13,63 @@
     - name: Wait for WinRM
       ansible.builtin.wait_for_connection:
         timeout: 900
-  roles:
-    - role: base
-    - role: steam
-    - role: sunshine
-    - role: wireguard
-    - role: library_agent
-    - role: gpu
+
+  tasks:
+    # The roles reboot the machine as needed. Each reboot starts the library
+    # restore's boot task, and the next one would cut that restore short.
+    # While this note is there, a restore on a later boot waits; the note
+    # goes once the roles and their reboots are done, or once a role has
+    # failed, so a failed setup doesn't hold the games back. It's
+    # bookkeeping, so it never counts as a change.
+    - name: Set up the machine
+      block:
+        - name: Note on the machine that a setup has started
+          ansible.windows.win_powershell:
+            parameters:
+              Path: "{{ rega_state_dir }}\\setup.json"
+            script: |
+              param([string]$Path)
+              $Ansible.Changed = $false
+              New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+              $started = [datetime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+              $json = [pscustomobject]@{ started_utc = $started } | ConvertTo-Json
+              [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
+
+        - name: Base
+          ansible.builtin.import_role:
+            name: base
+        - name: Steam
+          ansible.builtin.import_role:
+            name: steam
+        - name: Sunshine
+          ansible.builtin.import_role:
+            name: sunshine
+        - name: WireGuard
+          ansible.builtin.import_role:
+            name: wireguard
+        - name: Library agent
+          ansible.builtin.import_role:
+            name: library_agent
+        - name: GPU
+          ansible.builtin.import_role:
+            name: gpu
+
+        # Base's reboot, if it asked for one, before the note goes.
+        - name: Run the roles' handlers
+          ansible.builtin.meta: flush_handlers
+      always:
+        # A waiting restore reads the note every 10 seconds, and Windows
+        # won't delete a file that is open.
+        - name: Let the library restore go ahead
+          ansible.windows.win_file:
+            path: "{{ rega_state_dir }}\\setup.json"
+            state: absent
+          register: rega_setup_note
+          until: rega_setup_note is succeeded
+          retries: 5
+          delay: 2
+          changed_when: false
+
   post_tasks:
     - name: Write the connection details for the app
       ansible.builtin.copy:

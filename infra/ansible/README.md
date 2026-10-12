@@ -98,7 +98,7 @@ with the generated login and the recorded certificate fingerprint.
 
 | Task | When | Does |
 | --- | --- | --- |
-| `ReGa-LibraryRestore` | boot | Waits for the empty D: from Terraform (label `ReGaLibrary`), copies `s3://rega-games-<account>/steam-library/` to `D:\SteamLibrary` and writes `D:\.rega-restored.json`. |
+| `ReGa-LibraryRestore` | boot | On a boot from one of the setup's reboots, waits for the setup to end. Then waits for the empty D: from Terraform (label `ReGaLibrary`), copies `s3://rega-games-<account>/steam-library/` to `D:\SteamLibrary` and writes `D:\.rega-restored.json`. |
 | `ReGa-Agent` | every minute | Tracks activity, uploads the library when Steam's installed games change and nobody is playing, and stops the machine after the idle time. |
 | `ReGa-SteamLaunch` | `rega` logs on | Waits for the restore, adds `D:\SteamLibrary` to Steam's library folders and starts Steam. |
 
@@ -173,6 +173,23 @@ ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=FinalSync
 A machine's first boot comes before the restore task exists. So when no
 restore ran on the current boot, `site.yml` starts one itself
 (`StartRestore`), after the roles' reboots.
+
+Each of those reboots starts the boot task too, and the next one would cut
+its restore short. So `site.yml` writes `C:\ProgramData\ReGa\state\setup.json`
+as it starts, and deletes it once the roles and their reboots are done or
+as soon as a role fails. A restore on a boot that came after that note
+waits, with status `waiting`, until the note goes, or at most
+`rega_setup_hold_minutes` (120) after that setup started.
+
+The note stays when the setup died or the machine stopped answering, so
+the restore waits until those 120 minutes are up, unless a setup runs
+again on the same boot: the restore then waits for that one to end, since
+it may reboot too. Waiting isn't activity, so the idle stop still stops a
+machine whose setup died. A restore that isn't already waiting isn't held
+back by a setup that starts on its boot: on a start, or after a setup that
+failed, the setup's first reboot can still cut that boot's restore short,
+and the restore on the next boot waits.
+
 WaitRestore gives the boot task `rega_restore_start_minutes` (5) to start a
 restore and waits up to `rega_restore_timeout_minutes` (240) for it. It fails,
 saying why, unless the games were restored (no library disk, a library too
@@ -244,7 +261,8 @@ the next boot.
   and the second run must change nothing. Then it checks the services, the
   tunnel, the Sunshine API login, an agent tick, runs `agent.yml` (Status,
   and WaitRestore, which must fail since the runner has no library disk),
-  and installs the virtual display.
+  checks that the boot task's restore waits for a setup that started before
+  the boot, and installs the virtual display.
 - The app's Rust tests syntax-check both playbooks as the app writes them,
   with the inventory it generates (`.github/workflows/app.yml`).
 

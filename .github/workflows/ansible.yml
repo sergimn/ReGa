@@ -205,6 +205,7 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
             -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)"
 
       - name: Run it again; nothing should change
@@ -215,9 +216,15 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
             -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)" \
             --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
+          # The setup wrote its note for the library restore and deleted it.
+          for task in 'Note on the machine that a setup has started' 'Let the library restore go ahead'; do
+            grep -A1 -F "TASK [$task]" second-run.log | grep -F 'ok: [ci]' > /dev/null ||
+              { echo "::error::'$task' wasn't ok on the second run"; exit 1; }
+          done
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
 
@@ -248,6 +255,61 @@ jobs:
           fi
           cat wait-restore.log
           grep -q 'no game library disk' wait-restore.log
+
+      # The runner can't reboot, so act as if a setup that started before
+      # this boot had rebooted it: the boot task's restore must wait for that
+      # setup to end, so the setup's next reboot can't cut it short.
+      - name: Hold the restore while a setup reboots the machine
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert($condition, $message) { if (-not $condition) { throw $message } ; "ok: $message" }
+          $state = 'C:\ProgramData\ReGa\state'
+          # The agent replaces restore.json as it goes; a read can miss it.
+          function Get-RestoreStatus {
+            try { (Get-Content "$state\restore.json" -Raw | ConvertFrom-Json).status } catch { $null }
+          }
+          function Wait-RestoreStatus($statuses, $seconds) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while ((Get-RestoreStatus) -notin $statuses -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+            Get-RestoreStatus
+          }
+
+          Assert (-not (Test-Path "$state\setup.json")) 'the setup let the restore go ahead when it ended'
+
+          # The playbook ran with rega_setup_hold_minutes=1440, so the hold
+          # doesn't run out however long the runner has been up.
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          $note = @{ started_utc = $boot.AddMinutes(-1).ToString('o') } | ConvertTo-Json
+          [IO.File]::WriteAllText("$state\setup.json", $note)
+          Start-ScheduledTask -TaskName ReGa-LibraryRestore
+          $status = Wait-RestoreStatus @('waiting') 60
+          Assert ($status -eq 'waiting') "the boot task's restore waits for the setup ($status)"
+          Start-Sleep -Seconds 20
+          Assert ((Get-RestoreStatus) -eq 'waiting') 'it keeps waiting while the setup runs'
+          $agent = 'C:\ProgramData\ReGa\agent\rega-agent.ps1'
+          # Windows PowerShell stops on a native command's stderr under 'Stop'.
+          $ErrorActionPreference = 'Continue'
+          $wait = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action WaitRestore -StartMinutes 0 -TimeoutMinutes 0 2>&1 |
+            ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $result = $wait | Where-Object { $_ -like '{*' } | Select-Object -First 1 | ConvertFrom-Json
+          Assert ($code -eq 1 -and $result.wait -eq 'running') "WaitRestore keeps waiting for a held restore ($($wait -join ' '))"
+          Assert (($wait -join ' ') -match 'waiting for the machine.s setup') 'WaitRestore says what the restore waits for'
+          $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action StartRestore | ConvertFrom-Json
+          Assert (-not $start.started) "StartRestore doesn't start a second restore"
+
+          # The waiting restore reads the note every 10 seconds; Windows won't
+          # delete it mid-read.
+          for ($i = 0; (Test-Path "$state\setup.json"); $i++) {
+            try { Remove-Item "$state\setup.json" } catch { if ($i -ge 5) { throw } ; Start-Sleep -Seconds 1 }
+          }
+          # With no library disk on the runner, the restore gives up after
+          # rega_restore_wait_minutes (1).
+          $status = Wait-RestoreStatus @('no-disk', 'done', 'failed', 'disk-full') 180
+          Assert ($status -eq 'no-disk') "the restore goes ahead once the setup ends ($status)"
+          Get-Content C:\ProgramData\ReGa\logs\agent.log | Select-Object -Last 5
 
       - name: Check the machine
         shell: powershell
