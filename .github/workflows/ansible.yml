@@ -205,6 +205,7 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
             -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)"
 
       - name: Run it again; nothing should change
@@ -215,6 +216,7 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
             -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)" \
             --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
@@ -270,16 +272,28 @@ jobs:
 
           Assert (-not (Test-Path "$state\setup.json")) 'the setup let the restore go ahead when it ended'
 
+          # The playbook ran with rega_setup_hold_minutes=1440, so the hold
+          # doesn't run out however long the runner has been up.
           $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
-          $note = @{ started_utc = $boot.AddMinutes(-10).ToString('o') } | ConvertTo-Json
+          $note = @{ started_utc = $boot.AddMinutes(-1).ToString('o') } | ConvertTo-Json
           [IO.File]::WriteAllText("$state\setup.json", $note)
           Start-ScheduledTask -TaskName ReGa-LibraryRestore
           $status = Wait-RestoreStatus @('waiting') 60
           Assert ($status -eq 'waiting') "the boot task's restore waits for the setup ($status)"
           Start-Sleep -Seconds 20
           Assert ((Get-RestoreStatus) -eq 'waiting') 'it keeps waiting while the setup runs'
-          $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\ReGa\agent\rega-agent.ps1 -Action StartRestore | ConvertFrom-Json
-          Assert (-not $start.started) "the setup's StartRestore doesn't start a second restore"
+          $agent = 'C:\ProgramData\ReGa\agent\rega-agent.ps1'
+          # Windows PowerShell stops on a native command's stderr under 'Stop'.
+          $ErrorActionPreference = 'Continue'
+          $wait = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action WaitRestore -StartMinutes 0 -TimeoutMinutes 0 2>&1 |
+            ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $result = $wait | Where-Object { $_ -like '{*' } | Select-Object -First 1 | ConvertFrom-Json
+          Assert ($code -eq 1 -and $result.wait -eq 'running') "WaitRestore keeps waiting for a held restore ($($wait -join ' '))"
+          Assert (($wait -join ' ') -match 'waiting for the machine.s setup') 'WaitRestore says what the restore waits for'
+          $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action StartRestore | ConvertFrom-Json
+          Assert (-not $start.started) "StartRestore doesn't start a second restore"
 
           Remove-Item "$state\setup.json"
           # With no library disk on the runner, the restore gives up after

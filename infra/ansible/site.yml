@@ -14,38 +14,57 @@
       ansible.builtin.wait_for_connection:
         timeout: 900
 
+  tasks:
     # The roles reboot the machine as needed. Each reboot starts the library
     # restore's boot task, and the next one would cut that restore short.
-    # While this note is there, a restore on a later boot waits for the
-    # setup to end; the note goes once the roles are done. It's bookkeeping,
-    # so it never counts as a change.
-    - name: Note on the machine that a setup has started
-      ansible.windows.win_powershell:
-        parameters:
-          Path: "{{ rega_state_dir }}\\setup.json"
-        script: |
-          param([string]$Path)
-          $Ansible.Changed = $false
-          New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
-          $started = [datetime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-          $json = [pscustomobject]@{ started_utc = $started } | ConvertTo-Json
-          [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
-  roles:
-    - role: base
-    - role: steam
-    - role: sunshine
-    - role: wireguard
-    - role: library_agent
-    - role: gpu
-  post_tasks:
-    # The roles won't reboot the machine again, so a restore that started on
-    # one of their reboots can go ahead.
-    - name: Let the library restore go ahead
-      ansible.windows.win_file:
-        path: "{{ rega_state_dir }}\\setup.json"
-        state: absent
-      changed_when: false
+    # While this note is there, a restore on a later boot waits; the note
+    # goes once the roles and their reboots are done, or once a role has
+    # failed, so a failed setup doesn't hold the games back. It's
+    # bookkeeping, so it never counts as a change.
+    - name: Set up the machine
+      block:
+        - name: Note on the machine that a setup has started
+          ansible.windows.win_powershell:
+            parameters:
+              Path: "{{ rega_state_dir }}\\setup.json"
+            script: |
+              param([string]$Path)
+              $Ansible.Changed = $false
+              New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+              $started = [datetime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+              $json = [pscustomobject]@{ started_utc = $started } | ConvertTo-Json
+              [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
 
+        - name: Base
+          ansible.builtin.import_role:
+            name: base
+        - name: Steam
+          ansible.builtin.import_role:
+            name: steam
+        - name: Sunshine
+          ansible.builtin.import_role:
+            name: sunshine
+        - name: WireGuard
+          ansible.builtin.import_role:
+            name: wireguard
+        - name: Library agent
+          ansible.builtin.import_role:
+            name: library_agent
+        - name: GPU
+          ansible.builtin.import_role:
+            name: gpu
+
+        # Base's reboot, if it asked for one, before the note goes.
+        - name: Run the roles' handlers
+          ansible.builtin.meta: flush_handlers
+      always:
+        - name: Let the library restore go ahead
+          ansible.windows.win_file:
+            path: "{{ rega_state_dir }}\\setup.json"
+            state: absent
+          changed_when: false
+
+  post_tasks:
     - name: Write the connection details for the app
       ansible.builtin.copy:
         dest: "{{ rega_secrets_dir }}/connection.json"

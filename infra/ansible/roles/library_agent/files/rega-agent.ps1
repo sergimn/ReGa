@@ -206,7 +206,7 @@ switch ($Action) {
       $status.status = 'waiting'
       Write-JsonFile $restorePath ([pscustomobject]$status)
       Write-ReGaLog 'A setup rebooted this machine; the restore waits for it to end.'
-      while (Test-SetupHold -Setup (Read-JsonFile $setupPath) -Boot $boot -Now ([datetime]::UtcNow) -HoldMinutes $holdMinutes) {
+      while (Test-SetupHold -Setup (Read-JsonFile $setupPath) -Boot $boot -Now ([datetime]::UtcNow) -HoldMinutes $holdMinutes -Holding) {
         Start-Sleep -Seconds 10
       }
       Write-ReGaLog 'Done waiting for the setup; restoring.'

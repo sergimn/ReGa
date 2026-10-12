@@ -146,6 +146,14 @@ Describe 'Test-SetupHold' {
     Test-SetupHold -Setup $setup -Boot $boot -Now $boot.AddMinutes(3) -HoldMinutes 120 | Should -BeFalse
   }
 
+  It 'keeps holding a waiting restore through a setup started since' {
+    # A setup that died, then a retry on the same boot, which may reboot.
+    $retry = [pscustomobject]@{ started_utc = $boot.AddMinutes(30).ToString('o') }
+    Test-SetupHold -Setup $retry -Boot $boot -Now $boot.AddMinutes(40) -HoldMinutes 120 -Holding | Should -BeTrue
+    Test-SetupHold -Setup $retry -Boot $boot -Now $boot.AddMinutes(151) -HoldMinutes 120 -Holding | Should -BeFalse
+    Test-SetupHold -Setup $null -Boot $boot -Now $boot.AddMinutes(40) -HoldMinutes 120 -Holding | Should -BeFalse
+  }
+
   It 'lets the restore go once the setup has ended or died' {
     Test-SetupHold -Setup $null -Boot $boot -Now $boot.AddMinutes(1) -HoldMinutes 120 | Should -BeFalse
     $setup = [pscustomobject]@{ started_utc = $boot.AddMinutes(-20).ToString('o') }
@@ -167,8 +175,8 @@ Describe 'Get-RestoreWaitState' {
   It 'follows a restore from this boot' {
     $running = [pscustomobject]@{ status = 'running'; boot_utc = $boot.ToString('o') }
     Get-RestoreWaitState -Restore $running -Boot $boot -Now $boot.AddHours(1) -StartBy $startBy | Should -Be 'running'
-    # One waiting for a setup to end hasn't finished either, and mustn't be
-    # started again.
+    # One waiting for a setup to end hasn't finished either: WaitRestore
+    # and LaunchSteam keep waiting for it.
     $waiting = [pscustomobject]@{ status = 'waiting'; boot_utc = $boot.ToString('o') }
     Get-RestoreWaitState -Restore $waiting -Boot $boot -Now $boot.AddHours(1) -StartBy $startBy | Should -Be 'running'
     foreach ($status in @('done', 'no-disk', 'failed', 'disk-full')) {
@@ -197,6 +205,7 @@ Describe 'Get-RestoreWaitProblem' {
 
   It 'says why otherwise' {
     Get-RestoreWaitProblem -Wait 'running' -Status 'running' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'still running after 240 minutes'
+    Get-RestoreWaitProblem -Wait 'running' -Status 'waiting' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'still waiting for the machine.s setup'
     Get-RestoreWaitProblem -Wait 'none' -Status $null -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'No game library restore started'
     Get-RestoreWaitProblem -Wait 'finished' -Status 'no-disk' -TimeoutMinutes 240 -LogPath 'x' | Should -Match 'no game library disk'
     Get-RestoreWaitProblem -Wait 'finished' -Status 'disk-full' -TimeoutMinutes 240 -LogPath 'x' | Should -Match "doesn't fit"

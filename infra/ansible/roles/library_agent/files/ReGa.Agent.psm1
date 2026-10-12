@@ -172,18 +172,21 @@ function Test-SameBoot {
 
 function Test-SetupHold {
   # Pure: whether this boot's library restore should wait for a setup to
-  # end. site.yml writes setup.json as it starts and deletes it as it ends.
-  # A setup that started before this boot is the one that rebooted the
-  # machine, and its next reboot would cut a restore short. One older than
-  # HoldMinutes is taken to have died.
-  param($Setup, [datetime]$Boot, [datetime]$Now, [int]$HoldMinutes)
+  # end. site.yml writes setup.json as it starts and deletes it as it ends,
+  # failed or not. A setup that started before this boot is the one that
+  # rebooted the machine, and its next reboot would cut a restore short.
+  # One older than HoldMinutes is taken to have died. With -Holding, the
+  # restore is already waiting, and a setup that started since (a retry)
+  # may reboot the machine too.
+  param($Setup, [datetime]$Boot, [datetime]$Now, [int]$HoldMinutes, [switch]$Holding)
   try {
     $started = ConvertTo-UtcDate (Get-PropertyValue $Setup 'started_utc')
   } catch {
     return $false
   }
   if ($null -eq $started) { return $false }
-  return ($started -lt $Boot.ToUniversalTime() -and $Now.ToUniversalTime() -lt $started.AddMinutes($HoldMinutes))
+  if (-not $Holding -and $started -ge $Boot.ToUniversalTime()) { return $false }
+  return ($Now.ToUniversalTime() -lt $started.AddMinutes($HoldMinutes))
 }
 
 function Get-RestoreWaitState {
@@ -207,6 +210,9 @@ function Get-RestoreWaitProblem {
   # Pure: why waiting for the restore didn't end with the games on the
   # library disk, or $null when it did.
   param([string]$Wait, [string]$Status, [int]$TimeoutMinutes, [string]$LogPath)
+  if ($Wait -eq 'running' -and $Status -eq 'waiting') {
+    return "The game library restore is still waiting for the machine's setup to end after $TimeoutMinutes minutes."
+  }
   if ($Wait -eq 'running') { return "The game library restore is still running after $TimeoutMinutes minutes." }
   if ($Wait -ne 'finished') { return 'No game library restore started on this boot.' }
   switch ($Status) {
