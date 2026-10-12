@@ -38,6 +38,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -283,9 +284,12 @@ def cargo(root: Path, *args: str) -> str:
 
 
 def rust_std(root: Path) -> tuple[str, Path]:
-    """The rustc that builds the core, and its standard library's notices."""
-    version = run(root, "rustc", "--version").strip()
-    sysroot = Path(run(root, "rustc", "--print", "sysroot").strip())
+    """The rustc that builds the core, and its standard library's notices.
+    That's rustup's stable, which cargokit always builds with (CI points it
+    at RUST_VERSION), or the rustc on PATH without rustup."""
+    rustc = ["rustup", "run", "stable", "rustc"] if shutil.which("rustup") else ["rustc"]
+    version = run(root, *rustc, "--version").strip()
+    sysroot = Path(run(root, *rustc, "--print", "sysroot").strip())
     return version, sysroot / STD_NOTICES
 
 
@@ -504,7 +508,9 @@ def main(argv: list[str]) -> int:
         return 2
     found = notices(ROOT)
     for note in found.notes:
-        print(f"note: {note}", file=sys.stderr)
+        # On GitHub, as a warning on the run and the PR, where it gets seen.
+        print(f"::warning::{note}" if os.environ.get("GITHUB_ACTIONS") == "true" else f"note: {note}",
+              file=sys.stderr)
     for error in found.errors:
         print(f"error: {error}", file=sys.stderr)
     if found.errors:

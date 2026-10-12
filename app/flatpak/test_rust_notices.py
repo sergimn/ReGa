@@ -4,6 +4,7 @@
 """
 
 import hashlib
+import io
 import json
 import shutil
 import tempfile
@@ -322,6 +323,50 @@ class WriteTest(Crates):
         text = (out / "rust-crates.txt").read_text()
         self.assertIn(f"sha256 {hashlib.sha256(b'lock').hexdigest()},", text)
         self.assertIn("c 1.0.0: LICENSE\n", text)
+
+
+class NotesTest(Crates):
+    """main() shows notes as warnings on GitHub, and passes."""
+
+    def run_main(self, environ):
+        (self.root / rust_notices.LOCK).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / rust_notices.LOCK).write_bytes(b"lock")
+        std = self.tmp / rust_notices.STD_NOTICES
+        std.parent.mkdir(parents=True)
+        std.write_bytes(b"std")
+        self.check_in("c", "MIT", {"LICENSE": MIT}, commit="f" * 40)
+        stderr = io.StringIO()
+        with (mock.patch.object(rust_notices, "ROOT", self.root),
+              mock.patch.object(rust_notices, "shipped", return_value=[self.crate("c")]),
+              mock.patch.object(rust_notices, "rust_std", return_value=("rustc 1.0.0", std)),
+              mock.patch.dict("os.environ", environ, clear=True),
+              mock.patch("sys.stdout"), mock.patch("sys.stderr", stderr)):
+            self.assertEqual(rust_notices.main(["check"]), 0)
+        return stderr.getvalue()
+
+    def test_on_github(self):
+        self.assertRegex(self.run_main({"GITHUB_ACTIONS": "true"}), r"^::warning::c 1\.0\.0 was published from commit")
+
+    def test_elsewhere(self):
+        self.assertRegex(self.run_main({}), r"^note: c 1\.0\.0 was published from commit")
+
+
+class RustStdTest(unittest.TestCase):
+    def test_cargokit_toolchain(self):
+        calls = []
+
+        def run(root, *command):
+            calls.append(command)
+            return "/sysroot\n" if "--print" in command else "rustc 1.0.0\n"
+        with mock.patch.object(rust_notices, "run", run), mock.patch("shutil.which", return_value="/bin/rustup"):
+            self.assertEqual(rust_notices.rust_std(Path("/repo")),
+                             ("rustc 1.0.0", Path("/sysroot") / rust_notices.STD_NOTICES))
+        self.assertEqual(calls, [("rustup", "run", "stable", "rustc", "--version"),
+                                 ("rustup", "run", "stable", "rustc", "--print", "sysroot")])
+        calls.clear()
+        with mock.patch.object(rust_notices, "run", run), mock.patch("shutil.which", return_value=None):
+            rust_notices.rust_std(Path("/repo"))
+        self.assertEqual(calls[0], ("rustc", "--version"))
 
 
 class RepoTest(unittest.TestCase):
