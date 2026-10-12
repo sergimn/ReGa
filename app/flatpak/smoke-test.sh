@@ -41,14 +41,14 @@ done
 ok "Windows collections: $(awk '/^(ansible|community)\.windows / { print $1, $2 }' <<<"$out" | paste -sd, -)"
 
 # Ansible can run a module inside the sandbox (it needs a writable temp dir),
-# and the repo's playbook resolves every module and role it names.
+# and the playbooks the app runs resolve every module and role they name.
 out=$(in_app ansible localhost -m ansible.builtin.ping 2>&1) || fail "ansible can't run a local module: $out"
 grep -q '"ping": "pong"' <<<"$out" || fail "ansible can't run a local module: $out"
 ok "ansible runs a module locally"
 out=$(flatpak run --filesystem="$repo/infra/ansible:ro" --cwd="$repo/infra/ansible" \
-  --command=ansible-playbook "$app" -i inventory.example.yml site.yml --syntax-check 2>&1) \
-  || fail "the playbook doesn't pass a syntax check with the bundled Ansible: $out"
-ok "infra/ansible/site.yml passes a syntax check"
+  --command=ansible-playbook "$app" -i inventory.example.yml site.yml agent.yml --syntax-check 2>&1) \
+  || fail "the playbooks don't pass a syntax check with the bundled Ansible: $out"
+ok "infra/ansible/site.yml and agent.yml pass a syntax check"
 
 # The app draws its window and keeps running. The runner shows the window
 # only on Flutter's first frame, which comes after the Rust core loads.

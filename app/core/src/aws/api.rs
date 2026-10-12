@@ -17,6 +17,9 @@ pub struct Instance {
     pub state: MachineState,
     pub spot: bool,
     pub public_ip: Option<String>,
+    /// When it last started, in Unix seconds (EC2's launch time, which every
+    /// start moves).
+    pub launched: Option<u64>,
 }
 
 /// What the provider checks on its buckets.

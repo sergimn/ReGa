@@ -18,9 +18,9 @@ permissions:
 
 env:
   # renovate: datasource=nuget depName=Pester registryUrl=https://www.powershellgallery.com/api/v2/
-  PESTER_VERSION: 5.7.1
+  PESTER_VERSION: 5.9.1
   # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
-  PSSCRIPTANALYZER_VERSION: 1.24.0
+  PSSCRIPTANALYZER_VERSION: 1.25.0
 
 jobs:
   lint:
@@ -47,7 +47,9 @@ jobs:
         run: ansible-lint
 
       - name: Syntax check
-        run: ansible-playbook -i inventory.example.yml site.yml --syntax-check
+        run: |
+          ansible-playbook -i inventory.example.yml site.yml --syntax-check
+          ansible-playbook -i inventory.example.yml agent.yml --syntax-check
 
       - name: Install PowerShell modules
         shell: pwsh
@@ -147,7 +149,7 @@ jobs:
           set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1
 
       - name: Run it again; nothing should change
         shell: wsl-bash {0}
@@ -156,10 +158,28 @@ jobs:
           workspace=$PWD
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false --diff | tee second-run.log
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
+
+      - name: Run the agent actions the app uses
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          cd ~/ansible
+          ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=Status
+          # The setup started a restore, which finds no library disk on the
+          # runner, so waiting for it fails and says why.
+          if ~/venv/bin/ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=WaitRestore \
+            > wait-restore.log; then
+            cat wait-restore.log
+            echo "WaitRestore should fail without a library disk"
+            exit 1
+          fi
+          cat wait-restore.log
+          grep -q 'no game library disk' wait-restore.log
 
       - name: Check the machine
         shell: powershell

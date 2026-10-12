@@ -60,6 +60,9 @@ const stockholmMachine = MachineSummary(
   busy: false,
   starting: false,
   switchType: 't3.medium',
+  switchPricePerHour: 0.045,
+  stoppedItself: false,
+  libraryKept: false,
 );
 
 const leftoverVolume = OrphanSummary(
@@ -92,6 +95,9 @@ class FakeBackend implements RegaBackend {
 
   /// `listMachines` throws this when set.
   Object? listMachinesError;
+
+  /// Machines whose games couldn't be saved: destroying one asks first.
+  final Set<String> unsaved = {};
 
   /// Machine actions wait for this before finishing, when set.
   Future<void>? actionGate;
@@ -210,8 +216,12 @@ class FakeBackend implements RegaBackend {
     required String typeName,
     required bool spot,
     required bool wireguard,
+    required bool cpuFirst,
   }) async {
-    calls.add('launch $name $regionId $typeName spot=$spot wg=$wireguard');
+    calls.add(
+      'launch $name $regionId $typeName spot=$spot wg=$wireguard '
+      'cpu=$cpuFirst',
+    );
     await actionGate;
     if (actionError case final e?) throw e;
     final m = MachineSummary(
@@ -225,6 +235,9 @@ class FakeBackend implements RegaBackend {
       busy: false,
       starting: false,
       switchType: spot ? null : 't3.medium',
+      switchPricePerHour: spot ? null : 0.045,
+      stoppedItself: false,
+      libraryKept: false,
     );
     machines.add(m);
     return m;
@@ -232,11 +245,15 @@ class FakeBackend implements RegaBackend {
 
   @override
   Future<MachineSummary> startMachine(String providerId, String machineId) =>
-      _change('start', machineId, (m) => _with(m, MachineStatus.running));
+      _change('start', machineId, (m) => withStatus(m, MachineStatus.running));
 
   @override
   Future<MachineSummary> stopMachine(String providerId, String machineId) =>
-      _change('stop', machineId, (m) => _with(m, MachineStatus.stopped));
+      _change('stop', machineId, (m) => withStatus(m, MachineStatus.stopped));
+
+  @override
+  Future<MachineSummary> finishStop(String providerId, String machineId) =>
+      _change('finish', machineId, (m) => withStatus(m, m.status));
 
   @override
   Future<MachineSummary> resizeMachine(
@@ -246,15 +263,28 @@ class FakeBackend implements RegaBackend {
   ) => _change(
     'resize $typeName',
     machineId,
-    (m) =>
-        _with(m, m.status, typeName == cpuOffer.typeName ? cpuOffer : gpuOffer),
+    (m) => withStatus(
+      m,
+      m.status,
+      offer: typeName == cpuOffer.typeName ? cpuOffer : gpuOffer,
+    ),
   );
 
   @override
-  Future<void> destroyMachine(String providerId, String machineId) async {
-    calls.add('destroy $machineId');
+  Future<void> destroyMachine(
+    String providerId,
+    String machineId, {
+    bool evenIfUnsaved = false,
+  }) async {
+    calls.add('destroy $machineId${evenIfUnsaved ? ' anyway' : ''}');
     await actionGate;
     if (actionError case final e?) throw e;
+    if (!evenIfUnsaved && unsaved.contains(machineId)) {
+      throw const RegaError(
+        message: "Gaming's games couldn't be saved to the game library.",
+        gamesNotSaved: true,
+      );
+    }
     machines.removeWhere((m) => m.id == machineId);
   }
 
@@ -274,11 +304,15 @@ class FakeBackend implements RegaBackend {
   }
 }
 
-MachineSummary _with(
+/// `m` in another state: after any change by this app it no longer counts
+/// as having stopped itself.
+MachineSummary withStatus(
   MachineSummary m,
-  MachineStatus status, [
+  MachineStatus status, {
   MachineOffer? offer,
-]) => MachineSummary(
+  bool stoppedItself = false,
+  bool libraryKept = false,
+}) => MachineSummary(
   id: m.id,
   name: m.name,
   regionId: m.regionId,
@@ -289,4 +323,7 @@ MachineSummary _with(
   busy: m.busy,
   starting: m.starting,
   switchType: m.switchType,
+  switchPricePerHour: m.switchPricePerHour,
+  stoppedItself: stoppedItself,
+  libraryKept: libraryKept,
 );

@@ -22,7 +22,7 @@ flatpak run io.github.sergimn.rega
 | --- | --- |
 | `/app/lib/rega`, `/app/bin/rega` | The Flutter release bundle with the Rust core |
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
-| `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock` |
+| `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock`; the app runs the playbook it carries with it |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
 | `/app/share/licenses/io.github.sergimn.rega/terraform` | Terraform's licence (BUSL-1.1) |
 
@@ -63,8 +63,8 @@ dbus-run-session -- flatpak/smoke-test.sh
 ```
 
 The smoke test checks the installed app: Terraform and Ansible run in the
-sandbox, the Windows collections are there, `infra/ansible/site.yml` passes
-a syntax check, and the app draws its window (on demo data, on a private
+sandbox, the Windows collections are there, the playbooks in
+`infra/ansible` pass a syntax check, and the app draws its window (on demo data, on a private
 Xvfb display over X11, whatever your desktop runs). It needs Xvfb and
 xdotool.
 
@@ -91,9 +91,6 @@ CI tests the module with.
 
 ## Not done yet
 
-- The app doesn't run Ansible yet. When it does, the playbook can ship the
-  way the Terraform module does (compiled into the app), and run with
-  `/app/bin/ansible-playbook`.
 - Launching Moonlight from inside the sandbox. The Moonlight Flatpak is a
   separate app, so starting it needs either a host permission or bundling
   Moonlight here; that's a decision for when the app starts streams.

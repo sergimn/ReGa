@@ -7,6 +7,12 @@
 - name: Set up a ReGa machine
   hosts: rega
   gather_facts: false
+  pre_tasks:
+    # The app runs this as soon as EC2 has the Windows password, which can be
+    # before the boot script has WinRM listening.
+    - name: Wait for WinRM
+      ansible.builtin.wait_for_connection:
+        timeout: 900
   roles:
     - role: base
     - role: steam
@@ -35,6 +41,23 @@
             client_address: "{{ rega_wireguard_client_address }}"
             mtu: "{{ rega_wireguard_mtu }}"
           secrets_dir: "{{ rega_secrets_dir }}"
+
+    # A machine's first boot comes before the restore's boot task exists.
+    # When the setup didn't reboot it since, start the restore now; it comes
+    # after the roles' reboots, which would cut it short.
+    - name: Restore the game library now if this boot hasn't
+      ansible.windows.win_command:
+        argv:
+          - powershell.exe
+          - -NoProfile
+          - -ExecutionPolicy
+          - Bypass
+          - -File
+          - "{{ rega_agent_dir }}\\rega-agent.ps1"
+          - -Action
+          - StartRestore
+      register: rega_restore_start
+      changed_when: (rega_restore_start.stdout_lines | last | from_json).started
 
     - name: Restart the idle clock so the user gets the full idle time to connect
       ansible.windows.win_command:

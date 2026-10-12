@@ -22,17 +22,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::future::{join_all, try_join_all};
 
+use crate::ansible::AnsibleSetup;
 use crate::model::{
-    Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan, Price, Region,
-    ResourceKind, StorageLocation,
+    roomy_cpu_type, Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan,
+    Price, Region, ResourceKind, StorageLocation,
 };
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
-use crate::setup::{LibrarySync, MachineAccess, MachineSetup, NoSetup};
+use crate::setup::{MachineAccess, MachineSecrets, MachineSetup, NoSetup};
 use crate::terraform::{self, io_error, Backend, LockInfo, RunMarker, Terraform};
 use api::{AwsApi, BucketInfo, Instance};
 use cache::TtlCache;
 use keys::MachineKey;
-use record::{InstanceState, MachineRecord, MachineVars};
+use record::{FinalSync, InstanceState, MachineRecord, MachineVars};
 
 /// Region holding the state and library buckets (also the development region).
 pub const HOME_REGION: &str = "eu-north-1";
@@ -53,6 +54,27 @@ const EARLIER_RUN_WAIT: Duration = Duration::from_secs(30 * 60);
 /// A state lock this old was left by a run that died: no run of the module
 /// takes this long.
 const STALE_LOCK_SECS: u64 = 2 * 60 * 60;
+
+/// How long Windows may take to make its Administrator password after the
+/// first boot (usually a few minutes), and how often to look.
+const PASSWORD_WAIT: Duration = Duration::from_secs(30 * 60);
+const PASSWORD_POLL: Duration = Duration::from_secs(15);
+
+/// A machine whose record says running but whose instance is stopped only
+/// stopped itself if nobody changed the record for this long: a device that
+/// just asked for a start saves the record a moment before Terraform takes
+/// the state lock, and the idle stop can't come sooner after a start.
+const SETTLED_SECS: u64 = 10 * 60;
+
+/// How often a device running the setup (or the upload before a stop) on a
+/// machine tells other devices so, and how long they take its word for it.
+const SETUP_HEARTBEAT: Duration = Duration::from_secs(60);
+const SETUP_STALE_SECS: u64 = 5 * 60;
+
+/// Nobody has changed the record for [`SETTLED_SECS`].
+fn settled(record: &MachineRecord) -> bool {
+    terraform::unix_now().saturating_sub(record.saved_at) > SETTLED_SECS
+}
 
 /// Machine types the IAM policy allows the app to use.
 pub fn catalog() -> Vec<MachineType> {
@@ -257,6 +279,10 @@ pub struct AwsProvider {
     /// Held by a launch, start or resize from its check that no other
     /// machine is up until Terraform is done, so two can't both pass it.
     booting: tokio::sync::Mutex<()>,
+    /// How long to wait for a new machine's Windows password, and how often
+    /// to look.
+    password_wait: Duration,
+    password_poll: Duration,
 }
 
 impl AwsProvider {
@@ -278,22 +304,22 @@ impl AwsProvider {
             terraform_lock: tokio::sync::Mutex::new(()),
             actions: Mutex::new(HashMap::new()),
             booting: tokio::sync::Mutex::new(()),
+            password_wait: PASSWORD_WAIT,
+            password_poll: PASSWORD_POLL,
         }
     }
 
     /// Signs in with the default AWS credential chain (environment, then
     /// `~/.aws` profiles). [`ProviderError::MissingCredentials`] when there
-    /// are none.
+    /// are none. Machines are set up with Ansible ([`AnsibleSetup`]).
     pub async fn connect(options: ConnectOptions) -> ProviderResult<Self> {
         let (api, account_id) = sdk::SdkApi::connect().await?;
         let terraform = terraform::TerraformCli::find(options.cache_dir.join("terraform-plugins"));
         let machines_dir = options.data_dir.join("aws").join(&account_id);
-        Ok(Self::new(
-            Arc::new(api),
-            account_id,
-            Arc::new(terraform),
-            machines_dir,
-        ))
+        Ok(
+            Self::new(Arc::new(api), account_id, Arc::new(terraform), machines_dir)
+                .with_setup(Arc::new(AnsibleSetup::find())),
+        )
     }
 
     /// Runs `setup` after starts and before stops (Ansible).
@@ -304,6 +330,13 @@ impl AwsProvider {
 
     pub fn with_ip_lookup(mut self, ip: Arc<dyn IpLookup>) -> Self {
         self.ip = ip;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_password_wait(mut self, wait: Duration, poll: Duration) -> Self {
+        self.password_wait = wait;
+        self.password_poll = poll;
         self
     }
 
@@ -431,25 +464,30 @@ impl AwsProvider {
         self.ensure_storage().await?;
         let bucket = self.state_bucket();
         let objects = self.api.list_objects(&bucket, record::PREFIX).await?;
-        let ids_with = |suffix: &str| -> Vec<String> {
+        // The machines with an object at `key_of(id)`.
+        let ids_with = |key_of: fn(&str) -> String| -> Vec<String> {
             objects
                 .iter()
-                .filter(|(key, _)| key.ends_with(suffix))
-                .filter_map(|(key, _)| record::machine_id_of(key))
+                .filter_map(|(key, _)| record::machine_id_of(key).filter(|id| key_of(id) == *key))
                 .map(String::from)
                 .collect()
         };
-        let (record_ids, state_ids, lock_ids) =
-            (ids_with(".json"), ids_with(".tfstate"), ids_with(".tflock"));
+        let (record_ids, state_ids, lock_ids, setup_ids) = (
+            ids_with(record::record_key),
+            ids_with(record::state_key),
+            ids_with(record::lock_key),
+            ids_with(record::setup_key),
+        );
 
         let get = |key: String| {
             let bucket = &bucket;
             async move { self.api.get_object(bucket, &key).await }
         };
-        let (bodies, states, locks) = futures::try_join!(
+        let (bodies, states, locks, setups) = futures::try_join!(
             try_join_all(record_ids.iter().map(|id| get(record::record_key(id)))),
             try_join_all(state_ids.iter().map(|id| get(record::state_key(id)))),
             try_join_all(lock_ids.iter().map(|id| get(record::lock_key(id)))),
+            try_join_all(setup_ids.iter().map(|id| get(record::setup_key(id)))),
         )?;
         // A record this app can't read (garbled, or saved by a newer
         // version) is left out rather than hiding every other machine. Its
@@ -480,6 +518,18 @@ impl AwsProvider {
                 .await
                 .filter(|m| !m.is_running());
             if !lock_is_stale(&lock, dead_run.as_ref()) {
+                busy.insert(id);
+            }
+        }
+        // A device running the setup refreshes its marker; one that quit
+        // halfway leaves a marker that soon goes stale.
+        for (id, marker) in setup_ids.into_iter().zip(setups) {
+            let fresh = marker
+                .as_deref()
+                .and_then(|m| std::str::from_utf8(m).ok())
+                .and_then(|m| m.trim().parse::<u64>().ok())
+                .is_some_and(|at| terraform::unix_now().saturating_sub(at) < SETUP_STALE_SECS);
+            if fresh {
                 busy.insert(id);
             }
         }
@@ -516,7 +566,8 @@ impl AwsProvider {
             .transpose()
     }
 
-    async fn save_record(&self, record: &MachineRecord) -> ProviderResult<()> {
+    async fn save_record(&self, record: &mut MachineRecord) -> ProviderResult<()> {
+        record.saved_at = terraform::unix_now();
         let json = record.to_json();
         self.api
             .put_object(
@@ -571,6 +622,19 @@ impl AwsProvider {
         let key = MachineKey::from_pem(&pem)?;
         self.write_local(machine_id, "key.pem", &pem).await?;
         Ok(Some(key))
+    }
+
+    /// The passwords the setup gives the machine, made the first time.
+    async fn secrets(&self, machine_id: &str) -> ProviderResult<MachineSecrets> {
+        let key = record::secrets_key(machine_id);
+        if let Some(json) = self.api.get_object(&self.state_bucket(), &key).await? {
+            return MachineSecrets::from_json(&json);
+        }
+        let secrets = MachineSecrets::generate()?;
+        self.api
+            .put_object(&self.state_bucket(), &key, secrets.to_json().into_bytes())
+            .await?;
+        Ok(secrets)
     }
 
     async fn terraform_env(&self) -> ProviderResult<Vec<(String, String)>> {
@@ -683,6 +747,15 @@ impl AwsProvider {
             // failed launch); destroy cleans up either.
             (None, false) => MachineState::Terminated,
         };
+        let stopped_itself = !busy
+            && !record.vars.spot
+            && state == MachineState::Stopped
+            && record.vars.instance_state == InstanceState::Running
+            && settled(record);
+        let library_kept = self.setup.enabled()
+            && state == MachineState::Stopped
+            && record.vars.instance_state == InstanceState::Stopped
+            && record.vars.library_volume_enabled;
         Machine {
             id: record.id().into(),
             name: record.name.clone(),
@@ -693,6 +766,8 @@ impl AwsProvider {
             state,
             busy,
             starting: busy && record.vars.instance_state == InstanceState::Running,
+            stopped_itself,
+            library_kept,
         }
     }
 
@@ -710,6 +785,7 @@ impl AwsProvider {
             (Some(data), Some(key)) => Some(key.decrypt_password(&data)?),
             _ => None,
         };
+        let storage = self.ensure_storage().await?;
         Ok(MachineAccess {
             machine_id: record.id().into(),
             region_id: instance.region_id.clone(),
@@ -718,15 +794,63 @@ impl AwsProvider {
             public_ip: instance.public_ip.clone(),
             admin_password: password,
             wireguard: record.vars.wireguard_enabled,
+            dir: self.machine_dir(record.id()),
+            library_bucket: storage.library_bucket,
+            library_region: storage.region_id,
+            secrets: self.secrets(record.id()).await?,
         })
     }
 
-    /// This device's IP as a /32, when Sunshine is opened to it directly.
-    async fn client_cidrs(&self, wireguard: bool) -> ProviderResult<Vec<String>> {
-        if wireguard {
-            return Ok(vec![]);
+    /// Like [`Self::access`], once Windows has made its password: a new
+    /// machine takes a few minutes after its first boot.
+    async fn access_with_password(
+        &self,
+        record: &MachineRecord,
+        instance: &Instance,
+    ) -> ProviderResult<MachineAccess> {
+        let deadline = std::time::Instant::now() + self.password_wait;
+        loop {
+            let access = self.access(record, instance).await?;
+            if access.admin_password.is_some() {
+                return Ok(access);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(ProviderError::Cloud(format!(
+                    "Windows on {} hasn't made its Administrator password after {} minutes",
+                    record.name,
+                    self.password_wait.as_secs() / 60
+                )));
+            }
+            tokio::time::sleep(self.password_poll).await;
         }
-        Ok(vec![format!("{}/32", self.ip.public_ip().await?)])
+    }
+
+    /// This device's IP as /32 firewall rules: for Sunshine when WireGuard
+    /// is off (`client_cidrs`), and for WinRM when the setup runs
+    /// (`admin_cidrs`).
+    async fn opened_to_me(&self, wireguard: bool) -> ProviderResult<(Vec<String>, Vec<String>)> {
+        let setup = self.setup.enabled();
+        if wireguard && !setup {
+            return Ok((vec![], vec![]));
+        }
+        let me = format!("{}/32", self.ip.public_ip().await?);
+        let client = if wireguard { vec![] } else { vec![me.clone()] };
+        let admin = if setup { vec![me] } else { vec![] };
+        Ok((client, admin))
+    }
+
+    /// Points the machine's firewall rules at this device, whose IP may have
+    /// changed since the last start, or which may not be the device that
+    /// started it. Applies only when they change.
+    async fn open_to_me(&self, record: &mut MachineRecord) -> ProviderResult<()> {
+        let (client, admin) = self.opened_to_me(record.vars.wireguard_enabled).await?;
+        if record.vars.client_cidrs == client && record.vars.admin_cidrs == admin {
+            return Ok(());
+        }
+        record.vars.client_cidrs = client;
+        record.vars.admin_cidrs = admin;
+        self.save_record(record).await?;
+        self.apply(record).await
     }
 
     /// The zone a new machine goes in: for spot the one with the cheapest
@@ -774,39 +898,202 @@ impl AwsProvider {
             .await
     }
 
-    /// Runs after a launch or a start: the machine as it is now, plus the
-    /// setup hook (Ansible) once it's running.
-    async fn after_start(&self, record: &MachineRecord) -> ProviderResult<Machine> {
+    /// Runs after a launch, start or switch: the machine as it is now, set
+    /// up (Ansible) once it's running. With `wait_for_library`, also waits
+    /// for the game library restore to be over.
+    async fn after_start(
+        &self,
+        record: &mut MachineRecord,
+        wait_for_library: bool,
+    ) -> ProviderResult<Machine> {
         let instance = self.instance_of(record).await?;
         if let Some(i) = instance
             .as_ref()
             .filter(|i| self.setup.enabled() && i.state == MachineState::Running)
         {
-            let access = self.access(record, i).await?;
-            self.setup.after_start(&access).await?;
+            let id = record.id().to_string();
+            self.with_setup_marker(&id, async {
+                let access = self.access_with_password(record, i).await?;
+                // From here on the setup can put games on D:.
+                if !record.setup_started {
+                    record.setup_started = true;
+                    self.save_record(record).await?;
+                }
+                self.setup.after_start(&access).await?;
+                if wait_for_library {
+                    self.setup.wait_for_library(&access).await?;
+                }
+                Ok(())
+            })
+            .await?;
         }
         Ok(self.machine_from(record, instance.as_ref(), false))
     }
 
-    /// Runs the setup hook before a stop. Nothing here blocks the stop: if
-    /// the hook can't run, D: is kept.
-    async fn before_stop(
+    /// Runs `work` on the machine (the setup, or the upload before a stop)
+    /// with a marker in the state bucket that tells other devices it's
+    /// busy, since no Terraform lock says so meanwhile.
+    async fn with_setup_marker<T>(
+        &self,
+        machine_id: &str,
+        work: impl std::future::Future<Output = ProviderResult<T>>,
+    ) -> ProviderResult<T> {
+        let bucket = self.state_bucket();
+        let key = record::setup_key(machine_id);
+        let beat = |api: Arc<dyn AwsApi>, bucket: String, key: String| async move {
+            // Best effort: a missed beat only lets the marker go stale.
+            let now = terraform::unix_now().to_string();
+            let _ = api.put_object(&bucket, &key, now.into_bytes()).await;
+        };
+        beat(self.api.clone(), bucket.clone(), key.clone()).await;
+        let heartbeat = tokio::spawn({
+            let (api, bucket, key) = (self.api.clone(), bucket.clone(), key.clone());
+            async move {
+                loop {
+                    tokio::time::sleep(SETUP_HEARTBEAT).await;
+                    beat(api.clone(), bucket.clone(), key.clone()).await;
+                }
+            }
+        });
+        let result = work.await;
+        heartbeat.abort();
+        let _ = heartbeat.await;
+        let _ = self.api.delete_object(&bucket, &key).await;
+        result
+    }
+
+    /// Stops the machine as [`CloudProvider::stop`] says.
+    async fn stop_now(
+        &self,
+        mut record: MachineRecord,
+        instance: Option<Instance>,
+    ) -> ProviderResult<Machine> {
+        // A failed upload doesn't block the stop; it only keeps D:.
+        let saved = self.save_library(&mut record, instance.as_ref()).await;
+        record.vars.instance_state = InstanceState::Stopped;
+        // D: only goes away once its games are safe in S3 (one no setup has
+        // started on has none). A machine that stopped itself saved them, or
+        // not, before it did. When this upload failed, an older record
+        // mustn't vouch for it: the upload may not have got as far as
+        // deleting it.
+        let empty = self.setup.enabled() && !record.setup_started;
+        if empty || (saved.is_ok() && self.library_saved(&record, instance.as_ref()).await) {
+            record.vars.library_volume_enabled = false;
+        }
+        self.save_record(&mut record).await?;
+        self.apply(&record).await?;
+        let instance = self.instance_of(&record).await?;
+        Ok(self.machine_from(&record, instance.as_ref(), false))
+    }
+
+    /// Before a stop or a destroy: has a running machine upload its game
+    /// library, recording the outcome for [`Self::library_saved`]. The
+    /// error says why it couldn't.
+    async fn save_library(
+        &self,
+        record: &mut MachineRecord,
+        instance: Option<&Instance>,
+    ) -> ProviderResult<()> {
+        let Some(i) = instance.filter(|i| self.setup.enabled() && i.state == MachineState::Running)
+        else {
+            return Ok(());
+        };
+        if !record.setup_started {
+            return Ok(());
+        }
+        // It runs with its library disk, whatever a stop that didn't get
+        // through left in the record, so opening WinRM must keep both.
+        record.vars.instance_state = InstanceState::Running;
+        record.vars.library_volume_enabled = true;
+        // An upload recorded earlier this boot, by a stop whose Terraform
+        // run then failed, mustn't vouch for games installed since.
+        self.api
+            .delete_object(
+                &library_bucket(&self.account_id),
+                &record::final_sync_key(record.id()),
+            )
+            .await?;
+        let id = record.id().to_string();
+        self.with_setup_marker(&id, async {
+            self.open_to_me(record).await?;
+            let access = self.access(record, i).await?;
+            self.setup.before_stop(&access).await
+        })
+        .await
+    }
+
+    /// Before a destroy: refuses when the machine's library disk may hold
+    /// games the game library doesn't. `saved` is how the upload just now
+    /// went.
+    async fn check_games_saved(
         &self,
         record: &MachineRecord,
         instance: Option<&Instance>,
-    ) -> LibrarySync {
-        let Some(i) = instance.filter(|i| self.setup.enabled() && i.state == MachineState::Running)
-        else {
-            return LibrarySync::NotSynced;
-        };
-        match self.access(record, i).await {
-            Ok(access) => self
-                .setup
-                .before_stop(&access)
-                .await
-                .unwrap_or(LibrarySync::NotSynced),
-            Err(_) => LibrarySync::NotSynced,
+        saved: ProviderResult<()>,
+    ) -> ProviderResult<()> {
+        // D: outlives its instance (AWS taking back a spot machine), until
+        // Terraform deletes it. Before any setup it holds nothing.
+        let has_disk = record.vars.library_volume_enabled && record.setup_started;
+        if !self.setup.enabled()
+            || !has_disk
+            || (saved.is_ok() && self.library_saved(record, instance).await)
+        {
+            return Ok(());
         }
+        let name = &record.name;
+        let why = match (saved, instance) {
+            (Err(e), _) => format!("{name}'s games couldn't be saved to the game library ({e})."),
+            // EC2 lists no ended instances, so there's no start to check
+            // its last upload against.
+            (Ok(()), None) => format!(
+                "ReGa can't tell whether {name} saved its games to the game library before \
+                 its instance ended."
+            ),
+            (Ok(()), Some(_)) => {
+                format!("{name} hasn't saved its games to the game library since it last started.")
+            }
+        };
+        Err(ProviderError::GamesNotSaved(format!(
+            "{why} Destroying it loses any installed since its last upload."
+        )))
+    }
+
+    /// Whether the machine's game library disk is safe to delete: the
+    /// machine recorded an upload that worked and ended after its last
+    /// start, whether the app asked for it or the idle stop did.
+    async fn library_saved(&self, record: &MachineRecord, instance: Option<&Instance>) -> bool {
+        let Some((instance, started)) = instance.and_then(|i| i.launched.map(|l| (i, l))) else {
+            return false;
+        };
+        let key = record::final_sync_key(record.id());
+        match self
+            .api
+            .get_object(&library_bucket(&self.account_id), &key)
+            .await
+        {
+            Ok(Some(json)) => FinalSync::from_json(&json)
+                .is_some_and(|f| f.vouches_for(record.id(), &instance.id, started)),
+            _ => false,
+        }
+    }
+
+    /// The CPU type a launch of `request` sets the machine up on first, if
+    /// it does: for an on-demand GPU type, when asked and when it's sold in
+    /// the region.
+    async fn setup_type(
+        &self,
+        request: &LaunchRequest,
+        machine_type: &MachineType,
+    ) -> ProviderResult<Option<String>> {
+        if !request.cpu_first || request.spot || !machine_type.is_gpu() || !self.setup.enabled() {
+            return Ok(None);
+        }
+        let catalog = catalog();
+        let Some(cpu) = roomy_cpu_type(&catalog) else {
+            return Ok(None);
+        };
+        let sold = self.price(&request.region_id, &cpu.type_name).await?;
+        Ok(sold.map(|_| cpu.type_name.clone()))
     }
 
     /// Makes a new bucket's settings readable: S3 can take a moment to show
@@ -1104,18 +1391,23 @@ impl CloudProvider for AwsProvider {
         }
         self.check_gpu_quota(&request.region_id, &machine_type, request.spot)
             .await?;
+        self.setup.ready()?;
+        let setup_type = self.setup_type(request, &machine_type).await?;
         let _booting = self.boot()?;
         self.check_none_running(None).await?;
 
         let machine_id = record::new_machine_id(&request.name);
         let _acting = self.begin(&machine_id)?;
         let key = MachineKey::generate()?;
-        let record = MachineRecord::new(
+        let (client_cidrs, admin_cidrs) = self.opened_to_me(request.wireguard).await?;
+        let mut record = MachineRecord::new(
             request.name.clone(),
             MachineVars {
                 region: request.region_id.clone(),
                 machine_id: machine_id.clone(),
-                instance_type: request.type_name.clone(),
+                instance_type: setup_type
+                    .clone()
+                    .unwrap_or_else(|| request.type_name.clone()),
                 spot: request.spot,
                 instance_state: InstanceState::Running,
                 availability_zone: Some(self.launch_zone(request).await?),
@@ -1123,8 +1415,8 @@ impl CloudProvider for AwsProvider {
                 root_volume_size: request.disk_gib,
                 library_volume_enabled: true,
                 wireguard_enabled: request.wireguard,
-                client_cidrs: self.client_cidrs(request.wireguard).await?,
-                admin_cidrs: vec![],
+                client_cidrs,
+                admin_cidrs,
             },
         );
 
@@ -1141,10 +1433,20 @@ impl CloudProvider for AwsProvider {
             )
             .await?;
         self.write_local(&machine_id, "key.pem", &pem).await?;
-        self.save_record(&record).await?;
+        self.secrets(&machine_id).await?;
+        self.save_record(&mut record).await?;
 
         self.apply(&record).await?;
-        self.after_start(&record).await
+        let machine = self.after_start(&mut record, setup_type.is_some()).await?;
+        if setup_type.is_none() {
+            return Ok(machine);
+        }
+        // Set up, with the games on D:: now the GPU. The zone sells it, and
+        // D: stays through the restart.
+        record.vars.instance_type = request.type_name.clone();
+        self.save_record(&mut record).await?;
+        self.apply(&record).await?;
+        self.after_start(&mut record, false).await
     }
 
     async fn resize(&self, machine_id: &str, type_name: &str) -> ProviderResult<Machine> {
@@ -1155,20 +1457,49 @@ impl CloudProvider for AwsProvider {
             return Err(ProviderError::SpotResize);
         }
         let instance = self.instance_of(&record).await?;
-        if instance.as_ref().map(|i| i.state) != Some(MachineState::Stopped) {
-            return Err(ProviderError::InvalidState(
-                "stop the machine before changing its type".into(),
-            ));
-        }
-        // AWS boots the machine briefly after a resize (Terraform stops it
-        // again), so the new type needs quota, and no other machine up.
+        let running = match instance.as_ref().map(|i| i.state) {
+            Some(MachineState::Running) => true,
+            Some(MachineState::Stopped) => false,
+            _ => {
+                return Err(ProviderError::InvalidState(
+                    "wait until the machine is running or stopped".into(),
+                ))
+            }
+        };
+        // AWS boots the machine after a resize (for a stopped one, Terraform
+        // stops it again), so the new type needs quota, and no other machine
+        // up.
         self.check_gpu_quota(&record.vars.region, &machine_type, false)
             .await?;
+        if running {
+            self.setup.ready()?;
+        }
         let _booting = self.boot()?;
         self.check_none_running(Some(machine_id)).await?;
         record.vars.instance_type = type_name.into();
+        if running {
+            // Restarts as the new type with D: kept, so it's set up again
+            // (the GPU part on a GPU type). The record may still hold what a
+            // stop that didn't get through asked for.
+            let (client, admin) = self.opened_to_me(record.vars.wireguard_enabled).await?;
+            record.vars.client_cidrs = client;
+            record.vars.admin_cidrs = admin;
+            record.vars.instance_state = InstanceState::Running;
+            record.vars.library_volume_enabled = true;
+            self.save_record(&mut record).await?;
+            self.apply(&record).await?;
+            return self.after_start(&mut record, false).await;
+        }
+        // One that stopped itself loses D: as a stop would, once its games
+        // are saved.
+        if record.vars.instance_state == InstanceState::Running
+            && settled(&record)
+            && self.library_saved(&record, instance.as_ref()).await
+        {
+            record.vars.library_volume_enabled = false;
+        }
         record.vars.instance_state = InstanceState::Stopped;
-        self.save_record(&record).await?;
+        self.save_record(&mut record).await?;
         self.apply(&record).await?;
         let instance = self.instance_of(&record).await?;
         Ok(self.machine_from(&record, instance.as_ref(), false))
@@ -1186,49 +1517,60 @@ impl CloudProvider for AwsProvider {
             self.check_gpu_quota(&record.vars.region, &machine_type, record.vars.spot)
                 .await?;
         }
+        self.setup.ready()?;
         let _booting = self.boot()?;
         self.check_none_running(Some(machine_id)).await?;
+        let (client, admin) = self.opened_to_me(record.vars.wireguard_enabled).await?;
         record.vars.instance_state = InstanceState::Running;
         record.vars.library_volume_enabled = true;
-        record.vars.client_cidrs = self.client_cidrs(record.vars.wireguard_enabled).await?;
-        self.save_record(&record).await?;
+        record.vars.client_cidrs = client;
+        record.vars.admin_cidrs = admin;
+        self.save_record(&mut record).await?;
         self.apply(&record).await?;
-        self.after_start(&record).await
+        self.after_start(&mut record, false).await
     }
 
     async fn stop(&self, machine_id: &str) -> ProviderResult<Machine> {
         let _acting = self.begin(machine_id)?;
-        let mut record = self.record(machine_id).await?;
+        let record = self.record(machine_id).await?;
         if record.vars.spot {
             return Err(ProviderError::InvalidState(
                 "spot machines can't be stopped; destroy it instead".into(),
             ));
         }
         let instance = self.instance_of(&record).await?;
-        let sync = self.before_stop(&record, instance.as_ref()).await;
-        record.vars.instance_state = InstanceState::Stopped;
-        // D: only goes away once its games are safe in S3.
-        if sync == LibrarySync::Synced {
-            record.vars.library_volume_enabled = false;
-        }
-        self.save_record(&record).await?;
-        self.apply(&record).await?;
-        let instance = self.instance_of(&record).await?;
-        Ok(self.machine_from(&record, instance.as_ref(), false))
+        self.stop_now(record, instance).await
     }
 
-    async fn destroy(&self, machine_id: &str) -> ProviderResult<()> {
+    async fn finish_stop(&self, machine_id: &str) -> ProviderResult<Machine> {
+        // Before taking this device's own claim, which counts as busy.
+        let busy = self.snapshot().await?.busy.contains(machine_id);
         let _acting = self.begin(machine_id)?;
         let record = self.record(machine_id).await?;
+        let instance = self.instance_of(&record).await?;
+        let machine = self.machine_from(&record, instance.as_ref(), busy);
+        if !machine.stopped_itself {
+            return Ok(machine);
+        }
+        self.stop_now(record, instance).await
+    }
+
+    async fn destroy(&self, machine_id: &str, even_if_unsaved: bool) -> ProviderResult<()> {
+        let _acting = self.begin(machine_id)?;
+        let mut record = self.record(machine_id).await?;
+        let instance = self.instance_of(&record).await?;
+        // Games installed since the last upload would go with D:. Going
+        // ahead anyway means the upload already failed; it isn't retried.
+        if !even_if_unsaved {
+            let saved = self.save_library(&mut record, instance.as_ref()).await;
+            self.check_games_saved(&record, instance.as_ref(), saved)
+                .await?;
+        }
         // The AWS provider cancels the spot request before terminating, and
         // the IAM policy doesn't allow that; terminating first leaves
         // Terraform nothing to cancel.
         if record.vars.spot {
-            if let Some(i) = self
-                .instance_of(&record)
-                .await?
-                .filter(|i| i.state != MachineState::Terminated)
-            {
+            if let Some(i) = instance.filter(|i| i.state != MachineState::Terminated) {
                 self.api
                     .delete_resource(&Orphan {
                         kind: ResourceKind::Instance,
@@ -1246,6 +1588,12 @@ impl CloudProvider for AwsProvider {
         for key in record::all_keys(machine_id) {
             self.api.delete_object(&bucket, &key).await?;
         }
+        self.api
+            .delete_object(
+                &library_bucket(&self.account_id),
+                &record::final_sync_key(machine_id),
+            )
+            .await?;
         match tokio::fs::remove_dir_all(self.machine_dir(machine_id)).await {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 Err(io_error("remove the machine folder", e))

@@ -1,0 +1,74 @@
+---
+# Runs one action of the machine agent (roles/library_agent) over WinRM,
+# for the app:
+#   FinalSync    before a stop the app starts: uploads the game library and
+#                records the outcome in S3. The app reads that record to
+#                decide whether the library disk can go.
+#   WaitRestore  in the CPU phase: waits for this boot's library restore, so
+#                the games are on D: before the switch to the GPU type.
+#   Status       prints the agent state.
+#   ansible-playbook -i inventory.yml agent.yml -e rega_agent_action=FinalSync
+# The action runs in one WinRM session, which counts as activity, so the idle
+# stop can't start its own upload and shut the machine down meanwhile.
+- name: Run a ReGa agent action
+  hosts: rega
+  gather_facts: false
+  vars_files:
+    - roles/base/defaults/main.yml
+  vars:
+    rega_agent_action: Status
+    # WaitRestore: how long the boot task may take to start the restore, and
+    # how long to wait in all.
+    rega_restore_start_minutes: 5
+    rega_restore_timeout_minutes: 240
+  tasks:
+    - name: Check the action
+      ansible.builtin.assert:
+        that: rega_agent_action in ['FinalSync', 'WaitRestore', 'Status']
+        fail_msg: rega_agent_action must be FinalSync, WaitRestore or Status.
+        quiet: true
+
+    # The machine was set up, so WinRM is there unless something is wrong;
+    # don't hold up a stop or destroy for long.
+    - name: Wait for WinRM
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    # A setup that failed early leaves no agent, and so no games on D:.
+    - name: Look for the agent
+      ansible.windows.win_stat:
+        path: "{{ rega_agent_dir }}\\rega-agent.ps1"
+      register: rega_agent_script
+
+    - name: Check the agent
+      ansible.builtin.assert:
+        that: rega_agent_script.stat.exists
+        fail_msg: >-
+          ReGa's agent isn't on this machine: its setup stopped before
+          installing it, so nothing has restored or saved games here.
+        quiet: true
+
+    - name: Run the agent
+      ansible.windows.win_command:
+        argv: "{{ rega_agent_argv + (rega_wait_argv if rega_agent_action == 'WaitRestore' else []) }}"
+      vars:
+        rega_agent_argv:
+          - powershell.exe
+          - -NoProfile
+          - -ExecutionPolicy
+          - Bypass
+          - -File
+          - "{{ rega_agent_dir }}\\rega-agent.ps1"
+          - -Action
+          - "{{ rega_agent_action }}"
+        rega_wait_argv:
+          - -StartMinutes
+          - "{{ rega_restore_start_minutes }}"
+          - -TimeoutMinutes
+          - "{{ rega_restore_timeout_minutes }}"
+      register: rega_agent_run
+      changed_when: false
+
+    - name: Show what the agent said
+      ansible.builtin.debug:
+        msg: "{{ rega_agent_run.stdout | trim }}"

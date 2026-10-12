@@ -3,25 +3,11 @@ name: App
 on:
   push:
     branches: [main]
-    # The app compiles the Terraform module in, and the Flatpak bundles
-    # Ansible and Terraform at the versions these files pin.
-    paths:
-      - 'app/**'
-      - 'infra/terraform/aws/**'
-      - 'infra/ansible/requirements.txt'
-      - 'infra/ansible/requirements.lock'
-      - 'infra/ansible/requirements.yml'
-      - '.github/workflows/terraform.yml'
-      - '.github/workflows/app.yml'
+    # The app compiles the Terraform module and the Ansible playbook in, and
+    # the Flatpak bundles Terraform at the version terraform.yml tests with.
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
   pull_request:
-    paths:
-      - 'app/**'
-      - 'infra/terraform/aws/**'
-      - 'infra/ansible/requirements.txt'
-      - 'infra/ansible/requirements.lock'
-      - 'infra/ansible/requirements.yml'
-      - '.github/workflows/terraform.yml'
-      - '.github/workflows/app.yml'
+    paths: ['app/**', 'infra/terraform/aws/**', 'infra/ansible/**', '.github/workflows/terraform.yml', '.github/workflows/app.yml']
 
 permissions:
   contents: read
@@ -58,9 +44,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app
+      # The setup tests syntax-check the embedded playbooks with the real
+      # ansible-playbook.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12.14"
+      - name: Install Ansible
+        working-directory: infra/ansible
+        run: |
+          pip install -r requirements.lock
+          ansible-galaxy collection install -r requirements.yml
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          REGA_REQUIRE_ANSIBLE: '1'
 
   flutter:
     name: Flutter (analyze, test, Linux build)
