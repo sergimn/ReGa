@@ -90,9 +90,7 @@ async fn play_with(
             stream::PlayStep::StartingMoonlight => PlayStep::StartingMoonlight,
         }))
     };
-    let outcome = STREAMS
-        .play(target, moonlight.as_ref(), &progress)
-        .await?;
+    let outcome = STREAMS.play(target, moonlight.as_ref(), &progress).await?;
     send(match outcome {
         PlayOutcome::Streaming => step(PlayStep::Done),
         PlayOutcome::OpenMoonlight { host, paired } => PlayUpdate {
