@@ -10,6 +10,9 @@ on:
       - "app/core/src/stream/**"
       - "app/core/src/ansible.rs"
       - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
   push:
     branches: [main]
@@ -19,6 +22,9 @@ on:
       - "app/core/src/stream/**"
       - "app/core/src/ansible.rs"
       - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
 
 permissions:
