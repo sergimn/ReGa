@@ -220,6 +220,10 @@ jobs:
             -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)" \
             --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
+          # The setup wrote its note for the library restore and deleted it.
+          for task in 'Note on the machine that a setup has started' 'Let the library restore go ahead'; do
+            grep -A1 -F "TASK [$task]" second-run.log | grep -F 'ok: [ci]' > /dev/null
+          done
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
 
@@ -295,7 +299,11 @@ jobs:
           $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action StartRestore | ConvertFrom-Json
           Assert (-not $start.started) "StartRestore doesn't start a second restore"
 
-          Remove-Item "$state\setup.json"
+          # The waiting restore reads the note every 10 seconds; Windows won't
+          # delete it mid-read.
+          for ($i = 0; (Test-Path "$state\setup.json"); $i++) {
+            try { Remove-Item "$state\setup.json" } catch { if ($i -ge 5) { throw } ; Start-Sleep -Seconds 1 }
+          }
           # With no library disk on the runner, the restore gives up after
           # rega_restore_wait_minutes (1).
           $status = Wait-RestoreStatus @('no-disk', 'done', 'failed', 'disk-full') 180

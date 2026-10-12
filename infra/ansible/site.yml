@@ -58,10 +58,16 @@
         - name: Run the roles' handlers
           ansible.builtin.meta: flush_handlers
       always:
+        # A waiting restore reads the note every 10 seconds, and Windows
+        # won't delete a file that is open.
         - name: Let the library restore go ahead
           ansible.windows.win_file:
             path: "{{ rega_state_dir }}\\setup.json"
             state: absent
+          register: rega_setup_note
+          until: rega_setup_note is succeeded
+          retries: 5
+          delay: 2
           changed_when: false
 
   post_tasks:
