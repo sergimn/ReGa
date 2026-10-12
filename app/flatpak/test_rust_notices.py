@@ -16,13 +16,15 @@ from rust_notices import Crate
 
 MIT = b"MIT License\n\nCopyright (c) 2024 Someone\n\nPermission is hereby granted...\n"
 APACHE = b"                                 Apache License\n                           Version 2.0\n"
+BSD = b"Copyright (c) 2017 Someone\n\nRedistribution and use in source and binary forms...\n"
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
 class AcceptedTest(unittest.TestCase):
     def test_permissive(self):
         for expression in ("MIT", "MIT OR Apache-2.0", "Apache-2.0 / MIT", "MIT/Apache-2.0",
                            "(MIT OR Apache-2.0) AND Unicode-3.0", "Apache-2.0 WITH LLVM-exception",
-                           "ISC AND (Apache-2.0 OR ISC) AND (Apache-2.0 OR ISC OR MIT-0)", "mit or Apache-2.0"):
+                           "ISC AND (Apache-2.0 OR ISC) AND (Apache-2.0 OR ISC OR MIT-0)", "mit", "MIT or apache-2.0"):
             with self.subTest(expression):
                 self.assertTrue(rust_notices.accepted(expression))
 
@@ -35,6 +37,7 @@ class AcceptedTest(unittest.TestCase):
         self.assertFalse(rust_notices.accepted("MIT AND GPL-3.0-only"))
         self.assertFalse(rust_notices.accepted("(MIT OR Apache-2.0) AND MPL-2.0"))
         self.assertFalse(rust_notices.accepted("LGPL-2.1-or-later WITH LLVM-exception"))
+        self.assertFalse(rust_notices.accepted("mit and gpl-3.0-only"))
 
     def test_not_an_expression(self):
         for expression in ("", "MIT OR", "(MIT", "MIT)", "MIT Apache-2.0", "AND MIT", "MIT OR / Apache-2.0"):
@@ -50,24 +53,32 @@ class Crates(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.root = self.tmp / "repo"
         (self.root / rust_notices.TEXTS).mkdir(parents=True)
-        for table in ("UNSHIPPED", "LICENSE_FILE_ONLY"):
+        for table in ("UNSHIPPED", "LEFT_OUT", "LICENSE_FILE_ONLY"):
             patcher = mock.patch.dict(getattr(rust_notices, table), clear=True)
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def crate(self, name, license="MIT", files=None, license_file=None, version="1.0.0"):
+    def crate(self, name, license="MIT", files=None, license_file=None, version="1.0.0", commit=COMMIT):
         path = self.tmp / "registry" / f"{name}-{version}"
         path.mkdir(parents=True)
-        for file, data in (files or {}).items():
+        files = dict(files or {})
+        if commit:
+            vcs = {"git": {"sha1": commit}, "path_in_vcs": f"crates/{name}"}
+            files.setdefault(".cargo_vcs_info.json", json.dumps(vcs).encode())
+        for file, data in files.items():
             (path / file).parent.mkdir(parents=True, exist_ok=True)
             (path / file).write_bytes(data)
         return Crate(name, version, license, license_file, path, f"https://example.com/{name}")
 
-    def check_in(self, name, license, files):
-        rust_notices.UNSHIPPED[name] = license
+    def check_in(self, name, license, files, commit=COMMIT):
+        rust_notices.UNSHIPPED[name] = (license, commit)
+        self.add_texts(name, files)
+
+    def add_texts(self, name, files):
         for file, data in files.items():
-            (self.root / rust_notices.TEXTS / name).mkdir(exist_ok=True)
-            (self.root / rust_notices.TEXTS / name / file).write_bytes(data)
+            path = self.root / rust_notices.TEXTS / name / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
 
     def collect(self, *crates):
         return rust_notices.collect(self.root, list(crates))
@@ -89,6 +100,15 @@ class LicenseFilesTest(Crates):
         self.assertEqual(rust_notices.license_files(crate.path, "legal/terms.txt"), [crate.path / "legal/terms.txt"])
         self.assertEqual(rust_notices.license_files(crate.path, "./legal/../legal/terms.txt"),
                          [crate.path / "legal/terms.txt"])
+
+    def test_own_licence(self):
+        crate = self.crate("c", license_file="legal/terms.txt", files={
+            "LICENSE": b"x", "LICENSES/MIT.txt": b"x", "legal/terms.txt": b"x", "vendor/LICENSE": b"x",
+            "vendor/LICENSES/MIT.txt": b"x"})
+        own = {p.relative_to(crate.path).as_posix(): rust_notices.own_license(crate, p)
+               for p in rust_notices.license_files(crate.path, crate.license_file)}
+        self.assertEqual(own, {"LICENSE": True, "LICENSES/MIT.txt": True, "legal/terms.txt": True,
+                               "vendor/LICENSE": False, "vendor/LICENSES/MIT.txt": False})
 
     def test_license_file_missing_or_outside(self):
         crate = self.crate("c", files={"README.md": b"x"})
@@ -131,7 +151,13 @@ class CollectTest(Crates):
 
     def test_no_text(self):
         self.assertError([self.crate("c", "MIT", {"README.md": b"x"})], "ships no licence text of its own",
-                          ".cargo_vcs_info.json")
+                         f"Copy it from https://example.com/c at commit {COMMIT} (the crate is in crates/c/) "
+                         "into app/flatpak/rust-licenses/c/", "UNSHIPPED")
+
+    def test_no_text_nor_commit(self):
+        self.assertError([self.crate("c", "MIT", {"README.md": b"x"}, commit=None)],
+                         "Copy it from https://example.com/c, at the commit the release was made from, into "
+                         "app/flatpak/rust-licenses/c/")
 
     def test_vendored_text_is_not_its_own(self):
         self.assertError([self.crate("c", "MIT", {"vendor/LICENSE": b"BSD"})], "ships no licence text of its own")
@@ -141,15 +167,25 @@ class CollectTest(Crates):
         [entry], errors, notes = self.collect(self.crate("c", "MIT", {"vendor/LICENSE": b"BSD"}))
         self.assertEqual((errors, notes), ([], []))
         self.assertEqual([t.source for t in entry.texts],
-                         ["app/flatpak/rust-licenses/c/LICENSE, from its repository", "vendor/LICENSE"])
+                         ["app/flatpak/rust-licenses/c/LICENSE, from its repository at 0123456", "vendor/LICENSE"])
         self.assertEqual(entry.texts[0].body, MIT.decode())
+
+    def test_checked_in_text_from_an_older_release(self):
+        self.check_in("c", "MIT", {"LICENSE": MIT})
+        [entry], errors, notes = self.collect(self.crate("c", "MIT", commit="f" * 40))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(entry.texts), 1)
+        [note] = notes
+        self.assertIn(f"published from commit {'f' * 40}, and its text in app/flatpak/rust-licenses/c/ taken at "
+                      f"{COMMIT}", note)
 
     def test_checked_in_text_was_for_another_licence(self):
         self.check_in("c", "MIT", {"LICENSE": MIT})
-        self.assertError([self.crate("c", "Apache-2.0")], "says `Apache-2.0` now", "taken for `MIT`")
+        self.assertError([self.crate("c", "Apache-2.0")], "says `Apache-2.0` now", "taken for `MIT`",
+                         f"from commit {COMMIT}")
 
     def test_checked_in_folder_empty(self):
-        rust_notices.UNSHIPPED["c"] = "MIT"
+        rust_notices.UNSHIPPED["c"] = ("MIT", COMMIT)
         self.assertError([self.crate("c")], "nothing in app/flatpak/rust-licenses/c/")
 
     def test_checked_in_text_not_needed_any_more(self):
@@ -175,8 +211,31 @@ class CollectTest(Crates):
                           f"({hashlib.sha256(MIT).hexdigest()})")
 
     def test_license_file_not_read(self):
-        self.assertError([self.crate("c", None, {"TERMS": MIT}, "TERMS")],
-                          "has no `license` in its Cargo.toml, only the file TERMS", "LICENSE_FILE_ONLY")
+        crate = self.crate("c", None, {"TERMS": MIT}, "TERMS")
+        self.assertError([crate], f"has no `license` in its Cargo.toml, only the file {crate.path / 'TERMS'}",
+                         f"LICENSE_FILE_ONLY in app/flatpak/rust_notices.py, with its licence and the file's "
+                         f"sha256 ({hashlib.sha256(MIT).hexdigest()})")
+
+    def test_vendored_licence_left_out(self):
+        rust_notices.LEFT_OUT["c"] = ("1.0.0", ("third_party/jitter",))
+        self.add_texts("c", {"third_party/jitter/LICENSE": BSD})
+        [entry], errors, notes = self.collect(
+            self.crate("c", "MIT AND BSD-3-Clause", {"LICENSE": MIT, "third_party/jitter/jitter.c": b""}))
+        self.assertEqual((errors, notes), ([], []))
+        self.assertEqual([t.source for t in entry.texts], [
+            "LICENSE", "app/flatpak/rust-licenses/c/third_party/jitter/LICENSE, which the crate leaves out"])
+        self.assertEqual(entry.texts[1].body, BSD.decode())
+
+    def test_vendored_licence_left_out_changes(self):
+        rust_notices.LEFT_OUT["c"] = ("0.9.0", ("third_party/jitter", "third_party/gone", "third_party/empty"))
+        self.add_texts("c", {"third_party/jitter/LICENSE": BSD, "third_party/gone/LICENSE": BSD})
+        _, errors, notes = self.collect(self.crate("c", "MIT", {
+            "LICENSE": MIT, "third_party/jitter/LICENSE": BSD, "third_party/empty/x.c": b""}))
+        self.assertEqual(errors, ["c 1.0.0: nothing in app/flatpak/rust-licenses/c/third_party/empty/"])
+        self.assertEqual(len(notes), 3, notes)
+        self.assertIn("were taken for 0.9.0", notes[0])
+        self.assertIn("ships a licence in third_party/jitter/ now", notes[1])
+        self.assertIn("has no third_party/gone/ any more", notes[2])
 
 
 class RenderTest(Crates):
@@ -185,8 +244,9 @@ class RenderTest(Crates):
             self.crate("b", "MIT OR Apache-2.0", {"LICENSE-MIT": MIT, "LICENSE-APACHE": APACHE}),
             self.crate("a-longer-name", "Apache-2.0", {"LICENSE.txt": APACHE.replace(b"\n", b"  \r\n")}))
         self.assertEqual(errors, [])
-        text = rust_notices.render("ab" * 32, entries)
+        text = rust_notices.render("ab" * 32, "rustc 1.0.0 (abc 2026-01-01)", entries)
         self.assertIn(f"app/Cargo.lock, sha256 {'ab' * 32},", text)
+        self.assertIn("its notices are in rust-std.html,\nfrom rustc 1.0.0 (abc 2026-01-01).", text)
         self.assertIn("\nb 1.0.0              MIT OR Apache-2.0\na-longer-name 1.0.0  Apache-2.0\n", text)
         self.assertEqual(text.count("Apache License"), 1)
         self.assertIn(f"{rust_notices.RULE}\nb 1.0.0: LICENSE-APACHE\na-longer-name 1.0.0: LICENSE.txt\n"
@@ -237,18 +297,49 @@ class ShippedTest(Crates):
             rust_notices.parse_tree("warning: something\n")
 
 
+class WriteTest(Crates):
+    """main(), with the crates and the toolchain made up."""
+
+    def test_write(self):
+        (self.root / rust_notices.LOCK).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / rust_notices.LOCK).write_bytes(b"lock")
+        std = self.tmp / "sysroot" / rust_notices.STD_NOTICES
+        std.parent.mkdir(parents=True)
+        std.write_bytes(b"<html>std</html>")
+        out = self.tmp / "out" / "licenses"
+        crates = [self.crate("c", "MIT", {"LICENSE": MIT})]
+        with (mock.patch.object(rust_notices, "ROOT", self.root),
+              mock.patch.object(rust_notices, "shipped", return_value=crates),
+              mock.patch.object(rust_notices, "rust_std", return_value=("rustc 1.0.0", std)),
+              mock.patch("sys.stdout")):
+            self.assertEqual(rust_notices.main(["write", str(out)]), 0)
+            self.assertEqual(rust_notices.main(["check"]), 0)
+            std.unlink()
+            with mock.patch("sys.stderr"):
+                self.assertEqual(rust_notices.main(["check"]), 1)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["rust-crates.txt", "rust-std.html"])
+        self.assertEqual((out / "rust-std.html").read_bytes(), b"<html>std</html>")
+        text = (out / "rust-crates.txt").read_text()
+        self.assertIn(f"sha256 {hashlib.sha256(b'lock').hexdigest()},", text)
+        self.assertIn("c 1.0.0: LICENSE\n", text)
+
+
 class RepoTest(unittest.TestCase):
     """The checked-in texts and tables agree."""
 
     def test_checked_in_texts(self):
-        folders = {p.name for p in (rust_notices.ROOT / rust_notices.TEXTS).iterdir()}
-        self.assertEqual(folders, set(rust_notices.UNSHIPPED))
-        for name in folders:
+        texts = rust_notices.ROOT / rust_notices.TEXTS
+        self.assertEqual({p.name for p in texts.iterdir()}, set(rust_notices.UNSHIPPED) | set(rust_notices.LEFT_OUT))
+        for name in rust_notices.UNSHIPPED:
             with self.subTest(name):
-                self.assertTrue(any((rust_notices.ROOT / rust_notices.TEXTS / name).iterdir()))
+                self.assertTrue(any(p.is_file() for p in (texts / name).iterdir()))
+        for name, (_, folders) in rust_notices.LEFT_OUT.items():
+            for folder in folders:
+                with self.subTest(name, folder=folder):
+                    self.assertTrue(any(p.is_file() for p in (texts / name / folder).iterdir()))
 
     def test_tables_accepted(self):
-        licenses = list(rust_notices.UNSHIPPED.values())
+        licenses = [license for license, _ in rust_notices.UNSHIPPED.values()]
         licenses += [license for license, _ in rust_notices.LICENSE_FILE_ONLY.values()]
         for license in licenses:
             with self.subTest(license):

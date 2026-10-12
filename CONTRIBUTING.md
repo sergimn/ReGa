@@ -109,9 +109,9 @@ found and what is waiting.
   says so, and CI fails until then). These don't merge on their own either.
 - Rust crates: the Flatpak ships each crate's licence text, gathered at
   build time, so crate updates need nothing by hand. The App workflow fails
-  only when a crate ships no licence text or comes under a licence that
-  needs more than its notice; the message says what to do (more in
-  `app/flatpak/README.md`).
+  when a crate ships no licence text, comes under a licence that needs more
+  than its notice, or changes a licence someone read by hand; the message
+  says what to do (more in `app/flatpak/README.md`).
 - Not tracked: the AWS CLI (it releases several times a week, and its MSI
   has no published hash to update from) and WireGuard for Windows. Update
   their version and SHA-256 in the Ansible role defaults by hand.

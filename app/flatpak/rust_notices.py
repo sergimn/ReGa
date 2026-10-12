@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""The licence texts of the Rust crates built into the app, for the Flatpak.
+"""The licence notices of the Rust code built into the app, for the Flatpak.
 
-    python3 app/flatpak/rust_notices.py write OUT   # the file the Flatpak ships
+    python3 app/flatpak/rust_notices.py write DIR   # the files the Flatpak ships
     python3 app/flatpak/rust_notices.py check       # CI runs it on every PR
 
 The app's Rust core (rega_bridge, with rega_core) is built with the crates
-in app/Cargo.lock. Their licences (MIT, Apache-2.0, BSD and the like) ask
-that their copyright notices and licence texts go with every copy, so
-`write` gathers the texts each crate ships into one file: the crates and
-their versions, then each text once, under the names of the crates that
-ship it. The crates are those `cargo tree` finds for the build the Flatpak
-packages (cargokit's `cargo build -p rega_bridge` for x86_64 Linux): normal
-and build dependencies, not dev-dependencies.
+in app/Cargo.lock and with Rust's standard library. Their licences (MIT,
+Apache-2.0, BSD and the like) ask that their copyright notices and licence
+texts go with every copy, so `write` puts two files in DIR:
+
+- rust-crates.txt: the crates and their versions, then the licence texts
+  each one ships (vendored code's too), each text once, under the names of
+  the crates that ship it. The crates are those `cargo tree` finds for the
+  build the Flatpak packages (cargokit's `cargo build -p rega_bridge` for
+  x86_64 Linux): normal and build dependencies, not dev-dependencies.
+- rust-std.html: the standard library's notices, as the Rust toolchain
+  ships them.
 
 Both fail when a crate's licence isn't one that's met by shipping its
 notice (ACCEPTED), or no text can be found for it; the message says what to
-do. Nothing is checked in that a crate update would make stale, so Renovate's
-crate updates need nothing by hand unless one of those happens.
+do. The texts come from the crates themselves, so Renovate's crate updates
+need nothing by hand. The few texts checked in here, for crates that leave
+theirs out (UNSHIPPED, LEFT_OUT), are the exception: an update of one of
+those crates gets a note to check its text is still the same.
 
-Needs cargo, which downloads the crates in Cargo.lock if they aren't there
-yet. Only stdlib otherwise.
+It doesn't check that a crate's files cover every licence in an AND (a
+crate under `MIT AND Unicode-3.0` that ships only the MIT text would pass):
+that needs the texts read. The crates in the build today ship all of theirs.
+
+Needs cargo and rustc; cargo downloads the crates in Cargo.lock if they
+aren't there yet. Only stdlib otherwise.
 """
 
 from __future__ import annotations
@@ -36,8 +46,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = "app/Cargo.toml"
 LOCK = "app/Cargo.lock"
-# Licence texts of crates that don't ship one, by crate (see UNSHIPPED).
+# Licence texts that crates leave out, by crate (see UNSHIPPED and LEFT_OUT).
 TEXTS = "app/flatpak/rust-licenses"
+# The standard library's notices, in the toolchain's sysroot.
+STD_NOTICES = "share/doc/rust/COPYRIGHT-library.html"
+# What `write` puts in its folder.
+CRATES_FILE = "rust-crates.txt"
+STD_FILE = "rust-std.html"
 
 # What the Flatpak packages: the Flutter bundle, whose Rust library cargokit
 # builds with `cargo build -p rega_bridge --target x86_64-unknown-linux-gnu`.
@@ -63,23 +78,40 @@ ACCEPTED = frozenset({
     "Unlicense",
     "Zlib",
 })
+# SPDX licence identifiers match whatever their case.
+ACCEPTED_IDS = frozenset(license.upper() for license in ACCEPTED)
 
 # Crates published without their licence text. Theirs is checked in under
 # TEXTS/<crate>/, from the crate's repository at the commit the release was
 # published from (`git.sha1` in the crate's .cargo_vcs_info.json). Each is
-# listed with the `license` its Cargo.toml had then: when that changes, the
-# check fails until someone takes the text again.
+# listed with the `license` its Cargo.toml had then, and that commit. When
+# the licence changes the check fails until someone takes the text again;
+# when only the commit does (a new release), it notes it.
 UNSHIPPED = {
-    # github.com/Nugine/simd at d74c030 (0.8.0)
-    "base64-simd": "MIT",
-    "vsimd": "MIT",
-    # github.com/cloudflare/boringtun at 051c9d4 (0.7.1)
-    "boringtun": "BSD-3-Clause",
-    # github.com/dart-sys/dart-sys at c932943 (4.1.5)
-    "dart-sys": "MIT OR Apache-2.0",
-    # github.com/fzyzcjy/flutter_rust_bridge at 8631db9 (2.13.0)
-    "flutter_rust_bridge": "MIT",
-    "flutter_rust_bridge_macros": "MIT",
+    # github.com/Nugine/simd (0.8.0)
+    "base64-simd": ("MIT", "d74c030d9dc4f3cae02146d1f497ff62726ef09a"),
+    "vsimd": ("MIT", "d74c030d9dc4f3cae02146d1f497ff62726ef09a"),
+    # github.com/cloudflare/boringtun (0.7.1)
+    "boringtun": ("BSD-3-Clause", "051c9d47dc9c5cb36e461b7d36dcd673820dc98b"),
+    # github.com/dart-sys/dart-sys (4.1.5)
+    "dart-sys": ("MIT OR Apache-2.0", "c9329430a5a8e3828cf59600babe7896326c7c44"),
+    # github.com/fzyzcjy/flutter_rust_bridge (2.13.0)
+    "flutter_rust_bridge": ("MIT", "8631db91a90c699439c9ce2a1fb4164ae8661da9"),
+    "flutter_rust_bridge_macros": ("MIT", "8631db91a90c699439c9ce2a1fb4164ae8661da9"),
+}
+
+# Vendored code that a crate builds in, and whose licence its own licence
+# file points at, but whose licence file the crate leaves out of what it
+# publishes. Those are checked in under TEXTS/<crate>/<vendored folder>/, from
+# the vendored project at the version the crate has, and listed with the
+# crate version they were taken for: the check notes when that changes.
+LEFT_OUT = {
+    # From aws-lc v5.7.0, whose LICENSE (aws-lc/LICENSE in the crate) says
+    # both are compiled into libcrypto.
+    "aws-lc-sys": ("0.45.0", (
+        "aws-lc/third_party/jitterentropy/jitterentropy-library",
+        "aws-lc/third_party/s2n-bignum/s2n-bignum-imported",
+    )),
 }
 
 # Crates whose Cargo.toml has only a `license-file`, no SPDX `license`: the
@@ -172,7 +204,7 @@ def accepted(expression: str) -> bool:
             take()
             take()
         # GPL-2.0+ is that version or a later one: the one named will do.
-        return token.removesuffix("+") in ACCEPTED
+        return token.removesuffix("+").upper() in ACCEPTED_IDS
 
     ok = either()
     if pos != len(tokens):
@@ -235,15 +267,36 @@ def parse_tree(output: str) -> set[tuple[str, str]]:
     return crates
 
 
-def cargo(root: Path, *args: str) -> str:
-    command = ["cargo", *args, "--manifest-path", str(root / WORKSPACE), "--locked"]
+def run(root: Path, *command: str) -> str:
+    # From app/, so a toolchain set for it there applies to cargo and rustc alike.
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(command, cwd=root / "app", capture_output=True, text=True, check=False)
     except FileNotFoundError:
-        raise SystemExit("rust_notices.py needs cargo") from None
+        raise SystemExit(f"rust_notices.py needs {command[0]}") from None
     if result.returncode:
         raise SystemExit(f"{' '.join(command)} failed:\n{result.stderr}")
     return result.stdout
+
+
+def cargo(root: Path, *args: str) -> str:
+    return run(root, "cargo", *args, "--manifest-path", str(root / WORKSPACE), "--locked", "--color", "never")
+
+
+def rust_std(root: Path) -> tuple[str, Path]:
+    """The rustc that builds the core, and its standard library's notices."""
+    version = run(root, "rustc", "--version").strip()
+    sysroot = Path(run(root, "rustc", "--print", "sysroot").strip())
+    return version, sysroot / STD_NOTICES
+
+
+def vcs_info(crate: Crate) -> tuple[str | None, str]:
+    """The commit a crate was published from, and its folder in that
+    repository, from the .cargo_vcs_info.json cargo puts in it."""
+    try:
+        info = json.loads((crate.path / ".cargo_vcs_info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, ""
+    return info.get("git", {}).get("sha1"), info.get("path_in_vcs", "")
 
 
 def version_key(version: str) -> tuple:
@@ -290,40 +343,47 @@ class Entry:
     texts: tuple[Text, ...]
 
 
+def checked_in(root: Path, crate: Crate, folder: str, why: str) -> list[Text]:
+    """The texts checked in for a crate, in TEXTS/<crate>/<folder>."""
+    path = root / TEXTS / crate.name / folder
+    return [Text(f"{file.relative_to(root).as_posix()}, {why}", normalize(file.read_bytes()))
+            for file in sorted(path.glob("*")) if file.is_file()]
+
+
 def collect(root: Path, crates: list[Crate]) -> tuple[list[Entry], list[str], list[str]]:
     """Each crate with its licence texts; then the problems that leave the
-    notices incomplete, and notes on entries here that aren't needed any
-    more."""
+    notices incomplete, and notes on what's checked in here that may need a
+    look."""
     where = "app/flatpak/rust_notices.py"
     names = {crate.name for crate in crates}
     entries = []
     errors = []
     notes = [f"{table} has {name}, which isn't in the build any more"
-             for table, names_there in (("UNSHIPPED", UNSHIPPED), ("LICENSE_FILE_ONLY", LICENSE_FILE_ONLY))
-             for name in sorted(set(names_there) - names)]
+             for table, listed in (("UNSHIPPED", UNSHIPPED), ("LEFT_OUT", LEFT_OUT),
+                                   ("LICENSE_FILE_ONLY", LICENSE_FILE_ONLY))
+             for name in sorted(set(listed) - names)]
     for crate in crates:
         at = f"{crate} ({crate.repository})" if crate.repository else str(crate)
 
         license = crate.license
+        license_file = crate.path / (crate.license_file or "")
+        sha256 = hashlib.sha256(license_file.read_bytes()).hexdigest() if license_file.is_file() else None
         if license is None and crate.name in LICENSE_FILE_ONLY:
-            license, sha256 = LICENSE_FILE_ONLY[crate.name]
-            path = crate.path / (crate.license_file or "")
-            actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-            if actual != sha256:
+            license, read = LICENSE_FILE_ONLY[crate.name]
+            if sha256 != read:
                 errors.append(
-                    f"{at}: its licence file {crate.license_file} isn't the one read as {license}. Read it, "
-                    f"then set its licence and sha256 ({actual}) in LICENSE_FILE_ONLY in {where}.")
+                    f"{at}: its licence file {license_file} isn't the one read as {license}. Read it, then set "
+                    f"its licence and sha256 ({sha256}) in LICENSE_FILE_ONLY in {where}.")
         elif license is None:
             errors.append(
-                f"{at} has no `license` in its Cargo.toml, only the file {crate.license_file}. Read it, and "
-                f"add the crate to LICENSE_FILE_ONLY in {where}.")
+                f"{at} has no `license` in its Cargo.toml, only the file {license_file}. Read it, and add the "
+                f"crate to LICENSE_FILE_ONLY in {where}, with its licence and the file's sha256 ({sha256}).")
         elif crate.name in LICENSE_FILE_ONLY:
             notes.append(f"LICENSE_FILE_ONLY has {crate.name}, whose Cargo.toml says `{license}` now")
         if license is not None:
             try:
                 ok = accepted(license)
             except ValueError as e:
-                ok = False
                 errors.append(f"{at}: can't read its licence: {e}")
             else:
                 if not ok:
@@ -335,28 +395,54 @@ def collect(root: Path, crates: list[Crate]) -> tuple[list[Entry], list[str], li
         texts = [Text(path.relative_to(crate.path).as_posix(), normalize(path.read_bytes())) for path in files]
         # Its own licence is at its top level; deeper ones are vendored code's.
         own = any(own_license(crate, path) for path in files)
+        commit, folder = vcs_info(crate)
         if own and crate.name in UNSHIPPED:
-            notes.append(f"{crate} ships its licence text now: drop it from UNSHIPPED and {TEXTS}/")
+            notes.append(f"{crate} ships its licence text now: drop it from UNSHIPPED and {TEXTS}/{crate.name}/")
         elif crate.name in UNSHIPPED:
-            checked_in = [Text(f"{TEXTS}/{crate.name}/{path.name}, from its repository", normalize(path.read_bytes()))
-                          for path in sorted((root / TEXTS / crate.name).glob("*")) if path.is_file()]
-            if not checked_in:
+            expected, taken_at = UNSHIPPED[crate.name]
+            ours = checked_in(root, crate, "", f"from its repository at {taken_at[:7]}")
+            if not ours:
                 errors.append(f"{crate}: nothing in {TEXTS}/{crate.name}/")
-            if crate.license != UNSHIPPED[crate.name]:
+            if crate.license != expected:
                 errors.append(
                     f"{at}: its Cargo.toml says `{crate.license}` now, but the text in {TEXTS}/{crate.name}/ "
-                    f"was taken for `{UNSHIPPED[crate.name]}`. Take it again and update UNSHIPPED in {where}.")
-            texts = checked_in + texts
+                    f"was taken for `{expected}`. Take it again, from commit {commit}, and update UNSHIPPED "
+                    f"in {where}.")
+            elif commit != taken_at:
+                notes.append(
+                    f"{crate} was published from commit {commit}, and its text in {TEXTS}/{crate.name}/ taken "
+                    f"at {taken_at}: if the text changed, take it again and update UNSHIPPED")
+            texts = ours + texts
         elif not own:
+            repository = crate.repository or "its repository"
+            if commit:
+                source = f"{repository} at commit {commit}{f' (the crate is in {folder}/)' if folder else ''}"
+            else:
+                source = f"{repository}, at the commit the release was made from,"
             errors.append(
-                f"{at} ships no licence text of its own. Copy it from the crate's repository, at the commit in "
-                f"the crate's .cargo_vcs_info.json, into {TEXTS}/{crate.name}/, and add the crate to UNSHIPPED "
-                f"in {where}.")
+                f"{at} ships no licence text of its own. Copy it from {source} into {TEXTS}/{crate.name}/, "
+                f"and add the crate to UNSHIPPED in {where} with its licence and that commit.")
+
+        if crate.name in LEFT_OUT:
+            taken_for, vendored = LEFT_OUT[crate.name]
+            if crate.version != taken_for:
+                notes.append(
+                    f"{crate}: the vendored licences in {TEXTS}/{crate.name}/ were taken for {taken_for}: check "
+                    f"they're still the vendored code's, and update LEFT_OUT")
+            for path in vendored:
+                ours = checked_in(root, crate, path, "which the crate leaves out")
+                if not ours:
+                    errors.append(f"{crate}: nothing in {TEXTS}/{crate.name}/{path}/")
+                if not (crate.path / path).is_dir():
+                    notes.append(f"{crate} has no {path}/ any more: drop it from LEFT_OUT and {TEXTS}/")
+                elif any(file.is_relative_to(crate.path / path) for file in files):
+                    notes.append(f"{crate} ships a licence in {path}/ now: drop it from LEFT_OUT and {TEXTS}/")
+                texts += ours
         entries.append(Entry(crate, license or "unknown", tuple(texts)))
     return entries, errors, notes
 
 
-def render(lock_sha256: str, entries: list[Entry]) -> str:
+def render(lock_sha256: str, rustc: str, entries: list[Entry]) -> str:
     out = [
         "Licences of the Rust crates in ReGa",
         RULE,
@@ -365,6 +451,9 @@ def render(lock_sha256: str, entries: list[Entry]) -> str:
         "the crates below, at these versions. Their licence texts follow, as each",
         "crate ships them. A text that several crates ship word for word is",
         "printed once, under all of their names.",
+        "",
+        f"Rust's standard library is built in too: its notices are in {STD_FILE},",
+        f"from {rustc}.",
         "",
         f"Made by app/flatpak/rust_notices.py from app/Cargo.lock, sha256 {lock_sha256},",
         f"for {TARGET}.",
@@ -386,11 +475,23 @@ def render(lock_sha256: str, entries: list[Entry]) -> str:
     return "\n".join(out) + "\n"
 
 
-def notices(root: Path) -> tuple[str, int, list[str], list[str]]:
-    """The notices file, how many crates it covers, and what collect found."""
+@dataclass(frozen=True)
+class Notices:
+    crates: str
+    count: int
+    # The standard library's notices, from the toolchain.
+    std: Path
+    errors: list[str]
+    notes: list[str]
+
+
+def notices(root: Path) -> Notices:
     entries, errors, notes = collect(root, shipped(root))
+    rustc, std = rust_std(root)
+    if not std.is_file():
+        errors.append(f"{rustc} has no {std}, the standard library's notices: is it a rustup toolchain?")
     lock_sha256 = hashlib.sha256((root / LOCK).read_bytes()).hexdigest()
-    return render(lock_sha256, entries), len(entries), errors, notes
+    return Notices(render(lock_sha256, rustc, entries), len(entries), std, errors, notes)
 
 
 def main(argv: list[str]) -> int:
@@ -401,19 +502,20 @@ def main(argv: list[str]) -> int:
     else:
         print(__doc__, file=sys.stderr)
         return 2
-    text, count, errors, notes = notices(ROOT)
-    for note in notes:
+    found = notices(ROOT)
+    for note in found.notes:
         print(f"note: {note}", file=sys.stderr)
-    for error in errors:
+    for error in found.errors:
         print(f"error: {error}", file=sys.stderr)
-    if errors:
+    if found.errors:
         return 1
     if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, encoding="utf-8")
-        print(f"Wrote the licence texts of {count} Rust crates to {out}.")
+        out.mkdir(parents=True, exist_ok=True)
+        (out / CRATES_FILE).write_text(found.crates, encoding="utf-8")
+        (out / STD_FILE).write_bytes(found.std.read_bytes())
+        print(f"Wrote the licence texts of {found.count} Rust crates, and the standard library's, to {out}/.")
     else:
-        print(f"Found licence texts for all {count} Rust crates.")
+        print(f"Found licence texts for all {found.count} Rust crates, and the standard library's.")
     return 0
 
 
