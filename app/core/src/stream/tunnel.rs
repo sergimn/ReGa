@@ -496,7 +496,10 @@ async fn timers(shared: Arc<Shared>) {
         .unwrap()
         .format_handshake_initiation(&mut out, false);
     if let TunnResult::WriteToNetwork(packet) = first {
-        shared.send_outside(packet);
+        // Waits for the socket rather than trying once: until the runtime
+        // has polled a new socket it reads as not ready, and a dropped
+        // initiation is only sent again after boringtun's 5 seconds.
+        let _ = shared.outside.send_to(packet, shared.endpoint).await;
     }
     let mut tick = tokio::time::interval(TIMER_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
