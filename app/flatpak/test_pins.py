@@ -106,7 +106,8 @@ class CheckTest(unittest.TestCase):
                 self.assertEqual(pins.marker_applies(marker, env), applies)
         for marker in ("sys_platform == 'linux' and", "(os_name == 'posix'", "sys_platform ~= 'linux'",
                        "sys_platform < 'linux'", "python_version < '3.13.*'",
-                       "python_full_version >= '3.13.2'"):
+                       "python_full_version >= '3.13.2'", "python_full_version == '3.13.5'",
+                       "python_full_version != '3.13.5.*'"):
             with self.subTest(marker), self.assertRaises(SystemExit):
                 pins.marker_applies(marker, env)
 

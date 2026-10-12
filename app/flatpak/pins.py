@@ -195,12 +195,12 @@ def marker_applies(marker: str, env: dict[str, str]) -> bool:
             return compare_versions(env[var], op, value, token)
         if var == "python_full_version":
             # The runtime's patch release moves with its updates, so only a
-            # bound that every 3.13.x falls on the same side of will do; the
-            # bounds uv writes ('< 3.13', '== 3.13.*') are like that.
-            first, last = (compare_versions(f"{env[var]}.{patch}", op, value, token) for patch in (0, 999))
-            if first != last:
+            # marker that holds the same for every 3.13.x will do; the bounds
+            # uv writes ('< 3.13', '== 3.13.*') are like that.
+            answers = {compare_versions(f"{env[var]}.{patch}", op, value, token) for patch in range(1000)}
+            if len(answers) > 1:
                 raise SystemExit(f"{LOCK}: {token} depends on the runtime's Python patch release.")
-            return first
+            return answers.pop()
         if op not in ("==", "!="):
             raise SystemExit(f"{LOCK}: can't compare {var} with {op}")
         return (env[var] == value) == (op == "==")
