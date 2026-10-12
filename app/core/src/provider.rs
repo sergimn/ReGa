@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 
 use crate::model::{LaunchRequest, Machine, MachineType, Orphan, Price, Region, StorageLocation};
+use crate::stream::StreamTarget;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ProviderError {
@@ -92,6 +93,12 @@ pub trait CloudProvider: Send + Sync {
     /// when its library disk may hold games the game library doesn't.
     /// `even_if_unsaved` deletes it without trying to save the games.
     async fn destroy(&self, machine_id: &str, even_if_unsaved: bool) -> ProviderResult<()>;
+
+    /// What this device needs to stream from a running machine that isn't
+    /// busy. With WireGuard off, first points the Sunshine ports at this
+    /// device's current IP (applying only if it changed), so Play works
+    /// after an IP change.
+    async fn stream_target(&self, machine_id: &str) -> ProviderResult<StreamTarget>;
 
     /// Resources tagged `Project=ReGa`, in every region, that belong to no
     /// machine in the state store.

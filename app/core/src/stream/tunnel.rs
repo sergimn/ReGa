@@ -146,6 +146,11 @@ pub fn public_key(private_key: &str) -> Result<String, TunnelError> {
     Ok(base64::engine::general_purpose::STANDARD.encode(PublicKey::from(&secret).as_bytes()))
 }
 
+/// Whether `key` is a WireGuard key: 32 bytes of base64.
+pub fn public_key_is_valid(key: &str) -> bool {
+    decode_key(key).is_ok()
+}
+
 fn decode_key(key: &str) -> Result<[u8; 32], TunnelError> {
     base64::engine::general_purpose::STANDARD
         .decode(key.trim())

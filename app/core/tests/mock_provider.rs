@@ -268,6 +268,12 @@ impl CloudProvider for FlakyRegion {
     ) -> rega_core::ProviderResult<()> {
         self.0.destroy(machine_id, even_if_unsaved).await
     }
+    async fn stream_target(
+        &self,
+        machine_id: &str,
+    ) -> rega_core::ProviderResult<rega_core::stream::StreamTarget> {
+        self.0.stream_target(machine_id).await
+    }
     async fn orphans(&self) -> rega_core::ProviderResult<Vec<rega_core::Orphan>> {
         self.0.orphans().await
     }
@@ -406,4 +412,30 @@ async fn deleting_orphans_removes_only_those_named() {
     let p = MockProvider::demo_aws().with_orphans(vec![orphan("vol-1"), orphan("vol-2")]);
     p.delete_orphans(&[orphan("vol-1")]).await.unwrap();
     assert_eq!(p.orphans().await.unwrap(), vec![orphan("vol-2")]);
+}
+
+#[tokio::test]
+async fn demo_machines_have_nothing_to_stream() {
+    let p = MockProvider::demo_aws();
+    let m = p
+        .launch(&LaunchRequest {
+            name: "Demo".into(),
+            region_id: "eu-north-1".into(),
+            type_name: "g4dn.xlarge".into(),
+            disk_gib: 128,
+            spot: false,
+            wireguard: true,
+            cpu_first: false,
+        })
+        .await
+        .unwrap();
+    let err = p.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("demo machine"), "{err}");
+    p.stop(&m.id).await.unwrap();
+    let err = p.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("start it first"), "{err}");
+    assert_eq!(
+        p.stream_target("nope").await,
+        Err(ProviderError::UnknownMachine("nope".into()))
+    );
 }

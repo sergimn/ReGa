@@ -39,3 +39,16 @@
     name: SunshineService
     start_mode: auto
     state: started
+
+- name: Read the fingerprint of Sunshine's certificate
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'cert-fingerprint.ps1') }}"
+    parameters:
+      CertificatePath: "{{ rega_sunshine_path }}\\config\\credentials\\cacert.pem"
+  register: rega_sunshine_cert
+  # It only reads, so a second run still changes nothing.
+  changed_when: false
+
+- name: Remember the fingerprint for the app
+  ansible.builtin.set_fact:
+    rega_sunshine_cert_sha256: "{{ rega_sunshine_cert.result }}"

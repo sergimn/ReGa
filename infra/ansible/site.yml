@@ -34,6 +34,7 @@
           sunshine:
             username: "{{ rega_sunshine_username }}"
             web_ui_port: 47990
+            cert_sha256: "{{ rega_sunshine_cert_sha256 }}"
           wireguard:
             port: "{{ rega_wireguard_port }}"
             server_public_key: "{{ rega_wireguard_server_public_key }}"
