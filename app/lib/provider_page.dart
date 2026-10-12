@@ -164,7 +164,6 @@ class _ProviderPageState extends State<ProviderPage> {
     final mine = stream != null && stream.providerId == _id;
     final gone =
         mine &&
-        !_busy.containsKey(stream.machineId) &&
         !_machines.any(
           (m) => m.id == stream.machineId && m.status == MachineStatus.running,
         );
