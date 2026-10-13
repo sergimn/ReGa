@@ -46,6 +46,8 @@ modules:
       # The Rust crates' and standard library's licences ask for their
       # notices to go with every copy.
       - install -Dm644 licenses/rust-crates.txt licenses/rust-std.html -t /app/share/licenses/io.github.sergimn.rega
+      # The AWS logo is AWS's trademark, not under ReGa's licence.
+      - install -Dm644 aws-logo.md -t /app/share/licenses/io.github.sergimn.rega
       - install -Dm644 io.github.sergimn.rega.desktop -t /app/share/applications
       - install -Dm644 io.github.sergimn.rega.metainfo.xml -t /app/share/metainfo
       - install -Dm644 rega.svg /app/share/icons/hicolor/scalable/apps/io.github.sergimn.rega.svg
@@ -59,6 +61,9 @@ modules:
         dest: licenses
       - type: file
         path: ../../LICENSE
+      - type: file
+        path: ../assets/platforms/aws/README.md
+        dest-filename: aws-logo.md
       - type: file
         path: io.github.sergimn.rega.desktop
       - type: file

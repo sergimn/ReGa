@@ -60,6 +60,9 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon/rega-128.png
+    # With the 2.0x/ and 3.0x/ variants next to them.
+    - assets/platforms/aws/aws.png
+    - assets/platforms/aws/aws-dark.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

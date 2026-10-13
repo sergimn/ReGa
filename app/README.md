@@ -11,7 +11,7 @@ app/
   integration_test/  runs the real app against the Rust core
   rust_builder/  cargokit glue that builds rust/ during `flutter build`
   flatpak/       Flatpak manifest, desktop file, metainfo, pin check, smoke test
-  assets/        app icon (SVG and PNG sizes) and the palette swatch
+  assets/        app icon (SVG and PNG sizes), the palette swatch and platform logos
 ```
 
 Colours come from `RegaColors` in `lib/theme.dart`; use those rather than

@@ -19,10 +19,10 @@ in_app() { flatpak run --command="$1" "$app" "${@:2}"; }
 
 flatpak info "$app" >/dev/null || fail "$app isn't installed"
 
-# ReGa's licence, Terraform's, which asks to ship with every copy of it, and
-# the Rust crates' and standard library's, the crates' written for the
-# Cargo.lock the app was built from.
-for file in LICENSE terraform/LICENSE.txt rust-crates.txt rust-std.html; do
+# ReGa's licence, Terraform's, which asks to ship with every copy of it, the
+# Rust crates' and standard library's, the crates' written for the
+# Cargo.lock the app was built from, and the AWS logo's notice.
+for file in LICENSE terraform/LICENSE.txt rust-crates.txt rust-std.html aws-logo.md; do
   in_app test -s "/app/share/licenses/$app/$file" || fail "$file isn't in /app/share/licenses/$app"
 done
 lock=$(sha256sum "$repo/app/Cargo.lock" | cut -d' ' -f1)
