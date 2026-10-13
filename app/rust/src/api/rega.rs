@@ -52,6 +52,9 @@ pub struct ProviderInfo {
     /// Credentials are saved for it (even when signing in with them
     /// failed), so it can offer to sign out.
     pub has_credentials: bool,
+    /// Connecting again might sign in, such as once the keyring is
+    /// unlocked, so it can offer to reconnect.
+    pub can_reconnect: bool,
     /// Who it's signed in as, such as an IAM user and its account.
     pub signed_in_as: Option<String>,
 }
@@ -212,6 +215,7 @@ fn info(e: &registry::Entry) -> ProviderInfo {
             })
             .collect(),
         has_credentials: e.saved.is_some(),
+        can_reconnect: e.can_reconnect,
         signed_in_as: e.provider().signed_in_as(),
     }
 }
@@ -566,12 +570,14 @@ pub(crate) mod tests {
 
     #[test]
     fn demo_entries_say_why() {
-        let p = info(&registry::Entry::demo("No AWS credentials found."));
+        let reason = "Enter your AWS credentials to use your account.";
+        let p = info(&registry::Entry::demo(reason));
         assert_eq!(p.id, "aws");
         assert_eq!(p.name, "AWS");
         assert!(p.demo);
-        assert_eq!(p.notice.as_deref(), Some("No AWS credentials found."));
+        assert_eq!(p.notice.as_deref(), Some(reason));
         assert!(!p.has_credentials);
+        assert!(!p.can_reconnect);
         assert_eq!(p.signed_in_as, None);
         let fields: Vec<_> = p
             .credential_fields
@@ -595,8 +601,10 @@ pub(crate) mod tests {
             // Never in `saved`, but even if it were.
             ("secret_access_key".into(), "typed-secret".into()),
         ]);
+        entry.can_reconnect = true;
         let p = info(&entry);
         assert!(p.has_credentials);
+        assert!(p.can_reconnect);
         assert_eq!(
             p.credential_fields[0].value.as_deref(),
             Some("typed-key-id")

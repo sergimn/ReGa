@@ -13,6 +13,8 @@ mkdir -p "$data/keyrings"
 # The login keyring is the default one, as on a desktop.
 printf login >"$data/keyrings/default"
 export XDG_DATA_HOME="$data"
-eval "$(printf throwaway | gnome-keyring-daemon --unlock --components=secrets)"
+# Captured first, so set -e stops here if the daemon doesn't start.
+daemon=$(printf throwaway | gnome-keyring-daemon --unlock --components=secrets)
+eval "$daemon"
 export GNOME_KEYRING_CONTROL
 REGA_TEST_KEYRING=1 "$@"

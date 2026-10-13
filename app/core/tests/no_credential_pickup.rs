@@ -74,3 +74,17 @@ fn terraform_is_kept_off_shared_files_and_instance_metadata() {
     }
     assert_eq!(set("AWS_EC2_METADATA_DISABLED"), Some("true"));
 }
+
+/// The SDK's own credential chain isn't even built, so nothing can start
+/// using it again by accident.
+#[test]
+fn the_aws_credential_chain_is_not_a_dependency() {
+    let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock");
+    let lock = std::fs::read_to_string(lock).unwrap();
+    for name in ["aws-config", "aws-sdk-sso", "aws-sdk-ssooidc"] {
+        assert!(
+            !lock.contains(&format!("name = \"{name}\"\n")),
+            "{name} is in Cargo.lock"
+        );
+    }
+}

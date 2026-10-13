@@ -1219,6 +1219,7 @@ impl SseDecode for crate::api::rega::ProviderInfo {
         let mut var_credentialFields =
             <Vec<crate::api::rega::CredentialFieldInfo>>::sse_decode(deserializer);
         let mut var_hasCredentials = <bool>::sse_decode(deserializer);
+        let mut var_canReconnect = <bool>::sse_decode(deserializer);
         let mut var_signedInAs = <Option<String>>::sse_decode(deserializer);
         return crate::api::rega::ProviderInfo {
             id: var_id,
@@ -1227,6 +1228,7 @@ impl SseDecode for crate::api::rega::ProviderInfo {
             notice: var_notice,
             credential_fields: var_credentialFields,
             has_credentials: var_hasCredentials,
+            can_reconnect: var_canReconnect,
             signed_in_as: var_signedInAs,
         };
     }
@@ -1576,6 +1578,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::rega::ProviderInfo {
             self.notice.into_into_dart().into_dart(),
             self.credential_fields.into_into_dart().into_dart(),
             self.has_credentials.into_into_dart().into_dart(),
+            self.can_reconnect.into_into_dart().into_dart(),
             self.signed_in_as.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -2011,6 +2014,7 @@ impl SseEncode for crate::api::rega::ProviderInfo {
             serializer,
         );
         <bool>::sse_encode(self.has_credentials, serializer);
+        <bool>::sse_encode(self.can_reconnect, serializer);
         <Option<String>>::sse_encode(self.signed_in_as, serializer);
     }
 }

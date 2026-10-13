@@ -96,6 +96,7 @@ const notSignedIn = ProviderInfo(
   notice: 'Enter your AWS credentials to use your account.',
   credentialFields: awsFields,
   hasCredentials: false,
+  canReconnect: false,
 );
 
 /// AWS signed in with a saved access key.
@@ -115,6 +116,7 @@ ProviderInfo signedIn({String keyId = 'typed-key-id', String? notice}) =>
         awsFields[1],
       ],
       hasCredentials: true,
+      canReconnect: false,
       signedInAs: 'IAM user rega, account 123456789012',
     );
 
@@ -138,6 +140,9 @@ class FakeBackend implements RegaBackend {
 
   /// Signing out fails with this, when set.
   Object? signOutError;
+
+  /// Signing out waits for this before answering, when set.
+  Future<void>? signOutGate;
 
   /// When set, machine actions and launches throw it.
   Object? actionError;
@@ -233,6 +238,7 @@ class FakeBackend implements RegaBackend {
   @override
   Future<ProviderInfo> forgetCredentials(String providerId) async {
     calls.add('sign out');
+    await signOutGate;
     if (signOutError case final e?) throw e;
     return provider = const ProviderInfo(
       id: 'aws',
@@ -241,6 +247,7 @@ class FakeBackend implements RegaBackend {
       notice: 'Signed out. Enter your AWS credentials to use your account.',
       credentialFields: awsFields,
       hasCredentials: false,
+      canReconnect: false,
     );
   }
 

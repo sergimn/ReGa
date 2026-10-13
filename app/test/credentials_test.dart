@@ -187,7 +187,7 @@ void main() {
     final backend = FakeBackend()
       ..provider = signedIn()
       ..signOutError = const RegaError(
-        message: "Couldn't forget the credentials: the keyring is locked",
+        message: 'unknown provider aws',
         gamesNotSaved: false,
       );
     await open(tester, backend);
@@ -196,11 +196,82 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(key('confirm'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('the keyring is locked'), findsOneWidget);
+    expect(find.textContaining('unknown provider aws'), findsOneWidget);
     expect(
       find.text('Signed in as IAM user rega, account 123456789012'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('the account can\'t change while signing out', (tester) async {
+    final backend = FakeBackend()..provider = signedIn();
+    final gate = Completer<void>();
+    backend.signOutGate = gate.future;
+    await open(tester, backend);
+
+    await tester.tap(key('sign-out'));
+    await tester.pumpAndSettle();
+    await tester.tap(key('confirm'));
+    await tester.pump();
+    expect(enabled(tester, 'change-credentials'), isFalse);
+    expect(enabled(tester, 'sign-out'), isFalse);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Signed out.'), findsOneWidget);
+    expect(enabled(tester, 'enter-credentials'), isTrue);
+  });
+
+  testWidgets('a keyring that could not be read offers to try again', (
+    tester,
+  ) async {
+    const locked =
+        "Couldn't read the saved AWS credentials: the system keyring: "
+        'dismissed';
+    final backend = FakeBackend()
+      ..provider = const ProviderInfo(
+        id: 'aws',
+        name: 'AWS',
+        demo: true,
+        notice: locked,
+        credentialFields: awsFields,
+        hasCredentials: false,
+        canReconnect: true,
+      );
+    await open(tester, backend);
+    expect(find.text(locked), findsOneWidget);
+    expect(key('enter-credentials'), findsOneWidget);
+
+    backend.provider = signedIn();
+    await tester.tap(key('reconnect'));
+    await tester.pumpAndSettle();
+    expect(backend.calls.where((c) => c == 'connect'), hasLength(2));
+    expect(
+      find.text('Signed in as IAM user rega, account 123456789012'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('every account button fits a narrow window', (tester) async {
+    tester.view.physicalSize = const Size(700, 1800);
+    addTearDown(tester.view.resetPhysicalSize);
+    // Saved credentials that failed: Reconnect, Change credentials and
+    // Sign out all show.
+    final backend = FakeBackend()
+      ..provider = const ProviderInfo(
+        id: 'aws',
+        name: 'AWS',
+        demo: true,
+        notice: "Couldn't sign in to AWS with the saved credentials: timed out",
+        credentialFields: awsFields,
+        hasCredentials: true,
+        canReconnect: true,
+      );
+    await open(tester, backend);
+    for (final k in ['reconnect', 'change-credentials', 'sign-out']) {
+      final box = tester.getRect(key(k));
+      expect(box.right, lessThanOrEqualTo(700), reason: k);
+    }
   });
 
   testWidgets('credentials that could not be saved say so', (tester) async {

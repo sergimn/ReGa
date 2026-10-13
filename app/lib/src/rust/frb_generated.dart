@@ -1125,8 +1125,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ProviderInfo dco_decode_provider_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return ProviderInfo(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -1134,7 +1134,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       notice: dco_decode_opt_String(arr[3]),
       credentialFields: dco_decode_list_credential_field_info(arr[4]),
       hasCredentials: dco_decode_bool(arr[5]),
-      signedInAs: dco_decode_opt_String(arr[6]),
+      canReconnect: dco_decode_bool(arr[6]),
+      signedInAs: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -1616,6 +1617,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       deserializer,
     );
     var var_hasCredentials = sse_decode_bool(deserializer);
+    var var_canReconnect = sse_decode_bool(deserializer);
     var var_signedInAs = sse_decode_opt_String(deserializer);
     return ProviderInfo(
       id: var_id,
@@ -1624,6 +1626,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       notice: var_notice,
       credentialFields: var_credentialFields,
       hasCredentials: var_hasCredentials,
+      canReconnect: var_canReconnect,
       signedInAs: var_signedInAs,
     );
   }
@@ -2064,6 +2067,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.notice, serializer);
     sse_encode_list_credential_field_info(self.credentialFields, serializer);
     sse_encode_bool(self.hasCredentials, serializer);
+    sse_encode_bool(self.canReconnect, serializer);
     sse_encode_opt_String(self.signedInAs, serializer);
   }
 

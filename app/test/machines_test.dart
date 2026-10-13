@@ -39,6 +39,7 @@ void main() {
       notice: failed,
       credentialFields: awsFields,
       hasCredentials: true,
+      canReconnect: true,
     );
     await open(tester, backend);
     expect(find.text(failed), findsOneWidget);

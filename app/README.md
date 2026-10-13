@@ -31,14 +31,17 @@ first (`core/src/aws/`):
   - Each provider says which fields it needs (`Connector` in
     `core/src/provider.rs`); the form is built from that, so another cloud
     only needs a `Connector` of its own.
-  - Save signs in first and only keeps credentials the cloud accepted,
-    replacing what was saved before. The page then says who it's signed in
+  - Sign in checks the credentials with the cloud first and only keeps ones
+    it accepted, replacing what was saved before. The page then says who it's signed in
     as (for AWS, the IAM user and account), so a wrong account shows.
   - They are kept in the system keyring (`core/src/credentials.rs`, with
     `oo7`): the desktop's Secret Service outside a sandbox, and inside the
     Flatpak a file in the app's data folder, encrypted with a key from the
     Secret portal (GNOME Keyring provides it on Ubuntu). If they can't be
-    saved, the app stays signed in until it quits and says so.
+    saved, the app stays signed in until it quits and says so, and removes
+    what was saved before so the next start doesn't use it; if even that
+    fails, it says the earlier ones may be used. Sign out always signs out,
+    and says so if the keyring couldn't forget the credentials.
   - The AWS SDK is set up by hand from the key (the app doesn't use
     `aws-config`, which is what reads the environment and `~/.aws`).
     Terraform gets the key as environment variables, with
@@ -47,7 +50,7 @@ first (`core/src/aws/`):
     anything else either. Ansible never talks to AWS.
   - Without saved credentials, or when signing in with them fails, the app
     shows demo data (`MockProvider::demo_aws`) and says why; Reconnect tries
-    the saved ones again.
+    the saved ones again, also after the keyring couldn't be read.
 - Regions, GPU quotas (Service Quotas), spot prices and instance offerings
   come from the AWS APIs; on-demand prices from the Price List API.
 - The first time it lists machines, the app creates `rega-tfstate-<account>`

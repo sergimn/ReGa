@@ -79,9 +79,11 @@ impl Credentials {
     }
 
     fn from_json(json: &[u8]) -> ProviderResult<Self> {
+        // Not serde's message: it quotes the value it choked on, which
+        // could be a secret.
         serde_json::from_slice(json)
             .map(Self)
-            .map_err(|e| keyring_error(format!("the saved credentials can't be read: {e}")))
+            .map_err(|_| keyring_error("the saved credentials aren't in a form ReGa can read"))
     }
 }
 
@@ -152,10 +154,14 @@ impl CredentialStore for KeyringStore {
 
     async fn save(&self, provider_id: &str, credentials: &Credentials) -> ProviderResult<()> {
         let keyring = Self::open().await?;
+        let attributes = Self::attributes(provider_id);
+        // Whatever was there goes first, so there's only ever one item to
+        // read back, however the keyring treats `replace`.
+        keyring.delete(&attributes).await.map_err(keyring_error)?;
         keyring
             .create_item(
                 &format!("ReGa: {provider_id} credentials"),
-                &Self::attributes(provider_id),
+                &attributes,
                 oo7::Secret::text(credentials.to_json()),
                 true,
             )
@@ -178,21 +184,21 @@ pub struct MemoryStore {
     saved: Mutex<HashMap<String, String>>,
     /// Every call fails with this, when set.
     pub failure: Mutex<Option<String>>,
+    /// Saving fails with this, when set, while the rest works.
+    pub save_failure: Mutex<Option<String>>,
 }
 
-impl MemoryStore {
-    fn fail(&self) -> ProviderResult<()> {
-        match self.failure.lock().unwrap().clone() {
-            Some(e) => Err(keyring_error(e)),
-            None => Ok(()),
-        }
+fn fail_if(failure: &Mutex<Option<String>>) -> ProviderResult<()> {
+    match failure.lock().unwrap().clone() {
+        Some(e) => Err(keyring_error(e)),
+        None => Ok(()),
     }
 }
 
 #[async_trait]
 impl CredentialStore for MemoryStore {
     async fn load(&self, provider_id: &str) -> ProviderResult<Option<Credentials>> {
-        self.fail()?;
+        fail_if(&self.failure)?;
         let saved = self.saved.lock().unwrap().get(provider_id).cloned();
         saved
             .map(|json| Credentials::from_json(json.as_bytes()))
@@ -200,7 +206,8 @@ impl CredentialStore for MemoryStore {
     }
 
     async fn save(&self, provider_id: &str, credentials: &Credentials) -> ProviderResult<()> {
-        self.fail()?;
+        fail_if(&self.failure)?;
+        fail_if(&self.save_failure)?;
         self.saved
             .lock()
             .unwrap()
@@ -209,7 +216,7 @@ impl CredentialStore for MemoryStore {
     }
 
     async fn delete(&self, provider_id: &str) -> ProviderResult<()> {
-        self.fail()?;
+        fail_if(&self.failure)?;
         self.saved.lock().unwrap().remove(provider_id);
         Ok(())
     }
@@ -284,6 +291,15 @@ mod tests {
         store.delete(&id).await.unwrap();
         assert_eq!(store.load(&id).await, Ok(None));
         store.delete(&id).await.unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_item_never_shows_its_contents() {
+        let err = Credentials::from_json(br#"{"secret": ["typed-secret"]}"#).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the system keyring: the saved credentials aren't in a form ReGa can read"
+        );
     }
 
     #[tokio::test]

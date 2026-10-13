@@ -46,6 +46,9 @@ pub struct Entry {
     /// Something the user should know about a signed-in cloud, such as its
     /// credentials not being saved.
     pub warning: Option<String>,
+    /// Connecting again might sign in: the saved credentials didn't work,
+    /// or the keyring couldn't be read or cleared.
+    pub can_reconnect: bool,
 }
 
 impl Entry {
@@ -60,6 +63,7 @@ impl Entry {
             fields: rega_core::aws::credential_fields(),
             saved: None,
             warning: None,
+            can_reconnect: false,
         }
     }
 
@@ -160,6 +164,7 @@ impl Registry {
             fields: connector.credential_fields(),
             saved: None,
             warning: None,
+            can_reconnect: false,
         }
     }
 
@@ -172,6 +177,7 @@ impl Registry {
             fields: connector.credential_fields(),
             saved: None,
             warning: None,
+            can_reconnect: false,
         }
     }
 
@@ -191,20 +197,26 @@ impl Registry {
                 )
             }
             Err(e) => {
-                return Self::demo(
-                    connector,
-                    format!("Couldn't read the saved {name} credentials: {e}"),
-                )
+                return Entry {
+                    can_reconnect: true,
+                    ..Self::demo(
+                        connector,
+                        format!("Couldn't read the saved {name} credentials: {e}"),
+                    )
+                }
             }
         };
         let fields = connector.credential_fields();
         let saved = Some(visible(&fields, &credentials));
         let entry = match connector.connect(&credentials).await {
             Ok(provider) => Self::live(connector, provider),
-            Err(e) => Self::demo(
-                connector,
-                format!("Couldn't sign in to {name} with the saved credentials: {e}"),
-            ),
+            Err(e) => Entry {
+                can_reconnect: true,
+                ..Self::demo(
+                    connector,
+                    format!("Couldn't sign in to {name} with the saved credentials: {e}"),
+                )
+            },
         };
         Entry { saved, ..entry }
     }
@@ -234,7 +246,8 @@ impl Registry {
     /// Signs in to `provider_id` with `credentials` and, once the cloud has
     /// accepted them, saves them in place of what was saved before. Nothing
     /// changes when the cloud refuses them. If they can't be saved, the
-    /// cloud stays signed in for now, with a warning.
+    /// cloud stays signed in for now, with a warning, and what was saved
+    /// before is removed so the next start doesn't quietly use it.
     pub async fn sign_in(
         &self,
         provider_id: &str,
@@ -256,31 +269,53 @@ impl Registry {
         match self.store.save(provider_id, &credentials).await {
             Ok(()) => entry.saved = Some(visible(&fields, &credentials)),
             Err(e) => {
-                entry.warning = Some(format!(
-                    "Signed in, but the credentials couldn't be saved, so ReGa \
-                     will ask for them again next time: {e}"
-                ))
+                entry.warning = Some(match self.store.delete(provider_id).await {
+                    Ok(()) => format!(
+                        "Signed in, but the credentials couldn't be saved, so \
+                         ReGa will ask for them again next time: {e}"
+                    ),
+                    Err(_) => format!(
+                        "Signed in, but the credentials couldn't be saved, and \
+                         any saved before couldn't be removed, so ReGa may sign \
+                         in with those next time: {e}"
+                    ),
+                })
             }
         }
         Ok(self.replace(entry))
     }
 
     /// Forgets the credentials saved for `provider_id` and goes back to
-    /// sample data. Machines in the account are left alone.
+    /// sample data. Machines in the account are left alone. It signs out
+    /// even when the keyring can't forget them, saying so.
     pub async fn sign_out(&self, provider_id: &str) -> Result<Arc<Entry>, String> {
         let _one_at_a_time = self.changing.lock().await;
         let connector = self.connector(provider_id)?;
-        if !self.demo_only {
-            self.store
-                .delete(provider_id)
-                .await
-                .map_err(|e| format!("Couldn't forget the credentials: {e}"))?;
-        }
-        let reason = format!(
-            "Signed out. Enter your {} credentials to use your account.",
-            connector.display_name()
-        );
-        Ok(self.replace(Self::demo(connector.as_ref(), reason)))
+        let name = connector.display_name();
+        let forgotten = if self.demo_only {
+            Ok(())
+        } else {
+            self.store.delete(provider_id).await
+        };
+        let entry = match forgotten {
+            Ok(()) => Self::demo(
+                connector.as_ref(),
+                format!("Signed out. Enter your {name} credentials to use your account."),
+            ),
+            // Still saved, so the page offers to sign out again.
+            Err(e) => Entry {
+                saved: self.entry(provider_id).ok().and_then(|e| e.saved.clone()),
+                can_reconnect: true,
+                ..Self::demo(
+                    connector.as_ref(),
+                    format!(
+                        "Signed out, but the saved credentials couldn't be removed, \
+                         so ReGa may sign in with them next time: {e}"
+                    ),
+                )
+            },
+        };
+        Ok(self.replace(entry))
     }
 
     pub fn set(&self, entries: Vec<Entry>) {
@@ -357,8 +392,13 @@ mod tests {
         }
 
         fn good(&self) -> Credentials {
+            self.good_as("typed-key-id")
+        }
+
+        /// Another access key it accepts, as for a second account.
+        fn good_as(&self, key_id: &str) -> Credentials {
             Credentials::new([
-                ("access_key_id", "typed-key-id"),
+                ("access_key_id", key_id),
                 ("secret_access_key", self.accepted.as_str()),
             ])
         }
@@ -423,6 +463,7 @@ mod tests {
             Some("Enter your AWS credentials to use your account.")
         );
         assert!(e.saved.is_none());
+        assert!(!e.can_reconnect);
         assert_eq!(e.fields, rega_core::aws::credential_fields());
         // Not even an attempt with whatever the computer might have.
         assert!(cloud.tries.lock().unwrap().is_empty());
@@ -454,8 +495,10 @@ mod tests {
             e.demo_reason(),
             Some("Couldn't sign in to AWS with the saved credentials: InvalidClientTokenId")
         );
-        // Still saved, so the page offers to change them or sign out.
+        // Still saved, so the page offers to change them or sign out, or
+        // to try again.
         assert!(e.saved.is_some());
+        assert!(e.can_reconnect);
     }
 
     #[tokio::test]
@@ -469,6 +512,8 @@ mod tests {
             Some("Couldn't read the saved AWS credentials: the system keyring: no Secret Service")
         );
         assert!(cloud.tries.lock().unwrap().is_empty());
+        // Unlocking the keyring might work next time.
+        assert!(entries[0].can_reconnect);
     }
 
     #[tokio::test]
@@ -510,18 +555,53 @@ mod tests {
     async fn credentials_that_cant_be_saved_still_sign_in_for_now() {
         let cloud = FakeCloud::new();
         let store = Arc::new(MemoryStore::default());
+        store.save("aws", &cloud.good()).await.unwrap();
         let reg = registry(&cloud, &store, false);
-        *store.failure.lock().unwrap() = Some("locked".into());
-        let e = reg.sign_in("aws", cloud.good()).await.unwrap();
+        reg.connect().await;
+
+        *store.save_failure.lock().unwrap() = Some("disk full".into());
+        let e = reg
+            .sign_in("aws", cloud.good_as("other-key-id"))
+            .await
+            .unwrap();
         assert!(live(&e));
         assert!(e.saved.is_none());
         assert_eq!(
             e.warning.as_deref(),
             Some(
                 "Signed in, but the credentials couldn't be saved, so ReGa will ask \
-                 for them again next time: the system keyring: locked"
+                 for them again next time: the system keyring: disk full"
             )
         );
+        // The earlier account's credentials are gone, so the next start
+        // doesn't sign in to it without asking.
+        assert_eq!(store.load("aws").await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn a_keyring_that_cant_save_or_remove_says_the_old_ones_may_be_used() {
+        let cloud = FakeCloud::new();
+        let store = Arc::new(MemoryStore::default());
+        store.save("aws", &cloud.good()).await.unwrap();
+        let reg = registry(&cloud, &store, false);
+        reg.connect().await;
+
+        *store.failure.lock().unwrap() = Some("locked".into());
+        let e = reg
+            .sign_in("aws", cloud.good_as("other-key-id"))
+            .await
+            .unwrap();
+        assert!(live(&e));
+        assert_eq!(
+            e.warning.as_deref(),
+            Some(
+                "Signed in, but the credentials couldn't be saved, and any saved \
+                 before couldn't be removed, so ReGa may sign in with those next \
+                 time: the system keyring: locked"
+            )
+        );
+        *store.failure.lock().unwrap() = None;
+        assert_eq!(store.load("aws").await, Ok(Some(cloud.good())));
     }
 
     #[tokio::test]
@@ -535,12 +615,42 @@ mod tests {
         let e = reg.sign_out("aws").await.unwrap();
         assert!(!live(&e));
         assert!(e.saved.is_none());
+        assert!(!e.can_reconnect);
         assert_eq!(store.load("aws").await, Ok(None));
         assert!(!live(&reg.entry("aws").unwrap()));
         // The next start doesn't sign in either.
         reg.connect().await;
         assert!(!live(&reg.entry("aws").unwrap()));
         assert_eq!(cloud.tries.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn signing_out_works_even_when_the_keyring_cant_forget() {
+        let cloud = FakeCloud::new();
+        let store = Arc::new(MemoryStore::default());
+        store.save("aws", &cloud.good()).await.unwrap();
+        let reg = registry(&cloud, &store, false);
+        reg.connect().await;
+
+        *store.failure.lock().unwrap() = Some("locked".into());
+        let e = reg.sign_out("aws").await.unwrap();
+        assert!(!live(&e));
+        assert!(!live(&reg.entry("aws").unwrap()));
+        assert_eq!(
+            e.demo_reason(),
+            Some(
+                "Signed out, but the saved credentials couldn't be removed, so ReGa \
+                 may sign in with them next time: the system keyring: locked"
+            )
+        );
+        // Still saved, so the page offers to sign out again.
+        assert!(e.saved.is_some());
+        assert!(e.can_reconnect);
+
+        *store.failure.lock().unwrap() = None;
+        let e = reg.sign_out("aws").await.unwrap();
+        assert!(e.saved.is_none());
+        assert_eq!(store.load("aws").await, Ok(None));
     }
 
     #[tokio::test]

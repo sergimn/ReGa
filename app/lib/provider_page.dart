@@ -104,6 +104,9 @@ class _ProviderPageState extends State<ProviderPage> {
 
   /// Why signing out failed.
   Object? _accountError;
+
+  /// A sign-out is on its way, so the account can't change meanwhile.
+  bool _signingOut = false;
   List<OrphanSummary> _orphans = const [];
   bool _deletingOrphans = false;
 
@@ -367,13 +370,16 @@ class _ProviderPageState extends State<ProviderPage> {
   /// Asks for credentials and signs in with them.
   Future<void> _enterCredentials() async {
     setState(() => _accountError = null);
+    // The core has signed in by the time the dialog closes, so the app
+    // hears about it even if this page has gone in the meantime.
+    final changed = widget.onProviderChanged;
     final info = await showDialog<ProviderInfo>(
       context: context,
       barrierDismissible: false,
       builder: (context) =>
           CredentialsDialog(backend: _backend, provider: widget.provider),
     );
-    if (info != null && mounted) widget.onProviderChanged?.call(info);
+    if (info != null) changed?.call(info);
   }
 
   Future<void> _signOut() async {
@@ -386,13 +392,17 @@ class _ProviderPageState extends State<ProviderPage> {
       'Sign out',
     );
     if (!ok || !mounted) return;
-    setState(() => _accountError = null);
+    setState(() {
+      _accountError = null;
+      _signingOut = true;
+    });
+    final changed = widget.onProviderChanged;
     try {
-      final info = await _backend.forgetCredentials(_id);
-      if (mounted) widget.onProviderChanged?.call(info);
+      changed?.call(await _backend.forgetCredentials(_id));
     } catch (e) {
       if (mounted) setState(() => _accountError = e);
     }
+    if (mounted) setState(() => _signingOut = false);
   }
 
   /// Who the page is signed in as, or why it shows sample data, and the
@@ -400,7 +410,8 @@ class _ProviderPageState extends State<ProviderPage> {
   Widget _account(ThemeData theme) {
     final p = widget.provider;
     // Switching accounts in the middle of a change would lose track of it.
-    final idle = !_changing && !_deletingOrphans && _playing == null;
+    final idle =
+        !_changing && !_deletingOrphans && _playing == null && !_signingOut;
     final saved = p.hasCredentials || !p.demo;
     final title = p.demo
         ? p.notice ?? 'Enter your ${p.name} credentials to use your account.'
@@ -417,6 +428,8 @@ class _ProviderPageState extends State<ProviderPage> {
                 color: theme.colorScheme.primary,
               ),
               const SizedBox(width: 16),
+              // The buttons go under the text, so they wrap rather than
+              // run off a narrow window.
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -428,38 +441,38 @@ class _ProviderPageState extends State<ProviderPage> {
                         key: const ValueKey('account-warning'),
                         style: TextStyle(color: theme.colorScheme.error),
                       ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        if (p.canReconnect && widget.onReconnect != null)
+                          TextButton(
+                            key: const ValueKey('reconnect'),
+                            onPressed: idle ? widget.onReconnect : null,
+                            child: const Text('Reconnect'),
+                          ),
+                        if (saved)
+                          TextButton(
+                            key: const ValueKey('change-credentials'),
+                            onPressed: idle ? _enterCredentials : null,
+                            child: const Text('Change credentials'),
+                          )
+                        else
+                          FilledButton(
+                            key: const ValueKey('enter-credentials'),
+                            onPressed: idle ? _enterCredentials : null,
+                            child: const Text('Enter credentials'),
+                          ),
+                        if (saved)
+                          TextButton(
+                            key: const ValueKey('sign-out'),
+                            onPressed: idle ? _signOut : null,
+                            child: const Text('Sign out'),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              Wrap(
-                spacing: 8,
-                children: [
-                  if (p.demo && p.hasCredentials && widget.onReconnect != null)
-                    TextButton(
-                      key: const ValueKey('reconnect'),
-                      onPressed: idle ? widget.onReconnect : null,
-                      child: const Text('Reconnect'),
-                    ),
-                  if (saved)
-                    TextButton(
-                      key: const ValueKey('change-credentials'),
-                      onPressed: idle ? _enterCredentials : null,
-                      child: const Text('Change credentials'),
-                    )
-                  else
-                    FilledButton(
-                      key: const ValueKey('enter-credentials'),
-                      onPressed: idle ? _enterCredentials : null,
-                      child: const Text('Enter credentials'),
-                    ),
-                  if (saved)
-                    TextButton(
-                      key: const ValueKey('sign-out'),
-                      onPressed: idle ? _signOut : null,
-                      child: const Text('Sign out'),
-                    ),
-                ],
               ),
             ],
           ),

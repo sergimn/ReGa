@@ -18,8 +18,9 @@
       WireGuard tunnel.
     </p>
     <p>
-      It reads your AWS credentials from ~/.aws. Without them it shows
-      sample data.
+      You enter your AWS access key in the app, which keeps it in the
+      system keyring. It never uses credentials found elsewhere on the
+      computer, such as ~/.aws. Until you enter a key it shows sample data.
     </p>
   </description>
   <url type="homepage">https://github.com/sergimn/ReGa</url>

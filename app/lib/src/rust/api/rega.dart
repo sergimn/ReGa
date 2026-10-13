@@ -384,6 +384,10 @@ class ProviderInfo {
   /// failed), so it can offer to sign out.
   final bool hasCredentials;
 
+  /// Connecting again might sign in, such as once the keyring is
+  /// unlocked, so it can offer to reconnect.
+  final bool canReconnect;
+
   /// Who it's signed in as, such as an IAM user and its account.
   final String? signedInAs;
 
@@ -394,6 +398,7 @@ class ProviderInfo {
     this.notice,
     required this.credentialFields,
     required this.hasCredentials,
+    required this.canReconnect,
     this.signedInAs,
   });
 
@@ -405,6 +410,7 @@ class ProviderInfo {
       notice.hashCode ^
       credentialFields.hashCode ^
       hasCredentials.hashCode ^
+      canReconnect.hashCode ^
       signedInAs.hashCode;
 
   @override
@@ -418,6 +424,7 @@ class ProviderInfo {
           notice == other.notice &&
           credentialFields == other.credentialFields &&
           hasCredentials == other.hasCredentials &&
+          canReconnect == other.canReconnect &&
           signedInAs == other.signedInAs;
 }
 

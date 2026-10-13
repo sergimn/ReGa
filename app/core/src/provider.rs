@@ -11,8 +11,6 @@ use crate::stream::StreamTarget;
 pub enum ProviderError {
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
-    #[error("no credentials entered for {0}")]
-    MissingCredentials(String),
     /// Reading or writing the system keyring failed.
     #[error("the system keyring: {0}")]
     Keyring(String),

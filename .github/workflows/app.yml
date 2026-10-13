@@ -150,7 +150,7 @@ jobs:
         run: python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
       - name: End-to-end test against the Rust core
         run: xvfb-run -a flutter test integration_test -d linux
-        # Demo data, without even trying the AWS credential chain.
+        # Demo data, leaving the keyring alone.
         env:
           REGA_DEMO: '1'
       # Artifacts drop file permissions, so ship the bundle as a tarball.
