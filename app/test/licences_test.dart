@@ -103,39 +103,51 @@ void main() {
       licenceFolder('/src/app/build/linux/x64/release/bundle/rega', {}),
       '/src/app/build/linux/x64/release/licenses',
     );
+    // A build run from inside another app's sandbox.
+    expect(
+      licenceFolder('/src/app/build/linux/x64/release/bundle/rega', {
+        'FLATPAK_ID': 'org.example.Editor',
+      }),
+      '/src/app/build/linux/x64/release/licenses',
+    );
   });
 
   test('each Rust crate gets its licence and the texts it ships', () {
     final entries = _read(rustCrateLicences(_renderCrates()));
-    final apache = entries.where((e) => e.$2.contains('Apache License'));
 
     expect(entries.where((e) => e.$1.contains('serde')).map((e) => e.$2), [
       'serde 1.0.228, a Rust crate in ReGa\'s core, is under MIT OR Apache-2.0.',
-      startsWith('Apache License'),
-      startsWith('MIT License'),
+      startsWith('serde 1.0.228: LICENSE-APACHE\nApache License'),
+      startsWith('serde 1.0.228: LICENSE-MIT\nMIT License'),
     ]);
-    // A text several crates ship is listed once, under each of them.
-    expect(apache.single.$1, ['base64', 'serde']);
-    expect(
-      entries.where((e) => e.$1.contains('base64')).map((e) => e.$2),
-      contains(
-        'base64 0.23.1, a Rust crate in ReGa\'s core, is under '
-        'MIT OR Apache-2.0.',
+    // Each version of a crate that ships a text, once over the text.
+    expect(entries.where((e) => e.$1.contains('base64')).map((e) => e.$2), [
+      'base64 0.22.1, a Rust crate in ReGa\'s core, is under '
+          'MIT OR Apache-2.0.',
+      'base64 0.23.1, a Rust crate in ReGa\'s core, is under '
+          'MIT OR Apache-2.0.',
+      startsWith(
+        'base64 0.22.1: LICENSE-APACHE\nbase64 0.23.1: LICENSE-APACHE\n'
+        'Apache License',
       ),
-    );
+    ]);
+    expect(entries.every((e) => e.$1.length == 1), isTrue);
     expect(
       entries.where((e) => e.$1.contains('boringtun')).last.$2,
-      startsWith('Copyright (c) 2017 Someone\nRedistribution'),
+      'boringtun 0.7.1: app/flatpak/rust-licenses/boringtun/LICENSE, from its '
+      'repository at 051c9d4\n'
+      'Copyright (c) 2017 Someone\n'
+      'Redistribution and use in source and binary forms...',
     );
-    // The centred title stays centred, and nothing of the file's own
-    // header or rules leaks into a text.
-    final title = rustCrateLicences(_renderCrates())
-        .firstWhere(
-          (e) => e.packages.contains('serde') && e.packages.length > 1,
-        )
-        .paragraphs
-        .first;
-    expect(title.indent, LicenseParagraph.centeredIndent);
+    // The file's line stands alone over the text, whose centred title
+    // stays centred; nothing of the file's own header or rules leaks in.
+    final apache = rustCrateLicences(_renderCrates())
+        .where((e) => e.packages.contains('serde'))
+        .elementAt(1)
+        .paragraphs;
+    expect(apache.first.text, 'serde 1.0.228: LICENSE-APACHE');
+    expect(apache.first.indent, 0);
+    expect(apache.elementAt(1).indent, LicenseParagraph.centeredIndent);
     for (final (_, text) in entries) {
       expect(text, isNot(contains('=====')));
       expect(text, isNot(contains('-----')));
@@ -179,7 +191,15 @@ void main() {
     expect(sections.first, 'Copyright notices for The Rust Standard Library');
     expect(sections.length, greaterThan(5));
     for (final section in sections) {
-      expect(section, isNot(matches(RegExp(r'</?[a-z][a-z0-9]*[ >]'))));
+      // Tags the page uses, not text like "<year>" in a licence template.
+      expect(
+        section,
+        isNot(
+          matches(
+            RegExp(r'</?(a|b|code|details|div|h[1-6]|li|p|pre|summary|ul)[ >]'),
+          ),
+        ),
+      );
       expect(section, isNot(contains('&#')));
     }
   }, skip: stdNotices == null ? 'no Rust toolchain' : false);
@@ -198,8 +218,15 @@ void main() {
       write(rustCratesFile, _renderCrates());
       write(rustStdFile, _stdHtml);
       write('terraform/LICENSE.txt', 'Business Source License 1.1\n');
-      write('aws-logo.md', '# AWS logo\n\nAWS is a trademark.\n');
+      write(
+        'aws-logo.md',
+        '# AWS logo\n\nAWS is a trademark.\n\n## Source\n\nsha256 0123\n',
+      );
       write('notes/other.txt', 'Something else\n');
+      // The copies flatpak-builder makes of each module's licence files.
+      write('rega/LICENSE', regaLicence);
+      write('terraform/LICENSE_1', 'Business Source License 1.1\n');
+      write('rega/licenses_rust-crates.txt', _renderCrates());
 
       final entries = _read(await regaLicences(folder.path).toList());
       final packages = {for (final (p, _) in entries) ...p};
@@ -219,9 +246,24 @@ void main() {
       });
       expect(entries.where((e) => e.$1.contains(rustStdPackage)), hasLength(4));
       expect(
-        entries.firstWhere((e) => e.$1.contains('Terraform')).$2,
+        entries.singleWhere((e) => e.$1.contains('Terraform')).$2,
         'Business Source License 1.1',
       );
+      expect(
+        entries.singleWhere((e) => e.$1.contains('AWS logo')).$2,
+        'AWS is a trademark.',
+      );
+      expect(entries.where((e) => e.$1.contains('serde')), hasLength(3));
+
+      // Off the UI's isolate, the same.
+      final background = _read(
+        await regaLicencesInBackground(folder.path).toList(),
+      );
+      expect(background, hasLength(entries.length));
+      for (final (i, (packages, text)) in background.indexed) {
+        expect(packages, entries[i].$1);
+        expect(text, entries[i].$2);
+      }
     });
 
     test('says when a build has no Rust notices', () async {

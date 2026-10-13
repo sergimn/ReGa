@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 
@@ -32,23 +33,29 @@ SOFTWARE.
 const rustCratesFile = 'rust-crates.txt';
 const rustStdFile = 'rust-std.html';
 
+/// The AWS logo's README, where it comes from and on what terms.
+const _awsLogoFile = 'aws-logo.md';
+
 /// The name the licence list gives a file in the licence folder, where its
 /// path alone wouldn't say what it is about.
-const _names = {
-  'terraform/LICENSE.txt': 'Terraform',
-  'aws-logo.md': 'AWS logo',
-};
+const _names = {'terraform/LICENSE.txt': 'Terraform', _awsLogoFile: 'AWS logo'};
 
 /// The package the standard library's notices are listed under.
 const rustStdPackage = 'Rust standard library';
 
+/// ReGa's Flatpak app id.
+const regaAppId = 'io.github.sergimn.rega';
+
 /// Where the licence notices that ship with ReGa are, for the program at
 /// [executable]. The Flatpak installs them in `/app/share/licenses/<app id>`;
-/// a build of the app finds the ones `flatpak/rust_notices.py write` put
-/// next to its bundle (build/linux/x64/release/licenses, as CI does).
+/// another build finds the ones `flatpak/rust_notices.py write` put next to
+/// its bundle, in build/linux/x64/release/licenses for a release build.
 String licenceFolder(String executable, Map<String, String> environment) {
-  final app = environment['FLATPAK_ID'];
-  if (app != null && app.isNotEmpty) return '/app/share/licenses/$app';
+  // Only in ReGa's own sandbox: a build started from inside another Flatpak
+  // (a terminal in an IDE's, say) has that app's id.
+  if (environment['FLATPAK_ID'] == regaAppId) {
+    return '/app/share/licenses/$regaAppId';
+  }
   return '${File(executable).parent.parent.path}/licenses';
 }
 
@@ -60,8 +67,15 @@ void registerLicences() {
     Platform.resolvedExecutable,
     Platform.environment,
   );
-  LicenseRegistry.addLicense(() => regaLicences(folder));
+  LicenseRegistry.addLicense(() => regaLicencesInBackground(folder));
 }
+
+/// [regaLicences], read and taken apart on an isolate of their own, as
+/// Flutter does with its own: the standard library's notices alone are over
+/// a megabyte, and the licence page would stall while they're split up.
+Stream<LicenseEntry> regaLicencesInBackground(String folder) =>
+    Stream.fromFuture(Isolate.run(() => regaLicences(folder).toList()))
+        .expand((entries) => entries);
 
 /// ReGa's licence, then those of everything in [folder]: each Rust crate's
 /// texts under its own name, the standard library's notices, and any other
@@ -89,9 +103,16 @@ Stream<LicenseEntry> regaLicences(String folder) async* {
       'licences" in app/flatpak/README.md.',
     );
   }
-  for (final name in files.keys.toList()..sort()) {
-    // ReGa's own, which comes first above.
-    if (name == 'LICENSE') continue;
+  // The files this knows first, then the rest by path. flatpak-builder
+  // also copies each module's licence files into a folder of the module's
+  // name (rega/LICENSE, terraform/LICENSE_1), so a file that is word for
+  // word one listed already is left out.
+  final known = [rustCratesFile, rustStdFile, ..._names.keys];
+  final listed = {regaLicence};
+  for (final name in [
+    ...known.where(files.containsKey),
+    ...files.keys.where((name) => !known.contains(name)).toList()..sort(),
+  ]) {
     final String text;
     try {
       text = utf8.decode(
@@ -104,6 +125,7 @@ Stream<LicenseEntry> regaLicences(String folder) async* {
       ], 'Couldn\'t read $folder/$name: ${e.message}');
       continue;
     }
+    if (!listed.add(text)) continue;
     switch (name) {
       case rustCratesFile:
         yield* Stream.fromIterable(rustCrateLicences(text));
@@ -111,10 +133,48 @@ Stream<LicenseEntry> regaLicences(String folder) async* {
         for (final section in htmlSections(text)) {
           yield LicenseEntryWithLineBreaks([rustStdPackage], section);
         }
+      case _awsLogoFile:
+        yield LicenseEntryWithLineBreaks([_names[name]!], _markdownIntro(text));
       default:
         yield LicenseEntryWithLineBreaks([_names[name] ?? name], text);
     }
   }
+}
+
+/// A Markdown file's text up to its first `##` heading, without its title:
+/// for the AWS logo's README, the notice, without how to draw the logo
+/// again. The whole text if that leaves nothing.
+String _markdownIntro(String text) {
+  final lines = const LineSplitter().convert(text);
+  final end = lines.indexWhere((line) => line.startsWith('## '));
+  final intro = _withoutBlankEnds([
+    for (final line in end < 0 ? lines : lines.sublist(0, end))
+      if (!line.startsWith('# ')) line,
+  ]);
+  return intro.isEmpty ? text : intro;
+}
+
+/// A licence text that a crate ships, under the files it ships it in.
+class _ShippedText extends LicenseEntry {
+  const _ShippedText(this.crate, this.files, this.text);
+
+  final String crate;
+
+  /// `serde 1.0.228: LICENSE-MIT`, one for each version of the crate that
+  /// ships the text.
+  final List<String> files;
+
+  /// The text, shared by every crate that ships it word for word.
+  final LicenseEntryWithLineBreaks text;
+
+  @override
+  Iterable<String> get packages => [crate];
+
+  @override
+  Iterable<LicenseParagraph> get paragraphs => [
+    for (final file in files) LicenseParagraph(file, 0),
+    ...text.paragraphs,
+  ];
 }
 
 final _rule = '=' * 78;
@@ -125,9 +185,10 @@ final _listed = RegExp(r'^(\S+) (\S+) {2,}(\S.*)$');
 final _shipper = RegExp(r'^(\S+) (\S+): \S');
 
 /// The entries for the crates in a `rust-crates.txt`: one per crate with
-/// its version and licence, and each licence text under every crate that
-/// ships it. A file that doesn't read the way rust_notices.py writes it is
-/// listed whole, under "Rust crates", so no notice is ever lost.
+/// its version and licence, then the licence texts it ships, each under
+/// the file it came from (vendored code's say whose they are). A file that
+/// doesn't read the way rust_notices.py writes it is listed whole, under
+/// "Rust crates", so no notice is ever lost.
 List<LicenseEntry> rustCrateLicences(String text) {
   final lines = const LineSplitter().convert(text);
   final crates = lines.indexOf('Crates');
@@ -166,14 +227,19 @@ List<LicenseEntry> rustCrateLicences(String text) {
   for (final (n, start) in starts.indexed) {
     final stop = n + 1 < starts.length ? starts[n + 1] - 1 : lines.length;
     var line = start + 1;
-    final packages = <String>{};
+    // The lines naming each crate's files, by crate.
+    final files = <String, List<String>>{};
     for (; lines[line] != _thinRule; line++) {
-      packages.add(_shipper.firstMatch(lines[line])![1]!);
+      final crate = _shipper.firstMatch(lines[line])![1]!;
+      (files[crate] ??= []).add(lines[line]);
     }
     final body = _withoutBlankEnds(lines.sublist(line + 1, stop));
     if (body.isEmpty) continue;
-    shipping.addAll(packages);
-    entries.add(LicenseEntryWithLineBreaks(packages.toList(), body));
+    shipping.addAll(files.keys);
+    final shared = LicenseEntryWithLineBreaks(const [], body);
+    for (final MapEntry(key: crate, value: from) in files.entries) {
+      entries.add(_ShippedText(crate, from, shared));
+    }
   }
 
   if (listed.isEmpty || !shipping.containsAll(listed)) {

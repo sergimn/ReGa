@@ -115,6 +115,7 @@ Copyright (c) 2014 The serde developers
       ),
       findsOneWidget,
     );
+    expect(find.text('serde 1.0.228: LICENSE-MIT'), findsOneWidget);
     expect(
       find.text('Copyright (c) 2014 The serde developers'),
       findsOneWidget,
