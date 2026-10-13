@@ -14,14 +14,14 @@ on:
   workflow_call:
     inputs:
       release:
-        description: Build what gets published, from a cold start (no caches).
+        description: Run as for a release, from a cold start (no caches).
         type: boolean
         default: false
   # To try a release build, uncached, without tagging anything.
   workflow_dispatch:
     inputs:
       release:
-        description: Build what gets published, from a cold start (no caches).
+        description: Run as for a release, from a cold start (no caches).
         type: boolean
         default: false
 
@@ -76,8 +76,7 @@ jobs:
           ansible-galaxy collection install -r requirements.yml
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The Flutter job writes them for the Flatpak; this says sooner when
-      # one can't be.
+      # The Flatpak build writes them; this says sooner when one can't be.
       - name: Every crate has a licence text to ship
         run: python3 flatpak/rust_notices.py check
       # For tests/tunnel.rs: a WireGuard server set up like a ReGa machine,
@@ -127,8 +126,7 @@ jobs:
           ln -s "$sysroot" "$(dirname "$sysroot")/stable-$(rustc -vV | sed -n 's/^host: //p')"
           rustup run stable rustc --version | grep -F "rustc $RUST_VERSION "
       # cargokit builds the Rust core inside Flutter's build folder. A
-      # release builds without caches, so nothing an earlier run left in one
-      # ends up in the bundle it publishes.
+      # release runs without caches, as the Flatpak job always does.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !inputs.release }}
         with:
@@ -145,26 +143,18 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build linux --release
-      # For the Flatpak, next to the bundle (see flatpak/README.md).
-      - name: Licence texts of the Rust crates and standard library
-        run: python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
       - name: End-to-end test against the Rust core
         run: xvfb-run -a flutter test integration_test -d linux
         # Demo data, leaving the keyring alone.
         env:
           REGA_DEMO: '1'
-      # Artifacts drop file permissions, so ship the bundle as a tarball.
-      - run: tar -C build/linux/x64/release -czf rega-linux-x64.tar.gz bundle licenses
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rega-linux-x64
-          path: app/rega-linux-x64.tar.gz
 
   flatpak:
     name: Flatpak
-    needs: flutter
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Builds the app from source, as Flathub would: the Flutter SDK, the Rust
+    # toolchain and every crate and Dart package, with no network.
+    timeout-minutes: 60
     container:
       # Built 2026-09-22, under the 30 days the rest of the repo waits: the
       # registry only lists this tag's current digest, so no older one could
@@ -176,17 +166,21 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: rega-linux-x64
-          path: app
-      - run: mkdir -p build/linux/x64/release && tar -C build/linux/x64/release -xzf rega-linux-x64.tar.gz
+      - name: Sources of the crates and Dart packages in the locks
+        run: python3 flatpak/sources.py write
       - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
         with:
           bundle: rega.flatpak
           manifest-path: app/flatpak/io.github.sergimn.rega.yml
           artifact-name: rega-flatpak
           cache: false
+      # The checks Flathub runs on a submission, from the image's linter, less
+      # the one that only Flathub's own build can pass (lint-exceptions.json).
+      - name: Flathub's linter
+        run: |
+          flatpak-builder-lint --gha-format manifest flatpak/io.github.sergimn.rega.yml
+          flatpak-builder-lint --gha-format --exceptions --user-exceptions flatpak/lint-exceptions.json \
+            builddir ../flatpak_app
 
   flatpak-metadata:
     name: Flatpak pins and metadata
@@ -198,9 +192,11 @@ jobs:
           persist-credentials: false
       - name: Bundled tools match the repo's pins
         run: python3 flatpak/pins.py check
+      - name: The Flatpak builds with CI's Flutter and Rust, from offline sources
+        run: python3 flatpak/sources.py check
       - name: The version agrees everywhere and has release notes
         run: python3 flatpak/release.py check
-      - name: Pin and release check tests
+      - name: Pin, source and release check tests
         run: python3 -m unittest discover -s flatpak -v
       - name: Validate the desktop file and metainfo
         run: |

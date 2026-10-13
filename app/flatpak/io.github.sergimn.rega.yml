@@ -1,10 +1,14 @@
-# Packages the Flutter release bundle built by `flutter build linux --release`,
-# and the licence notices of the Rust code in it, which rust_notices.py writes
-# next to it. Build from app/: see flatpak/README.md.
+# Builds the app from source, with no network, from sources pinned by hash:
+# the Flutter SDK and Rust toolchain CI uses (flutter.yml and rust.yml), and
+# the Dart packages and crates in the app's locks (generated/, which
+# `sources.py write` makes). Build from app/: see flatpak/README.md.
 id: io.github.sergimn.rega
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
+# Flutter builds the app's runner with clang.
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.llvm21
 command: rega
 finish-args:
   - --share=ipc
@@ -35,45 +39,79 @@ modules:
   # Ansible configures a machine after Terraform makes it. Generated from
   # infra/ansible's pins by pins.py; CI fails when they drift apart.
   - ansible.yml
+  # The SDK and toolchain that build the app, at the versions CI uses. They
+  # go to /var/lib, which the Flatpak doesn't ship.
+  - flutter.yml
+  - rust.yml
   - name: rega
     buildsystem: simple
+    build-options:
+      # No CFLAGS, as in CI: aws-lc, in the Rust core, has to build its jitter
+      # entropy source with -O0, and the cc crate puts the SDK's -O2 after it.
+      cflags: ''
+      cflags-override: true
+      append-path: /usr/lib/sdk/llvm21/bin:/var/lib/flutter/bin:/var/lib/rust/bin
+      prepend-ld-library-path: /usr/lib/sdk/llvm21/lib
+      env:
+        PUB_CACHE: /run/build/rega/pub-cache
+        CARGO_HOME: /run/build/rega/cargo
+        CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - mkdir -p /app/lib/rega /app/bin
-      - cp -r bundle/. /app/lib/rega/
-      - ln -s /app/lib/rega/rega /app/bin/rega
-      - install -Dm644 LICENSE -t /app/share/licenses/io.github.sergimn.rega
+      - cd app && flutter pub get --offline --enforce-lockfile
+      - cd app && flutter build linux --release --no-pub
       # The Rust crates' and standard library's licences ask for their
       # notices to go with every copy.
-      - install -Dm644 licenses/rust-crates.txt licenses/rust-std.html -t /app/share/licenses/io.github.sergimn.rega
+      - cd app && python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
+      - mkdir -p /app/lib/rega /app/bin
+      - cp -r app/build/linux/x64/release/bundle/. /app/lib/rega/
+      - ln -s /app/lib/rega/rega /app/bin/rega
+      - install -Dm644 LICENSE -t /app/share/licenses/io.github.sergimn.rega
+      - install -Dm644 app/build/linux/x64/release/licenses/rust-crates.txt app/build/linux/x64/release/licenses/rust-std.html
+        -t /app/share/licenses/io.github.sergimn.rega
       # The AWS logo is AWS's trademark, not under ReGa's licence.
-      - install -Dm644 aws-logo.md -t /app/share/licenses/io.github.sergimn.rega
-      - install -Dm644 io.github.sergimn.rega.desktop -t /app/share/applications
-      - install -Dm644 io.github.sergimn.rega.metainfo.xml -t /app/share/metainfo
-      - install -Dm644 rega.svg /app/share/icons/hicolor/scalable/apps/io.github.sergimn.rega.svg
-      - for s in 64 128 256 512; do install -Dm644 rega-$s.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.sergimn.rega.png; done
+      - install -Dm644 app/assets/platforms/aws/README.md /app/share/licenses/io.github.sergimn.rega/aws-logo.md
+      - install -Dm644 app/flatpak/io.github.sergimn.rega.desktop -t /app/share/applications
+      - install -Dm644 app/flatpak/io.github.sergimn.rega.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 app/assets/icon/rega.svg /app/share/icons/hicolor/scalable/apps/io.github.sergimn.rega.svg
+      - for s in 64 128 256 512; do install -Dm644 app/assets/icon/rega-$s.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.sergimn.rega.png;
+        done
     sources:
+      # The app, and the Terraform module and Ansible playbook it compiles in.
+      # What local builds and runs leave in them stays out: build output,
+      # Terraform's state and providers, and a real inventory, which holds a
+      # password.
       - type: dir
-        path: ../build/linux/x64/release/bundle
-        dest: bundle
+        path: ..
+        dest: app
+        skip:
+          - .dart_tool
+          - .flatpak-builder
+          - .flutter-plugins-dependencies
+          - build
+          - coverage
+          - linux/flutter/ephemeral
+          - rust_builder/.dart_tool
+          - target
       - type: dir
-        path: ../build/linux/x64/release/licenses
-        dest: licenses
+        path: ../../infra/terraform/aws
+        dest: infra/terraform/aws
+        skip:
+          - .terraform
+          - terraform.tfstate
+          - terraform.tfstate.backup
+          - examples
+          - tests
+      - type: dir
+        path: ../../infra/ansible
+        dest: infra/ansible
+        skip:
+          - inventory.yml
+          - tests
       - type: file
         path: ../../LICENSE
-      - type: file
-        path: ../assets/platforms/aws/README.md
-        dest-filename: aws-logo.md
-      - type: file
-        path: io.github.sergimn.rega.desktop
-      - type: file
-        path: io.github.sergimn.rega.metainfo.xml
-      - type: file
-        path: ../assets/icon/rega.svg
-      - type: file
-        path: ../assets/icon/rega-64.png
-      - type: file
-        path: ../assets/icon/rega-128.png
-      - type: file
-        path: ../assets/icon/rega-256.png
-      - type: file
-        path: ../assets/icon/rega-512.png
+      # cargokit's build tool gets its Dart packages offline.
+      - type: patch
+        path: patches/cargokit-offline.patch
+        dest: app/rust_builder/cargokit
+      - generated/pub-sources.json
+      - generated/cargo-sources.json

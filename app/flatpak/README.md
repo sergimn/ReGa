@@ -29,7 +29,7 @@ page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 
 | Path in the sandbox | What |
 | --- | --- |
-| `/app/lib/rega`, `/app/bin/rega` | The Flutter release bundle with the Rust core |
+| `/app/lib/rega`, `/app/bin/rega` | The app: the Flutter release bundle with the Rust core, built in the Flatpak build |
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
 | `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock`; the app runs the playbook it carries with it |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
@@ -64,17 +64,24 @@ Things to know when the app runs these tools:
 
 ## Build
 
-The manifest packages the Flutter bundle that `flutter build linux` makes,
-rather than building the app from source inside flatpak-builder. So build
-that first, from `app/`:
+flatpak-builder builds the app from source, as Flathub would: with the
+Flutter SDK and Rust toolchain CI uses, and the crates and Dart packages in
+the app's locks. It downloads all of them first, checking each against its
+SHA-256 (Flutter's git repository, against its commit), and then builds
+with no network (see Sources below). From `app/`:
 
 ```sh
-flutter build linux --release
-python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
+python3 flatpak/sources.py write
 flatpak-builder --user --install --install-deps-from=flathub --force-clean \
   build/flatpak flatpak/io.github.sergimn.rega.yml
 dbus-run-session -- flatpak/smoke-test.sh
 ```
+
+`sources.py write` puts the sources of the crates and Dart packages in the
+locks in `flatpak/generated/`, which the manifest reads; run it again after
+a lock changes. The first build takes a while, since it builds Flutter's
+tool and then the whole Rust core; flatpak-builder caches each module, so a
+rebuild after a change to the app only redoes the app.
 
 The smoke test checks the installed app: the licences are there (the Rust
 crates' for the `Cargo.lock` you built from), Terraform and Ansible run in
@@ -83,7 +90,57 @@ the sandbox, the Windows collections are there, the playbooks in
 data, on a private Xvfb display over X11, whatever your desktop runs). It
 needs Xvfb and xdotool.
 
-## Pins
+CI also runs Flathub's linter, `flatpak-builder-lint`, on the manifest and
+the build. `lint-exceptions.json` leaves out the one check only Flathub's own
+build can pass: Flathub copies the screenshots to its server as it builds.
+The build still fetches the screenshot, from `docs/screenshot.png` on main,
+to describe the app to software centres; if it can't, the linter fails the
+build for having no screenshot.
+
+## Sources
+
+Every source of the build is pinned by hash, and none of them picks a
+version: they follow what CI builds with and the locks.
+
+| Source | What | Where it comes from |
+| --- | --- | --- |
+| `flutter.yml` | The Flutter SDK at `FLUTTER_VERSION`'s commit, what its tool downloads for a Linux release build (the Dart SDK, the engine, fonts), and the Dart packages the tool is built from | `sources.py update` |
+| `rust.yml` | Rust at `RUST_VERSION` (`rustc`, `cargo`, the standard library) | `sources.py update`, with the hashes in the release's channel manifest |
+| `generated/cargo-sources.json` | Every crate in `app/Cargo.lock`, vendored | `sources.py write`, with the lock's checksums |
+| `generated/pub-sources.json` | Every Dart package in `app/pubspec.lock` and in cargokit's `rust_builder/cargokit/build_tool/pubspec.lock` | `sources.py write`, with the locks' hashes. cargokit's build tool runs without its lock, so it may get the app's newer version of a package both have |
+
+`FLUTTER_VERSION` and `RUST_VERSION` are in `.github/workflows/app.yml`.
+After either changes, regenerate the two modules (this needs network and
+git, nothing else) and commit them:
+
+```sh
+python3 flatpak/sources.py update
+```
+
+Renovate's Flutter and Rust PRs say so, and `python3 flatpak/sources.py
+check` (CI runs it) fails until then. It also fails when a lock has
+something `write` can't make an offline source of, such as a git
+dependency, or when `flutter.yml` downloads another engine, fonts or Gradle
+wrapper than the ones its build checks Flutter's commit asks for. The
+generated files aren't committed, so Renovate's crate and Dart package
+updates need nothing by hand.
+
+The SDK and toolchain go in `/var/lib`, which the build of the app uses and
+the Flatpak doesn't ship. Three small things make the build work offline:
+
+- `patches/flutter-offline.patch`: the Flutter tool builds itself with
+  `dart pub upgrade`, which needs the network; this adds `--offline`. If a
+  new Flutter changes that line, `sources.py update` stops and says so.
+- `patches/cargokit-offline.patch`: the same for cargokit's build tool,
+  which builds the Rust core during `flutter build`.
+- `rustup.sh`: cargokit runs cargo through rustup, and the build has one
+  toolchain and no rustup, so this answers cargokit's few rustup calls.
+
+Flutter builds the app's runner with clang, from the
+`org.freedesktop.Sdk.Extension.llvm21` SDK extension, which comes from
+Flathub at its current 25.08 build, as the runtime does.
+
+## Ansible pins
 
 `ansible.yml` is generated: a wheel for every package in
 `infra/ansible/requirements.lock`, at the lock's version and with one of its
@@ -118,7 +175,7 @@ with every copy. `rust_notices.py write DIR` puts two files in `DIR`:
   toolchain that builds the core (`share/doc/rust/COPYRIGHT-library.html`
   in its sysroot).
 
-CI writes them after every build, from the crates cargo downloaded, so they
+The Flatpak build writes them, from the crates it builds with, so they
 always match `Cargo.lock` and Renovate's crate updates need nothing by hand.
 The smoke test checks the installed `rust-crates.txt` was written for the
 `Cargo.lock` of your checkout.
@@ -153,8 +210,12 @@ crates in the build today ship all of theirs.
   Moonlight here. Until then, Play pairs by hand: ReGa shows the host to add
   in Moonlight and asks for the PIN Moonlight shows (see the app README's
   Play section).
-- Flathub. It would need the app built from source inside flatpak-builder
-  (Flutter, Dart packages and Cargo crates as offline sources), and a word on
-  the bundled Terraform's licence (BUSL-1.1, not open source) next to the
-  app's own (MIT).
+- Flathub. The app builds from source the way Flathub requires, but two
+  bundled tools still come prebuilt: Terraform (HashiCorp's release binary,
+  where Flathub would build it from its Go source) and five of the Python
+  wheels Ansible needs (cryptography, cffi, PyYAML, MarkupSafe and
+  charset-normalizer, which have compiled code). A submission would also
+  need the app from a git tag rather than this checkout, and a word on
+  Terraform's licence (BUSL-1.1, not open source) next to the app's own
+  (MIT).
 - aarch64.

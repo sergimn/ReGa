@@ -1,0 +1,5 @@
+{
+  "io.github.sergimn.rega": {
+    "appstream-external-screenshot-url": "Flathub copies screenshots to dl.flathub.org/media when it builds an app. CI's build isn't Flathub's, so the screenshot keeps its GitHub URL."
+  }
+}

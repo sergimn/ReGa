@@ -52,3 +52,6 @@ app.*.map.json
 
 # Flatpak
 .flatpak-builder/
+
+# Written by flatpak/sources.py write for each Flatpak build.
+/flatpak/generated/

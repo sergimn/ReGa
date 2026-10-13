@@ -36,13 +36,16 @@ check one:
 | Sunshine, the virtual display driver, the AWS CLI, WireGuard | version and SHA-256 in the Ansible role defaults |
 | Terraform in the Flatpak | version and SHA-256 in the manifest |
 | Ansible in the Flatpak | `app/flatpak/ansible.yml`, generated from the Ansible lock and `requirements.yml` with a SHA-256 for every file |
+| Flutter and Rust in the Flatpak build (the SDK, its engine and tool packages, the toolchain) | `app/flatpak/flutter.yml` and `rust.yml`, generated from CI's versions with a SHA-256 for every file (Flutter's git repository, a commit) |
 | Rust, Flutter, Terraform, TFLint, Python and runner images in CI | exact version |
 
 Tools that only accept a version (the toolchains, Pester, PSScriptAnalyzer,
 the Ansible collections, the TFLint AWS ruleset) are pinned to an exact one.
 Not pinned on purpose: the Steam installer and the NVIDIA driver, which only
-exist as "latest" and are signature-checked on the machine instead, and the
-Ubuntu packages CI installs with apt.
+exist as "latest" and are signature-checked on the machine instead, the
+Ubuntu packages CI installs with apt, and the Flatpak's runtime, SDK and
+LLVM SDK extension, which come from Flathub at their current build of the
+branch the manifest names.
 
 The `.txt` files hold the versions you choose; install from the `.lock`
 files, which pip checks against their hashes. To change a Python package,
@@ -103,6 +106,12 @@ found and what is waiting.
   regenerated, and Flutter updates need `app/pubspec.lock` regenerated with
   the new Flutter (`flutter pub get`), since CI uses it read-only. None of
   these merges on its own.
+- Flutter and Rust: the Flatpak builds the app with CI's versions, from
+  `app/flatpak/flutter.yml` and `rust.yml`, so their PRs need
+  `python3 app/flatpak/sources.py update` run and its result committed (the
+  PR says so, and CI fails until then). These don't merge on their own.
+  Crate and Dart package updates need nothing: the Flatpak build takes its
+  sources from the locks.
 - Ansible: the Flatpak bundles the versions in `infra/ansible/requirements.lock`
   and `requirements.yml`, so a PR that changes them needs
   `python3 app/flatpak/pins.py update` run and its result committed (the PR
