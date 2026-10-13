@@ -28,6 +28,9 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(count, 1, f"{pattern!r} not found in {path}")
         file.write_text(text)
 
+    def locked(self, package, lock=sources.PUB_LOCKS[0]):
+        return sources.parse_pub_lock(sources.read(self.root, lock), lock)[package]["version"]
+
     def assertDrift(self, *fragments):
         errors = "\n".join(sources.check(self.root))
         for fragment in fragments:
@@ -54,6 +57,20 @@ class SourcesTest(unittest.TestCase):
     def test_module_left_out_of_manifest(self):
         self.edit(sources.MANIFEST, r"^\s*- rust\.yml\n", "")
         self.assertDrift("doesn't include rust.yml in its modules")
+        self.assertNotIn("after FLUTTER_VERSION", "\n".join(sources.check(self.root)))
+
+    def test_flutter_downloads_another_engine(self):
+        self.edit(sources.FLUTTER_MODULE, r"(/flutter_infra_release/flutter/)[0-9a-f]{40}(/linux-x64/)",
+                  r"\g<1>" + "a" * 40 + r"\2")
+        self.assertDrift(f"downloads engine {'a' * 40}, ")
+
+    def test_flutter_downloads_other_fonts(self):
+        self.edit(sources.FLUTTER_MODULE, r"(/flutter/fonts/)[0-9a-f]{40}/", r"\g<1>" + "a" * 40 + "/")
+        self.assertDrift("doesn't download the material_fonts it checks for")
+
+    def test_flutter_version_check_left_out(self):
+        self.edit(sources.FLUTTER_MODULE, r"^\s*- grep -qxF \S+ flutter/bin/internal/engine\.version\n", "")
+        self.assertDrift("doesn't check the versions in Flutter's bin/internal")
 
     def test_generated_sources_left_out_of_manifest(self):
         self.edit(sources.MANIFEST, r"^\s*- generated/cargo-sources\.json\n", "")
@@ -77,7 +94,7 @@ class SourcesTest(unittest.TestCase):
 
     def test_pub_package_without_hash(self):
         self.edit(sources.PUB_LOCKS[0], r"^(  args:\n(?:    .*\n)*?)      sha256: \S+\n", r"\1")
-        self.assertDrift("app/pubspec.lock: args 2.7.0 has no sha256")
+        self.assertDrift(f"app/pubspec.lock: args {self.locked('args')} has no sha256")
 
     def test_crate_from_git(self):
         self.edit(sources.CARGO_LOCK, r'^(name = "base64"\nversion = "[^"]+"\n)source = .*\nchecksum = .*\n',
@@ -98,8 +115,10 @@ class SourcesTest(unittest.TestCase):
         # Packages both locks have are there once.
         dests = [s["dest"] for s in pub if s["type"] == "archive"]
         self.assertEqual(len(dests), len(set(dests)))
-        self.assertIn(f"{sources.PUB_CACHE}/hosted/pub.dev/args-2.7.0", dests)
-        self.assertIn(f"{sources.PUB_CACHE}/hosted/pub.dev/args-2.4.2", dests)
+        # Both locks have args, at different versions (cargokit's is older).
+        for lock in sources.PUB_LOCKS:
+            self.assertIn(f"{sources.PUB_CACHE}/hosted/pub.dev/args-{self.locked('args', lock)}", dests)
+        self.assertEqual(len({self.locked("args", lock) for lock in sources.PUB_LOCKS}), 2)
 
     def test_write_refuses_what_it_cant_source(self):
         self.edit(sources.CARGO_LOCK, r'^(name = "base64"\nversion = "[^"]+"\nsource = .*\n)checksum = .*\n', r"\1")
@@ -126,6 +145,11 @@ class ParseTest(unittest.TestCase):
             "  multicast_dns: 0.3.3+1 # comment\n\ndev_dependencies:\n  test: 1.31.1\n\ndartdoc:\n  nodoc: true\n",
             "pubspec.yaml")
         self.assertEqual(pins, {"args": "2.7.0", "multicast_dns": "0.3.3+1", "test": "1.31.1"})
+
+    def test_patch_misses(self):
+        patch = "Why.\n\n--- a/x.sh\n+++ b/x.sh\n@@ -1,3 +1,3 @@\n keep\n-  old line\n+  new line\n"
+        self.assertEqual(sources.patch_misses(patch, "keep\n  old line\nmore\n"), [])
+        self.assertEqual(sources.patch_misses(patch, "keep\n  changed line\n"), ["  old line"])
 
     def test_pubspec_pins_refuses_ranges(self):
         with self.assertRaises(SystemExit):

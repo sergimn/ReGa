@@ -77,7 +77,9 @@ modules:
         done
     sources:
       # The app, and the Terraform module and Ansible playbook it compiles in.
-      # Whatever a local build left in app/ stays out.
+      # What local builds and runs leave in them stays out: build output,
+      # Terraform's state and providers, and a real inventory, which holds a
+      # password.
       - type: dir
         path: ..
         dest: app
@@ -86,11 +88,25 @@ modules:
           - .flatpak-builder
           - .flutter-plugins-dependencies
           - build
+          - coverage
           - linux/flutter/ephemeral
           - rust_builder/.dart_tool
+          - target
       - type: dir
-        path: ../../infra
-        dest: infra
+        path: ../../infra/terraform/aws
+        dest: infra/terraform/aws
+        skip:
+          - .terraform
+          - terraform.tfstate
+          - terraform.tfstate.backup
+          - examples
+          - tests
+      - type: dir
+        path: ../../infra/ansible
+        dest: infra/ansible
+        skip:
+          - inventory.yml
+          - tests
       - type: file
         path: ../../LICENSE
       # cargokit's build tool gets its Dart packages offline.

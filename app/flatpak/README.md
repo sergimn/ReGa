@@ -66,8 +66,9 @@ Things to know when the app runs these tools:
 
 flatpak-builder builds the app from source, as Flathub would: with the
 Flutter SDK and Rust toolchain CI uses, and the crates and Dart packages in
-the app's locks. It downloads all of them first, checking each file's
-SHA-256, and then builds with no network (see Sources below). From `app/`:
+the app's locks. It downloads all of them first, checking each against its
+SHA-256 (Flutter's git repository, against its commit), and then builds
+with no network (see Sources below). From `app/`:
 
 ```sh
 python3 flatpak/sources.py write
@@ -92,6 +93,9 @@ needs Xvfb and xdotool.
 CI also runs Flathub's linter, `flatpak-builder-lint`, on the manifest and
 the build. `lint-exceptions.json` leaves out the one check only Flathub's own
 build can pass: Flathub copies the screenshots to its server as it builds.
+The build still fetches the screenshot, from `docs/screenshot.png` on main,
+to describe the app to software centres; if it can't, the linter fails the
+build for having no screenshot.
 
 ## Sources
 
@@ -103,7 +107,7 @@ version: they follow what CI builds with and the locks.
 | `flutter.yml` | The Flutter SDK at `FLUTTER_VERSION`'s commit, what its tool downloads for a Linux release build (the Dart SDK, the engine, fonts), and the Dart packages the tool is built from | `sources.py update` |
 | `rust.yml` | Rust at `RUST_VERSION` (`rustc`, `cargo`, the standard library) | `sources.py update`, with the hashes in the release's channel manifest |
 | `generated/cargo-sources.json` | Every crate in `app/Cargo.lock`, vendored | `sources.py write`, with the lock's checksums |
-| `generated/pub-sources.json` | Every Dart package in `app/pubspec.lock` and in cargokit's `rust_builder/cargokit/build_tool/pubspec.lock` | `sources.py write`, with the locks' hashes |
+| `generated/pub-sources.json` | Every Dart package in `app/pubspec.lock` and in cargokit's `rust_builder/cargokit/build_tool/pubspec.lock` | `sources.py write`, with the locks' hashes. cargokit's build tool runs without its lock, so it may get the app's newer version of a package both have |
 
 `FLUTTER_VERSION` and `RUST_VERSION` are in `.github/workflows/app.yml`.
 After either changes, regenerate the two modules (this needs network and
@@ -116,16 +120,17 @@ python3 flatpak/sources.py update
 Renovate's Flutter and Rust PRs say so, and `python3 flatpak/sources.py
 check` (CI runs it) fails until then. It also fails when a lock has
 something `write` can't make an offline source of, such as a git
-dependency. The generated files aren't committed, so Renovate's crate and
-Dart package updates need nothing by hand.
+dependency, or when `flutter.yml` downloads another engine, fonts or Gradle
+wrapper than the ones its build checks Flutter's commit asks for. The
+generated files aren't committed, so Renovate's crate and Dart package
+updates need nothing by hand.
 
 The SDK and toolchain go in `/var/lib`, which the build of the app uses and
 the Flatpak doesn't ship. Three small things make the build work offline:
 
 - `patches/flutter-offline.patch`: the Flutter tool builds itself with
   `dart pub upgrade`, which needs the network; this adds `--offline`. If a
-  new Flutter changes that line, the patch no longer applies and the build
-  says so.
+  new Flutter changes that line, `sources.py update` stops and says so.
 - `patches/cargokit-offline.patch`: the same for cargokit's build tool,
   which builds the Rust core during `flutter build`.
 - `rustup.sh`: cargokit runs cargo through rustup, and the build has one

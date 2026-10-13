@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "app/flatpak/io.github.sergimn.rega.yml"
 FLUTTER_MODULE = "app/flatpak/flutter.yml"
 RUST_MODULE = "app/flatpak/rust.yml"
+FLUTTER_PATCH = "app/flatpak/patches/flutter-offline.patch"
 GENERATED = "app/flatpak/generated"
 CARGO_SOURCES = f"{GENERATED}/cargo-sources.json"
 PUB_SOURCES = f"{GENERATED}/pub-sources.json"
@@ -292,6 +293,24 @@ def unhashed(text: str) -> list[str]:
     return missing
 
 
+def flutter_mismatches(text: str) -> list[str]:
+    """flutter.yml's build checks that the commit's engine, fonts and Gradle
+    wrapper are the versions it names; this checks its downloads are those."""
+    internal = {name: version for version, name in
+                re.findall(r"^\s*- grep -qxF (\S+) flutter/bin/internal/(\w+)\.version$", text, re.M)}
+    if set(internal) != {"engine", "material_fonts", "gradle_wrapper"}:
+        return [f"{FLUTTER_MODULE} doesn't check the versions in Flutter's bin/internal."]
+    errors = []
+    engines = set(re.findall(r"/flutter_infra_release/flutter/([0-9a-f]{40})/", text))
+    if engines != {internal["engine"]}:
+        errors.append(f"{FLUTTER_MODULE} downloads engine {', '.join(sorted(engines)) or 'nothing'}, "
+                      f"but checks for {internal['engine']}.")
+    for name in ("material_fonts", "gradle_wrapper"):
+        if f'"{STORAGE}/{internal[name]}"' not in text:
+            errors.append(f"{FLUTTER_MODULE} doesn't download the {name} it checks for.")
+    return errors
+
+
 def check(root: Path) -> list[str]:
     """Every way the Flatpak's sources have drifted from what CI uses."""
     errors = []
@@ -305,18 +324,22 @@ def check(root: Path) -> list[str]:
             continue
         for url in unhashed(read(root, module)):
             errors.append(f"{module} has {url} with no sha256 after it.")
+    if (root / FLUTTER_MODULE).exists():
+        errors += flutter_mismatches(read(root, FLUTTER_MODULE))
     for generated in (CARGO_SOURCES, PUB_SOURCES):
         if not re.search(rf"^\s*-\s*\"?{re.escape(Path(generated).relative_to(Path(MANIFEST).parent).as_posix())}"
                          r"\"?\s*$", manifest, re.M):
             errors.append(f"{MANIFEST} doesn't use {generated} in its sources.")
 
+    drift = []
     flutter = workflow_version(root, "FLUTTER_VERSION")
     if (root / FLUTTER_MODULE).exists() and (tag := module_tag(read(root, FLUTTER_MODULE))) != flutter:
-        errors.append(f"{FLUTTER_MODULE} has Flutter {tag}, but CI builds with {flutter}.")
+        drift.append(f"{FLUTTER_MODULE} has Flutter {tag}, but CI builds with {flutter}.")
     rust = workflow_version(root, "RUST_VERSION")
     if (root / RUST_MODULE).exists() and (versions := module_rust_versions(read(root, RUST_MODULE))) != {rust}:
-        errors.append(f"{RUST_MODULE} has Rust {', '.join(sorted(versions)) or 'nothing'}, but CI builds with {rust}.")
-    if errors:
+        drift.append(f"{RUST_MODULE} has Rust {', '.join(sorted(versions)) or 'nothing'}, but CI builds with {rust}.")
+    if drift:
+        errors += drift
         errors.append("Run `python3 app/flatpak/sources.py update` after FLUTTER_VERSION or RUST_VERSION changes.")
 
     errors += cargo_sources(root)[1] + pub_sources(root)[1]
@@ -395,7 +418,14 @@ def flutter_tool_packages(commit: str) -> list[tuple[str, str, str]]:
     return sorted(packages)
 
 
-def render_flutter(tag: str, commit: str, downloads: list[tuple[Download, str]],
+def patch_misses(patch: str, text: str) -> list[str]:
+    """The lines a patch removes that the file it patches doesn't have."""
+    lines = set(text.splitlines())
+    return [line[1:] for line in patch.splitlines()
+            if line.startswith("-") and not line.startswith("---") and line[1:] not in lines]
+
+
+def render_flutter(tag: str, commit: str, internal: dict[str, str], downloads: list[tuple[Download, str]],
                    packages: list[tuple[str, str, str]]) -> str:
     q = json.dumps  # a JSON string is a valid YAML double-quoted scalar
     lines = [
@@ -409,6 +439,8 @@ def render_flutter(tag: str, commit: str, downloads: list[tuple[Download, str]],
         "buildsystem: simple",
         "build-commands:",
     ]
+    # The downloads below are for these versions; stop if the commit's differ.
+    lines += [f"  - grep -qxF {version} flutter/bin/internal/{name}.version" for name, version in internal.items()]
     # What the tool writes once it has downloaded each part.
     lines += [f"  - cp flutter/bin/internal/{source} flutter/bin/cache/{stamp}.stamp"
               for stamp, source in FLUTTER_STAMPS.items()]
@@ -492,7 +524,11 @@ def update(root: Path) -> None:
                 for name in ("engine", "material_fonts", "gradle_wrapper")}
     downloads = [(d, sha256_of(d.url)) for d in flutter_downloads(
         internal["engine"], internal["material_fonts"], internal["gradle_wrapper"])]
-    text = render_flutter(tag, commit, downloads, flutter_tool_packages(commit))
+    shared = fetch(f"{FLUTTER_RAW}/{commit}/bin/internal/shared.sh").decode()
+    if stale := patch_misses(read(root, FLUTTER_PATCH), shared):
+        raise SystemExit(f"{FLUTTER_PATCH} no longer applies to Flutter {tag}'s bin/internal/shared.sh, "
+                         f"which doesn't have: {stale[0]!r}. Update the patch.")
+    text = render_flutter(tag, commit, internal, downloads, flutter_tool_packages(commit))
     (root / FLUTTER_MODULE).write_text(text, encoding="utf-8")
     print(f"Wrote {FLUTTER_MODULE} for Flutter {tag}.")
 
