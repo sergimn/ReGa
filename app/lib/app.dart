@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'backend.dart';
 import 'provider_page.dart';
 import 'theme.dart';
+import 'widgets/about.dart';
 import 'widgets/platform_icon.dart';
 
 class RegaApp extends StatelessWidget {
@@ -128,6 +129,16 @@ class _HomeShellState extends State<HomeShell> {
                 ),
             ],
             onDestinationSelected: (i) => setState(() => _selected = i),
+            trailingAtBottom: true,
+            trailing: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: IconButton(
+                key: const ValueKey('about'),
+                icon: const Icon(Icons.info_outline),
+                tooltip: 'About ReGa',
+                onPressed: () => showRegaAbout(context),
+              ),
+            ),
           ),
           const VerticalDivider(width: 1),
           Expanded(

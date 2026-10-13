@@ -66,6 +66,9 @@ licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE). The
 Flatpak ships the notices of the Rust crates and standard library built into
 the app, and Terraform's licence, in `/app/share/licenses/io.github.sergimn.rega/`
 (see [app/flatpak/README.md](app/flatpak/README.md#rust-crate-licences)).
+In the app, About (the info button at the bottom of the side menu), then
+View licenses, lists all of these with those of Flutter and the Dart
+packages; `app/lib/licences.dart` reads them from that folder.
 The AWS logo in the app is a trademark of Amazon.com, Inc. or its affiliates
 and isn't under ReGa's licence; ReGa isn't affiliated with or endorsed by
 AWS. Where it comes from is in
