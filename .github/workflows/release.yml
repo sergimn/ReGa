@@ -30,7 +30,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       notes: ${{ steps.release.outputs.notes }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # main's history, to check the tag is on it.
@@ -64,7 +64,7 @@ jobs:
       contents: write
     steps:
       # For the release notes; gh also finds the repo from it.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The bundle the App workflow built, installed and smoke-tested.
