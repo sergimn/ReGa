@@ -421,7 +421,8 @@ def flutter_tool_packages(commit: str) -> list[tuple[str, str, str]]:
 def patch_misses(patch: str, text: str) -> list[str]:
     """The lines a patch removes that the file it patches doesn't have."""
     lines = set(text.splitlines())
-    return [line[1:] for line in patch.splitlines()
+    hunks = patch[patch.index("\n@@") :] if "\n@@" in patch else ""
+    return [line[1:] for line in hunks.splitlines()
             if line.startswith("-") and not line.startswith("---") and line[1:] not in lines]
 
 
@@ -520,14 +521,14 @@ def rust_components(version: str) -> list[tuple[str, str, str]]:
 def update(root: Path) -> None:
     tag = workflow_version(root, "FLUTTER_VERSION")
     commit = tag_commit(tag)
-    internal = {name: fetch(f"{FLUTTER_RAW}/{commit}/bin/internal/{name}.version").decode().strip()
-                for name in ("engine", "material_fonts", "gradle_wrapper")}
-    downloads = [(d, sha256_of(d.url)) for d in flutter_downloads(
-        internal["engine"], internal["material_fonts"], internal["gradle_wrapper"])]
     shared = fetch(f"{FLUTTER_RAW}/{commit}/bin/internal/shared.sh").decode()
     if stale := patch_misses(read(root, FLUTTER_PATCH), shared):
         raise SystemExit(f"{FLUTTER_PATCH} no longer applies to Flutter {tag}'s bin/internal/shared.sh, "
                          f"which doesn't have: {stale[0]!r}. Update the patch.")
+    internal = {name: fetch(f"{FLUTTER_RAW}/{commit}/bin/internal/{name}.version").decode().strip()
+                for name in ("engine", "material_fonts", "gradle_wrapper")}
+    downloads = [(d, sha256_of(d.url)) for d in flutter_downloads(
+        internal["engine"], internal["material_fonts"], internal["gradle_wrapper"])]
     text = render_flutter(tag, commit, internal, downloads, flutter_tool_packages(commit))
     (root / FLUTTER_MODULE).write_text(text, encoding="utf-8")
     print(f"Wrote {FLUTTER_MODULE} for Flutter {tag}.")

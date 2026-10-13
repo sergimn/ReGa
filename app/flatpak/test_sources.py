@@ -147,7 +147,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(pins, {"args": "2.7.0", "multicast_dns": "0.3.3+1", "test": "1.31.1"})
 
     def test_patch_misses(self):
-        patch = "Why.\n\n--- a/x.sh\n+++ b/x.sh\n@@ -1,3 +1,3 @@\n keep\n-  old line\n+  new line\n"
+        patch = ("Why:\n- a reason\n\n--- a/x.sh\n+++ b/x.sh\n@@ -1,3 +1,3 @@\n keep\n-  old line\n"
+                 "+  new line\n")
         self.assertEqual(sources.patch_misses(patch, "keep\n  old line\nmore\n"), [])
         self.assertEqual(sources.patch_misses(patch, "keep\n  changed line\n"), ["  old line"])
 
