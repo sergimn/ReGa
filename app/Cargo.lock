@@ -2916,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "rega_bridge"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "flutter_rust_bridge",
@@ -2927,7 +2927,7 @@ dependencies = [
 
 [[package]]
 name = "rega_core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "aws-credential-types",
