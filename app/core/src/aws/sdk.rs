@@ -5,9 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use aws_config::{BehaviorVersion, Region, SdkConfig};
-use aws_credential_types::provider::error::CredentialsError;
-use aws_credential_types::provider::ProvideCredentials;
+use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_sdk_ec2::client::Waiters;
 use aws_sdk_ec2::types::{Filter, InstanceLifecycleType, InstanceStateName, LocationType, Tag};
 use aws_sdk_s3::error::{DisplayErrorContext, ProvideErrorMetadata, SdkError};
@@ -19,6 +17,10 @@ use aws_sdk_s3::types::{
     ServerSideEncryptionByDefault, ServerSideEncryptionConfiguration, ServerSideEncryptionRule,
     Tagging, VersioningConfiguration,
 };
+use aws_sdk_sts::config::BehaviorVersion;
+use aws_types::region::Region;
+use aws_types::sdk_config::{RetryConfig, TimeoutConfig};
+use aws_types::SdkConfig;
 
 use super::api::{AwsApi, BucketInfo, Instance};
 use super::{pricing, HOME_REGION};
@@ -80,50 +82,97 @@ fn instance_state(name: Option<&InstanceStateName>) -> MachineState {
     }
 }
 
+/// An IAM access key, as the user entered it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccessKey {
+    pub id: String,
+    pub secret: String,
+}
+
+impl std::fmt::Debug for AccessKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessKey")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Who an access key signs in as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub account: String,
+    /// Such as `arn:aws:iam::<account>:user/rega`.
+    pub arn: String,
+}
+
+impl Identity {
+    /// `IAM user rega, account <account>`, or the ARN for anything but a
+    /// plain IAM user.
+    pub fn describe(&self) -> String {
+        let user = self
+            .arn
+            .strip_prefix("arn:aws:iam::")
+            .and_then(|rest| rest.split_once(":user/"))
+            .map(|(_, path)| path.rsplit('/').next().unwrap_or(path));
+        match user {
+            Some(name) if !name.is_empty() => format!("IAM user {name}, account {}", self.account),
+            _ if self.arn.is_empty() => format!("account {}", self.account),
+            _ => self.arn.clone(),
+        }
+    }
+}
+
+/// SDK settings made from the access key alone. Nothing comes from the
+/// environment, `~/.aws` or instance metadata, so another account's
+/// credentials on the same computer can never be used by mistake. (The app
+/// doesn't use aws-config, which is what reads those.)
+pub fn sdk_config(key: &AccessKey) -> SdkConfig {
+    let credentials =
+        aws_credential_types::Credentials::new(&key.id, &key.secret, None, None, "ReGa");
+    SdkConfig::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new(HOME_REGION))
+        .credentials_provider(SharedCredentialsProvider::new(credentials))
+        .retry_config(RetryConfig::standard())
+        .timeout_config(
+            TimeoutConfig::builder()
+                .operation_timeout(Duration::from_secs(60))
+                .connect_timeout(Duration::from_secs(10))
+                .build(),
+        )
+        .build()
+}
+
 pub struct SdkApi {
     config: SdkConfig,
+    key: AccessKey,
 }
 
 impl SdkApi {
-    /// Loads credentials from the default chain and reads the account id.
-    pub async fn connect() -> ProviderResult<(Self, String)> {
-        let region = aws_config::meta::region::RegionProviderChain::default_provider()
-            .or_else(Region::new(HOME_REGION));
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(region)
-            .timeout_config(
-                aws_config::timeout::TimeoutConfig::builder()
-                    .operation_timeout(Duration::from_secs(60))
-                    .connect_timeout(Duration::from_secs(10))
-                    .build(),
-            )
-            .load()
-            .await;
-        let provider = config
-            .credentials_provider()
-            .ok_or_else(|| ProviderError::MissingCredentials("AWS".into()))?;
-        match provider.provide_credentials().await {
-            Ok(_) => {}
-            Err(CredentialsError::CredentialsNotLoaded(_)) => {
-                return Err(ProviderError::MissingCredentials("AWS".into()))
-            }
-            Err(e) => {
-                return Err(ProviderError::Cloud(format!(
-                    "AWS credentials: {}",
-                    DisplayErrorContext(&e)
-                )))
-            }
-        }
+    /// Signs in with this access key and nothing else, and says who it
+    /// belongs to.
+    pub async fn connect(key: &AccessKey) -> ProviderResult<(Self, Identity)> {
+        let config = sdk_config(key);
         let identity = aws_sdk_sts::Client::new(&config)
             .get_caller_identity()
             .send()
             .await
-            .map_err(|e| fail("checking the AWS credentials", e))?;
+            .map_err(|e| fail("checking the AWS access key", e))?;
         let account = identity
             .account()
             .ok_or_else(|| ProviderError::Cloud("AWS didn't say which account this is".into()))?
             .to_string();
-        Ok((Self { config }, account))
+        let identity = Identity {
+            account,
+            arn: identity.arn().unwrap_or_default().to_string(),
+        };
+        Ok((
+            Self {
+                config,
+                key: key.clone(),
+            },
+            identity,
+        ))
     }
 
     fn ec2(&self, region: &str) -> aws_sdk_ec2::Client {
@@ -848,32 +897,51 @@ impl AwsApi for SdkApi {
     }
 
     async fn credential_env(&self) -> ProviderResult<Vec<(String, String)>> {
-        let creds = self
-            .config
-            .credentials_provider()
-            .ok_or_else(|| ProviderError::MissingCredentials("AWS".into()))?
-            .provide_credentials()
-            .await
-            .map_err(|e| {
-                ProviderError::Cloud(format!("AWS credentials: {}", DisplayErrorContext(&e)))
-            })?;
-        let mut env = vec![
-            ("AWS_ACCESS_KEY_ID".into(), creds.access_key_id().into()),
-            (
-                "AWS_SECRET_ACCESS_KEY".into(),
-                creds.secret_access_key().into(),
-            ),
-        ];
-        if let Some(token) = creds.session_token() {
-            env.push(("AWS_SESSION_TOKEN".into(), token.into()));
-        }
-        Ok(env)
+        Ok(vec![
+            ("AWS_ACCESS_KEY_ID".into(), self.key.id.clone()),
+            ("AWS_SECRET_ACCESS_KEY".into(), self.key.secret.clone()),
+        ])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identities_name_the_user_and_account() {
+        let id = |arn: &str| Identity {
+            account: "123456789012".into(),
+            arn: arn.into(),
+        };
+        assert_eq!(
+            id("arn:aws:iam::123456789012:user/rega").describe(),
+            "IAM user rega, account 123456789012"
+        );
+        assert_eq!(
+            id("arn:aws:iam::123456789012:user/team/rega").describe(),
+            "IAM user rega, account 123456789012"
+        );
+        for arn in [
+            "arn:aws:iam::123456789012:root",
+            "arn:aws:sts::123456789012:assumed-role/Admin/me",
+        ] {
+            assert_eq!(id(arn).describe(), arn);
+        }
+        assert_eq!(id("").describe(), "account 123456789012");
+    }
+
+    #[test]
+    fn an_access_key_never_prints_its_secret() {
+        let secret = format!("typed-{}", std::process::id());
+        let key = AccessKey {
+            id: "typed-key-id".into(),
+            secret: secret.clone(),
+        };
+        let shown = format!("{key:?}");
+        assert!(shown.contains("typed-key-id"), "{shown}");
+        assert!(!shown.contains(&secret), "{shown}");
+    }
 
     #[test]
     fn instance_states_map_to_machine_states() {

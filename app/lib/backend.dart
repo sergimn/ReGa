@@ -6,6 +6,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
 import 'src/rust/api/rega.dart' as rust;
 import 'src/rust/api/rega.dart'
     show
+        CredentialFieldInfo,
         MachineOffer,
         MachineSummary,
         OrphanSummary,
@@ -17,6 +18,7 @@ import 'src/rust/api/stream.dart' show PlayUpdate, StreamStatus;
 
 export 'src/rust/api/rega.dart'
     show
+        CredentialFieldInfo,
         MachineOffer,
         MachineStatus,
         MachineSummary,
@@ -31,9 +33,23 @@ export 'src/rust/api/stream.dart' show PlayStep, PlayUpdate, StreamStatus;
 /// Everything the UI needs from the core. Widgets depend on this interface
 /// so tests can swap in a fake without loading the Rust library.
 abstract class RegaBackend {
-  /// Signs in to every provider; one without credentials shows demo data
-  /// and says why. Calling it again reconnects.
+  /// Signs in to every provider with the credentials saved in ReGa; one
+  /// without working credentials shows demo data and says why. Calling it
+  /// again reconnects.
   Future<List<ProviderInfo>> connectProviders();
+
+  /// Signs in to the provider with what the user typed, by
+  /// [CredentialFieldInfo.id], and saves it in the system keyring once the
+  /// cloud accepts it. Throws a [RegaError], changing nothing, when the
+  /// cloud refuses it.
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  );
+
+  /// Forgets the provider's saved credentials; it shows demo data until
+  /// new ones are entered. Machines in the account are left alone.
+  Future<ProviderInfo> forgetCredentials(String providerId);
 
   /// Measures latency to every region; `true` when results changed.
   Future<bool> probeLatency(String providerId);
@@ -114,6 +130,16 @@ abstract class RegaBackend {
 class RustBackend implements RegaBackend {
   @override
   Future<List<ProviderInfo>> connectProviders() => rust.connectProviders();
+
+  @override
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  ) => rust.saveCredentials(providerId: providerId, values: values);
+
+  @override
+  Future<ProviderInfo> forgetCredentials(String providerId) =>
+      rust.forgetCredentials(providerId: providerId);
 
   @override
   Future<bool> probeLatency(String providerId) =>

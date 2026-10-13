@@ -588,6 +588,27 @@ instance_type must be one of t3.micro, t3.medium, t3.large or g4dn.xlarge.
         assert!(left.is_empty(), "{left:?}");
     }
 
+    #[test]
+    fn no_aws_or_terraform_setting_passes_through_but_the_ca_bundle() {
+        for name in [
+            "AWS_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_ROLE_ARN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_CONFIG_FILE",
+            "AWS_REGION",
+            "TF_VAR_region",
+            "TF_LOG",
+            "TF_CLI_CONFIG_FILE",
+        ] {
+            assert!(!passes_through(name), "{name}");
+        }
+        assert!(passes_through("AWS_CA_BUNDLE"));
+    }
+
     #[tokio::test]
     async fn failures_report_terraforms_errors() {
         let dir = tempfile::tempdir().unwrap();

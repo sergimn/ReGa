@@ -81,20 +81,23 @@ jobs:
       - name: Every crate has a licence text to ship
         run: python3 flatpak/rust_notices.py check
       # For tests/tunnel.rs: a WireGuard server set up like a ReGa machine,
-      # in a network namespace, with the kernel's WireGuard.
+      # in a network namespace, with the kernel's WireGuard. GNOME Keyring is
+      # for the credentials store's test.
       - name: Start a WireGuard test server
         run: |
           sudo apt-get update
-          sudo apt-get install -y wireguard-tools
+          sudo apt-get install -y wireguard-tools gnome-keyring
           # The runner's user writes the file, not root.
           # shellcheck disable=SC2024
           sudo core/tests/wireguard/server.sh up > "$RUNNER_TEMP/wg-test.env"
+      # In a D-Bus session with a throwaway GNOME Keyring as its Secret
+      # Service, so the credentials store is tested against a real one.
       - name: cargo test
         run: |
           set -a
           . "$RUNNER_TEMP/wg-test.env"
           set +a
-          cargo test --workspace --locked
+          dbus-run-session -- core/tests/with-keyring.sh cargo test --workspace --locked
         env:
           REGA_REQUIRE_ANSIBLE: '1'
           REGA_REQUIRE_WG_SERVER: '1'
@@ -147,7 +150,7 @@ jobs:
         run: python3 flatpak/rust_notices.py write build/linux/x64/release/licenses
       - name: End-to-end test against the Rust core
         run: xvfb-run -a flutter test integration_test -d linux
-        # Demo data, without even trying the AWS credential chain.
+        # Demo data, leaving the keyring alone.
         env:
           REGA_DEMO: '1'
       # Artifacts drop file permissions, so ship the bundle as a tarball.
