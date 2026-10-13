@@ -44,6 +44,18 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.0.2" date="2026-10-13">
+      <description>
+        <p>
+          You now enter your AWS access key in the app, which keeps it in
+          the system keyring; ReGa no longer reads ~/.aws or environment
+          variables. It adds an About box with a licence page, and shows the
+          AWS logo in the side menu. A game library restore no longer stops
+          short when a new machine's setup reboots it, and the Flatpak is
+          now built from source.
+        </p>
+      </description>
+    </release>
     <release version="0.0.1" date="2026-10-12">
       <description>
         <p>
