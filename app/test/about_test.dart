@@ -63,7 +63,7 @@ ${'-' * 78}
 
 Copyright (c) 2014 The serde developers
 '''),
-      const LicenseEntryWithLineBreaks(['flutter'], 'Flutter\'s own'),
+      const LicenseEntryWithLineBreaks(['abseil-cpp'], 'Flutter\'s own'),
     ];
     LicenseRegistry.addLicense(() => Stream.fromIterable(entries));
 
@@ -92,13 +92,12 @@ Copyright (c) 2014 The serde developers
     await tester.tap(find.text('View licenses'));
     await tester.pumpAndSettle();
     expect(find.byType(LicensePage), findsOneWidget);
-    for (final package in ['ReGa', 'serde', 'flutter', 'Rust crates']) {
-      expect(
-        find.widgetWithText(ListTile, package),
-        findsOneWidget,
-        reason: package,
-      );
-    }
+    // ReGa's licence first, then the rest in alphabetical order.
+    final listed = [
+      for (final package in ['ReGa', 'abseil-cpp', 'Rust crates', 'serde'])
+        tester.getTopLeft(find.widgetWithText(ListTile, package)).dy,
+    ];
+    expect(listed, [...listed]..sort());
 
     await tester.tap(find.widgetWithText(ListTile, 'ReGa'));
     await tester.pumpAndSettle();
