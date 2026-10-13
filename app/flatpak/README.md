@@ -89,6 +89,10 @@ the sandbox, the Windows collections are there, the playbooks in
 data, on a private Xvfb display over X11, whatever your desktop runs). It
 needs Xvfb and xdotool.
 
+CI also runs Flathub's linter, `flatpak-builder-lint`, on the manifest and
+the build. `lint-exceptions.json` leaves out the one check only Flathub's own
+build can pass: Flathub copies the screenshots to its server as it builds.
+
 ## Sources
 
 Every source of the build is pinned by hash, and none of them picks a

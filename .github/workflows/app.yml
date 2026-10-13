@@ -176,11 +176,13 @@ jobs:
           manifest-path: app/flatpak/io.github.sergimn.rega.yml
           artifact-name: rega-flatpak
           cache: false
-      # The checks Flathub runs on a submission, from the image's linter.
+      # The checks Flathub runs on a submission, from the image's linter, less
+      # the one that only Flathub's own build can pass (lint-exceptions.json).
       - name: Flathub's linter
         run: |
           flatpak-builder-lint --gha-format manifest flatpak/io.github.sergimn.rega.yml
-          flatpak-builder-lint --gha-format builddir ../flatpak_app
+          flatpak-builder-lint --gha-format --exceptions --user-exceptions flatpak/lint-exceptions.json \
+            builddir ../flatpak_app
 
   flatpak-metadata:
     name: Flatpak pins and metadata
