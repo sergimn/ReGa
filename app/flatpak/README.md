@@ -35,9 +35,13 @@ page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
 | `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), Terraform's (BUSL-1.1) in `terraform/`, the licence notices of the Rust crates in the app and of Rust's standard library, in `rust-crates.txt` and `rust-std.html`, and where the AWS logo in the app comes from, in `aws-logo.md`. Flutter keeps those of the Dart packages and its engine in `/app/lib/rega/data/flutter_assets/NOTICES.Z` |
 
-Permissions: network, display (Wayland, or X11 as a fallback), GPU, and
-`~/.aws` read-only for credentials and profiles, with the SSO token cache
-writable so an SSO sign-in can refresh it. Nothing else in your home folder.
+Permissions: network, display (Wayland, or X11 as a fallback) and GPU.
+Nothing in your home folder, `~/.aws` included: ReGa only uses the cloud
+credentials entered in the app. It keeps them in the system keyring through
+the Secret portal, which needs no permission: the portal hands the app a key,
+and the app keeps its credentials in a file encrypted with it under
+`~/.var/app/io.github.sergimn.rega/data/keyrings/`. GNOME Keyring provides
+the portal on Ubuntu.
 
 Things to know when the app runs these tools:
 
@@ -202,7 +206,7 @@ crates in the build today ship all of theirs.
   where Flathub would build it from its Go source) and five of the Python
   wheels Ansible needs (cryptography, cffi, PyYAML, MarkupSafe and
   charset-normalizer, which have compiled code). A submission would also
-  need the app from a git tag rather than this checkout, a review of the
-  `~/.aws` permission, and a word on Terraform's licence (BUSL-1.1, not open
-  source) next to the app's own (MIT).
+  need the app from a git tag rather than this checkout, and a word on
+  Terraform's licence (BUSL-1.1, not open source) next to the app's own
+  (MIT).
 - aarch64.

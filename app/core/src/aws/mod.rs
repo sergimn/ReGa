@@ -23,11 +23,13 @@ use async_trait::async_trait;
 use futures::future::{join_all, try_join_all};
 
 use crate::ansible::{self, AnsibleSetup};
+use crate::credentials::{CredentialField, Credentials};
+use crate::mock::MockProvider;
 use crate::model::{
     roomy_cpu_type, Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan,
     Price, Region, ResourceKind, StorageLocation,
 };
-use crate::provider::{CloudProvider, ProviderError, ProviderResult};
+use crate::provider::{CloudProvider, Connector, ProviderError, ProviderResult};
 use crate::setup::{MachineAccess, MachineSecrets, MachineSetup, NoSetup};
 use crate::stream::{self, StreamTarget, WireGuardPeer};
 use crate::terraform::{self, io_error, Backend, LockInfo, RunMarker, Terraform};
@@ -198,6 +200,62 @@ impl IpLookup for CheckIp {
     }
 }
 
+/// Settings Terraform runs with besides the access key, so its AWS provider
+/// uses that key and nothing it could find on the computer.
+pub const TERRAFORM_ISOLATION: &[(&str, &str)] = &[
+    ("AWS_CONFIG_FILE", "/dev/null"),
+    ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
+    ("AWS_EC2_METADATA_DISABLED", "true"),
+];
+
+/// What the user enters to sign in to AWS: an IAM user's access key.
+pub fn credential_fields() -> Vec<CredentialField> {
+    vec![
+        CredentialField::new("access_key_id", "Access key ID", false),
+        CredentialField::new("secret_access_key", "Secret access key", true),
+    ]
+}
+
+/// The access key in `credentials`, once every field is there.
+pub fn access_key(credentials: &Credentials) -> ProviderResult<sdk::AccessKey> {
+    credentials.check(&credential_fields())?;
+    let get = |id| credentials.get(id).unwrap_or_default().to_string();
+    Ok(sdk::AccessKey {
+        id: get("access_key_id"),
+        secret: get("secret_access_key"),
+    })
+}
+
+/// Signs in to AWS with the access key the user entered.
+pub struct AwsConnector {
+    pub options: ConnectOptions,
+}
+
+#[async_trait]
+impl Connector for AwsConnector {
+    fn id(&self) -> &str {
+        "aws"
+    }
+
+    fn display_name(&self) -> &str {
+        "AWS"
+    }
+
+    fn credential_fields(&self) -> Vec<CredentialField> {
+        credential_fields()
+    }
+
+    async fn connect(&self, credentials: &Credentials) -> ProviderResult<Box<dyn CloudProvider>> {
+        let key = access_key(credentials)?;
+        let provider = AwsProvider::connect(self.options.clone(), &key).await?;
+        Ok(Box::new(provider))
+    }
+
+    fn demo(&self) -> MockProvider {
+        MockProvider::demo_aws()
+    }
+}
+
 /// Where the app keeps its per-device files.
 #[derive(Debug, Clone)]
 pub struct ConnectOptions {
@@ -264,6 +322,8 @@ struct Snapshot {
 pub struct AwsProvider {
     api: Arc<dyn AwsApi>,
     account_id: String,
+    /// Who the access key belongs to, when signed in with one.
+    identity: Option<sdk::Identity>,
     terraform: Arc<dyn Terraform>,
     setup: Arc<dyn MachineSetup>,
     ip: Arc<dyn IpLookup>,
@@ -296,6 +356,7 @@ impl AwsProvider {
         Self {
             api,
             account_id,
+            identity: None,
             terraform,
             setup: Arc::new(NoSetup),
             ip: Arc::new(CheckIp),
@@ -310,17 +371,21 @@ impl AwsProvider {
         }
     }
 
-    /// Signs in with the default AWS credential chain (environment, then
-    /// `~/.aws` profiles). [`ProviderError::MissingCredentials`] when there
-    /// are none. Machines are set up with Ansible ([`AnsibleSetup`]).
-    pub async fn connect(options: ConnectOptions) -> ProviderResult<Self> {
-        let (api, account_id) = sdk::SdkApi::connect().await?;
+    /// Signs in with `key` and nothing else (see [`sdk::SdkApi::connect`]).
+    /// Machines are set up with Ansible ([`AnsibleSetup`]).
+    pub async fn connect(options: ConnectOptions, key: &sdk::AccessKey) -> ProviderResult<Self> {
+        let (api, identity) = sdk::SdkApi::connect(key).await?;
         let terraform = terraform::TerraformCli::find(options.cache_dir.join("terraform-plugins"));
-        let machines_dir = options.data_dir.join("aws").join(&account_id);
-        Ok(
-            Self::new(Arc::new(api), account_id, Arc::new(terraform), machines_dir)
-                .with_setup(Arc::new(AnsibleSetup::find())),
+        let machines_dir = options.data_dir.join("aws").join(&identity.account);
+        let mut provider = Self::new(
+            Arc::new(api),
+            identity.account.clone(),
+            Arc::new(terraform),
+            machines_dir,
         )
+        .with_setup(Arc::new(AnsibleSetup::find()));
+        provider.identity = Some(identity);
+        Ok(provider)
     }
 
     /// Runs `setup` after starts and before stops (Ansible).
@@ -666,8 +731,17 @@ impl AwsProvider {
         Ok(())
     }
 
+    /// The access key, and settings that keep Terraform's AWS provider from
+    /// looking for credentials or settings anywhere else: no `~/.aws` files
+    /// (Terraform sees `$HOME`) and no instance metadata.
     async fn terraform_env(&self) -> ProviderResult<Vec<(String, String)>> {
-        self.api.credential_env().await
+        let mut env = self.api.credential_env().await?;
+        env.extend(
+            TERRAFORM_ISOLATION
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        Ok(env)
     }
 
     async fn backend(&self, machine_id: &str) -> ProviderResult<Backend> {
@@ -1236,6 +1310,10 @@ impl CloudProvider for AwsProvider {
 
     fn display_name(&self) -> &str {
         "AWS"
+    }
+
+    fn signed_in_as(&self) -> Option<String> {
+        self.identity.as_ref().map(sdk::Identity::describe)
     }
 
     async fn ensure_storage(&self) -> ProviderResult<StorageLocation> {

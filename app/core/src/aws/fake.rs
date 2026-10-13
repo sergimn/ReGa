@@ -414,7 +414,14 @@ impl Terraform for FakeTerraform {
         args: &[String],
         env: &[(String, String)],
     ) -> ProviderResult<String> {
+        // The access key, and nothing Terraform could find on the computer.
         assert!(env.iter().any(|(k, _)| k == "AWS_ACCESS_KEY_ID"));
+        for (k, v) in super::TERRAFORM_ISOLATION {
+            assert!(
+                env.contains(&(k.to_string(), v.to_string())),
+                "Terraform runs without {k}={v}"
+            );
+        }
         let vars = read_vars(dir);
         let id = vars.machine_id.clone();
         let verb = args.first().cloned().unwrap_or_default();

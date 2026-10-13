@@ -75,6 +75,51 @@ const leftoverVolume = OrphanSummary(
   name: 'rega-old-library',
 );
 
+const awsFields = [
+  CredentialFieldInfo(
+    id: 'access_key_id',
+    label: 'Access key ID',
+    secret: false,
+  ),
+  CredentialFieldInfo(
+    id: 'secret_access_key',
+    label: 'Secret access key',
+    secret: true,
+  ),
+];
+
+/// AWS with nothing saved, as on a first start.
+const notSignedIn = ProviderInfo(
+  id: 'aws',
+  name: 'AWS',
+  demo: true,
+  notice: 'Enter your AWS credentials to use your account.',
+  credentialFields: awsFields,
+  hasCredentials: false,
+  canReconnect: false,
+);
+
+/// AWS signed in with a saved access key.
+ProviderInfo signedIn({String keyId = 'typed-key-id', String? notice}) =>
+    ProviderInfo(
+      id: 'aws',
+      name: 'AWS',
+      demo: false,
+      notice: notice,
+      credentialFields: [
+        CredentialFieldInfo(
+          id: 'access_key_id',
+          label: 'Access key ID',
+          secret: false,
+          value: keyId,
+        ),
+        awsFields[1],
+      ],
+      hasCredentials: true,
+      canReconnect: false,
+      signedInAs: 'IAM user rega, account 123456789012',
+    );
+
 /// In-memory backend for widget tests; records what the UI asked for.
 class FakeBackend implements RegaBackend {
   FakeBackend({
@@ -85,12 +130,19 @@ class FakeBackend implements RegaBackend {
   final List<MachineSummary> machines;
   List<OrphanSummary> orphans = [];
 
-  ProviderInfo provider = const ProviderInfo(
-    id: 'aws',
-    name: 'AWS',
-    demo: true,
-    notice: 'No AWS credentials found.',
-  );
+  ProviderInfo provider = notSignedIn;
+
+  /// The secret access key AWS accepts; anything else is refused.
+  String acceptedSecret = 'typed-secret';
+
+  /// Signing in waits for this before answering, when set.
+  Future<void>? signInGate;
+
+  /// Signing out fails with this, when set.
+  Object? signOutError;
+
+  /// Signing out waits for this before answering, when set.
+  Future<void>? signOutGate;
 
   /// When set, machine actions and launches throw it.
   Object? actionError;
@@ -163,6 +215,40 @@ class FakeBackend implements RegaBackend {
   Future<List<ProviderInfo>> connectProviders() async {
     calls.add('connect');
     return [provider];
+  }
+
+  @override
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  ) async {
+    calls.add('sign in ${values['access_key_id']}');
+    await signInGate;
+    if (values['secret_access_key'] != acceptedSecret) {
+      throw const RegaError(
+        message:
+            "Couldn't sign in to AWS: checking the AWS access key failed: "
+            'InvalidClientTokenId',
+        gamesNotSaved: false,
+      );
+    }
+    return provider = signedIn(keyId: values['access_key_id']!);
+  }
+
+  @override
+  Future<ProviderInfo> forgetCredentials(String providerId) async {
+    calls.add('sign out');
+    await signOutGate;
+    if (signOutError case final e?) throw e;
+    return provider = const ProviderInfo(
+      id: 'aws',
+      name: 'AWS',
+      demo: true,
+      notice: 'Signed out. Enter your AWS credentials to use your account.',
+      credentialFields: awsFields,
+      hasCredentials: false,
+      canReconnect: false,
+    );
   }
 
   @override

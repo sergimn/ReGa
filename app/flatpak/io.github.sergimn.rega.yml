@@ -16,10 +16,9 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
-  # AWS credentials and profiles, read by the app and by Terraform. The SSO
-  # token cache is writable so an SSO sign-in can refresh its token.
-  - --filesystem=~/.aws:ro
-  - --filesystem=~/.aws/sso/cache:create
+  # No access to ~/.aws or any other cloud CLI's files: ReGa only uses the
+  # credentials entered in the app. It keeps them in the system keyring
+  # through the Secret portal, which needs no permission here.
 modules:
   # The app runs Terraform to create, change and destroy machines. Keep the
   # version in step with .github/workflows/terraform.yml.

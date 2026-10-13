@@ -43,6 +43,15 @@ class _HomeShellState extends State<HomeShell> {
     });
   }
 
+  /// A provider the user signed in to or out of.
+  void _changed(ProviderInfo info) {
+    setState(() {
+      _providers = _providers.then(
+        (providers) => [for (final p in providers) p.id == info.id ? info : p],
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<ProviderInfo>>(
@@ -123,11 +132,15 @@ class _HomeShellState extends State<HomeShell> {
           const VerticalDivider(width: 1),
           Expanded(
             child: ProviderPage(
-              // A reconnect can turn demo data into a real account.
-              key: ValueKey('${provider.id}-${provider.demo}'),
+              // Signing in, out or to another account changes what the
+              // page shows from the ground up.
+              key: ValueKey(
+                '${provider.id}-${provider.demo}-${provider.signedInAs}',
+              ),
               backend: widget.backend,
               provider: provider,
               onReconnect: _reconnect,
+              onProviderChanged: _changed,
             ),
           ),
         ],
