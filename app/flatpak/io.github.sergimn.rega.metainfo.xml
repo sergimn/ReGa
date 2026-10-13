@@ -49,10 +49,10 @@
         <p>
           You now enter your AWS access key in the app, which keeps it in
           the system keyring; ReGa no longer reads ~/.aws or environment
-          variables. Adds an About box with a licence page and the AWS logo
-          in the side menu, and a game library restore no longer stops
-          short when a new machine's setup reboots it. The Flatpak is now
-          built from source.
+          variables. It adds an About box with a licence page, and shows the
+          AWS logo in the side menu. A game library restore no longer stops
+          short when a new machine's setup reboots it, and the Flatpak is
+          now built from source.
         </p>
       </description>
     </release>
