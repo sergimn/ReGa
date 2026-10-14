@@ -36,13 +36,16 @@ check one:
 | Sunshine, the virtual display driver, the AWS CLI, WireGuard | version and SHA-256 in the Ansible role defaults |
 | Terraform in the Flatpak | version and SHA-256 in the manifest |
 | Ansible in the Flatpak | `app/flatpak/ansible.yml`, generated from the Ansible lock and `requirements.yml` with a SHA-256 for every file |
+| Flutter and Rust in the Flatpak build (the SDK, its engine and tool packages, the toolchain) | `app/flatpak/flutter.yml` and `rust.yml`, generated from CI's versions with a SHA-256 for every file (Flutter's git repository, a commit) |
 | Rust, Flutter, Terraform, TFLint, Python and runner images in CI | exact version |
 
 Tools that only accept a version (the toolchains, Pester, PSScriptAnalyzer,
 the Ansible collections, the TFLint AWS ruleset) are pinned to an exact one.
 Not pinned on purpose: the Steam installer and the NVIDIA driver, which only
-exist as "latest" and are signature-checked on the machine instead, and the
-Ubuntu packages CI installs with apt.
+exist as "latest" and are signature-checked on the machine instead, the
+Ubuntu packages CI installs with apt, and the Flatpak's runtime, SDK and
+LLVM SDK extension, which come from Flathub at their current build of the
+branch the manifest names.
 
 The `.txt` files hold the versions you choose; install from the `.lock`
 files, which pip checks against their hashes. To change a Python package,
@@ -103,10 +106,52 @@ found and what is waiting.
   regenerated, and Flutter updates need `app/pubspec.lock` regenerated with
   the new Flutter (`flutter pub get`), since CI uses it read-only. None of
   these merges on its own.
+- Flutter and Rust: the Flatpak builds the app with CI's versions, from
+  `app/flatpak/flutter.yml` and `rust.yml`, so their PRs need
+  `python3 app/flatpak/sources.py update` run and its result committed (the
+  PR says so, and CI fails until then). These don't merge on their own.
+  Crate and Dart package updates need nothing: the Flatpak build takes its
+  sources from the locks.
 - Ansible: the Flatpak bundles the versions in `infra/ansible/requirements.lock`
   and `requirements.yml`, so a PR that changes them needs
   `python3 app/flatpak/pins.py update` run and its result committed (the PR
   says so, and CI fails until then). These don't merge on their own either.
+- Rust crates: the Flatpak ships each crate's licence text, gathered at
+  build time, so crate updates need nothing by hand. The App workflow fails
+  when a crate ships no licence text, comes under a licence that needs more
+  than its notice, or changes a licence someone read by hand; the message
+  says what to do (more in `app/flatpak/README.md`).
 - Not tracked: the AWS CLI (it releases several times a week, and its MSI
   has no published hash to update from) and WireGuard for Windows. Update
   their version and SHA-256 in the Ansible role defaults by hand.
+
+## Releasing
+
+A release is a `v` tag on main; the Release workflow
+(`.github/workflows/release.yml`) does the rest. In a PR first:
+
+1. Set the new version (MAJOR.MINOR.PATCH) in `app/pubspec.yaml` (keep a
+   `+build` number), `app/core/Cargo.toml` and `app/rust/Cargo.toml`, then
+   run `cargo update --workspace` in `app/`, which moves only ReGa's own
+   crates in `Cargo.lock`.
+2. Add a `<release version=... date=...>` at the top of the `<releases>` in
+   `app/flatpak/io.github.sergimn.rega.metainfo.xml`, with a sentence or two
+   on what changed; software centres show it.
+3. Write the release notes in `docs/releases/<version>.md`: install steps,
+   what's new, what doesn't work yet. They become the GitHub release's text.
+
+`python3 app/flatpak/release.py check` (CI runs it) fails until all of these
+agree. To try the uncached build a release does, run the App workflow by
+hand (Actions, App, Run workflow) with "release" ticked. Once the PR has
+merged, tag its merge commit and push the tag:
+
+```sh
+git tag v0.0.1 origin/main
+git push origin v0.0.1
+```
+
+The workflow checks the tag is on main and matches the version, runs the
+whole App workflow on it without caches, and publishes the Flatpak it built
+and tested as `rega-x86_64.flatpak`, with a `SHA256SUMS` file. If a job
+fails, fix it on main, delete the tag (`git push --delete origin v0.0.1`)
+and tag again.

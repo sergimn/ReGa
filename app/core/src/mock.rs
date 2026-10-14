@@ -13,6 +13,7 @@ use crate::model::{
     LaunchRequest, Machine, MachineState, MachineType, Orphan, Price, Region, StorageLocation,
 };
 use crate::provider::{CloudProvider, ProviderError, ProviderResult};
+use crate::stream::StreamTarget;
 
 #[derive(Debug, Clone)]
 pub struct MockRegion {
@@ -337,6 +338,21 @@ impl CloudProvider for MockProvider {
             return Err(ProviderError::UnknownMachine(machine_id.into()));
         }
         Ok(())
+    }
+
+    /// Demo machines have nothing behind them to stream from.
+    async fn stream_target(&self, machine_id: &str) -> ProviderResult<StreamTarget> {
+        let machine = self.update(machine_id, |_| Ok(()))?;
+        if machine.state != MachineState::Running {
+            return Err(ProviderError::InvalidState(format!(
+                "{} isn't running; start it first",
+                machine.name
+            )));
+        }
+        Err(ProviderError::InvalidState(
+            "this is a demo machine, with nothing to stream. Connect a cloud account to play"
+                .into(),
+        ))
     }
 
     async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {

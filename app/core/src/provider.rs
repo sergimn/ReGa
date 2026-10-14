@@ -2,14 +2,18 @@
 
 use async_trait::async_trait;
 
+use crate::credentials::{CredentialField, Credentials};
+use crate::mock::MockProvider;
 use crate::model::{LaunchRequest, Machine, MachineType, Orphan, Price, Region, StorageLocation};
+use crate::stream::StreamTarget;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ProviderError {
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
-    #[error("no credentials configured for {0}")]
-    MissingCredentials(String),
+    /// Reading or writing the system keyring failed.
+    #[error("the system keyring: {0}")]
+    Keyring(String),
     #[error("unknown machine type {0}")]
     UnknownMachineType(String),
     #[error("unknown machine {0}")]
@@ -41,6 +45,12 @@ pub trait CloudProvider: Send + Sync {
 
     /// Name shown in the side menu, such as `AWS`.
     fn display_name(&self) -> &str;
+
+    /// Who the credentials sign in as, such as an IAM user and its account,
+    /// so the user can tell the right account is in use.
+    fn signed_in_as(&self) -> Option<String> {
+        None
+    }
 
     /// Creates the state and library buckets if they don't exist yet.
     async fn ensure_storage(&self) -> ProviderResult<StorageLocation>;
@@ -93,10 +103,37 @@ pub trait CloudProvider: Send + Sync {
     /// `even_if_unsaved` deletes it without trying to save the games.
     async fn destroy(&self, machine_id: &str, even_if_unsaved: bool) -> ProviderResult<()>;
 
+    /// What this device needs to stream from a running machine that isn't
+    /// busy. With WireGuard off, first points the Sunshine ports at this
+    /// device's current IP (applying only if it changed), so Play works
+    /// after an IP change.
+    async fn stream_target(&self, machine_id: &str) -> ProviderResult<StreamTarget>;
+
     /// Resources tagged `Project=ReGa`, in every region, that belong to no
     /// machine in the state store.
     async fn orphans(&self) -> ProviderResult<Vec<Orphan>>;
 
     /// Deletes those of `orphans` that are still orphans, instances first.
     async fn delete_orphans(&self, orphans: &[Orphan]) -> ProviderResult<()>;
+}
+
+/// Signs in to one cloud, only ever with the credentials the user entered
+/// in ReGa (see [`crate::credentials`]).
+#[async_trait]
+pub trait Connector: Send + Sync {
+    /// The id of the providers it makes, such as `aws`.
+    fn id(&self) -> &str;
+
+    fn display_name(&self) -> &str;
+
+    /// What the user fills in to sign in.
+    fn credential_fields(&self) -> Vec<CredentialField>;
+
+    /// Signs in with `credentials` and nothing else: no environment
+    /// variables, configuration files or instance metadata. Fails when the
+    /// cloud doesn't accept them.
+    async fn connect(&self, credentials: &Credentials) -> ProviderResult<Box<dyn CloudProvider>>;
+
+    /// Sample data to show until the user signs in.
+    fn demo(&self) -> MockProvider;
 }

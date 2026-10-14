@@ -1,15 +1,18 @@
 //! Everything the Flutter UI can call. Types here are flat views of the core
 //! model, shaped for display.
 
+use std::collections::HashMap;
 use std::fmt::Display;
 
 use futures::future::try_join_all;
+use rega_core::credentials::Credentials;
 use rega_core::region::{self, RegionCandidate};
 use rega_core::{
     roomy_cpu_type, CloudProvider, LaunchRequest, Machine, MachineState, MachineType, Orphan,
     ProviderError, Region, ResourceKind, DEFAULT_DISK_GIB,
 };
 
+use crate::api::stream;
 use crate::registry;
 
 /// An error the UI shows as is: a plain message, never a backtrace.
@@ -41,8 +44,29 @@ pub struct ProviderInfo {
     pub name: String,
     /// True while the provider shows sample data instead of a real account.
     pub demo: bool,
-    /// Why it shows sample data, such as missing credentials.
+    /// Why it shows sample data, such as no credentials entered yet, or
+    /// something to know about the account it's signed in to.
     pub notice: Option<String>,
+    /// What the user fills in to sign in.
+    pub credential_fields: Vec<CredentialFieldInfo>,
+    /// Credentials are saved for it (even when signing in with them
+    /// failed), so it can offer to sign out.
+    pub has_credentials: bool,
+    /// Connecting again might sign in, such as once the keyring is
+    /// unlocked, so it can offer to reconnect.
+    pub can_reconnect: bool,
+    /// Who it's signed in as, such as an IAM user and its account.
+    pub signed_in_as: Option<String>,
+}
+
+/// One input of the credentials form.
+pub struct CredentialFieldInfo {
+    pub id: String,
+    pub label: String,
+    /// Typed hidden; a saved value is never sent back.
+    pub secret: bool,
+    /// The saved value, for a field that isn't secret.
+    pub value: Option<String>,
 }
 
 pub struct MachineOffer {
@@ -142,19 +166,57 @@ pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
 }
 
-/// Signs in to every provider and returns them for the side menu. A
-/// provider without working credentials comes back as demo data, with the
-/// reason. Calling it again reconnects.
+/// Signs in to every provider with the credentials saved in ReGa, and
+/// returns them for the side menu. A provider without working credentials
+/// comes back as demo data, with the reason. Calling it again reconnects.
 pub async fn connect_providers() -> Vec<ProviderInfo> {
     registry::connect().await.iter().map(|e| info(e)).collect()
 }
 
+/// Signs in to `provider_id` with what the user typed (by field id) and,
+/// once the cloud accepts it, saves it in the system keyring in place of
+/// what was there. Fails, changing nothing, when the cloud refuses it.
+pub async fn save_credentials(
+    provider_id: String,
+    values: HashMap<String, String>,
+) -> RegaResult<ProviderInfo> {
+    let entry = registry::sign_in(&provider_id, Credentials::new(values)).await?;
+    Ok(info(&entry))
+}
+
+/// Forgets the credentials saved for `provider_id`; it shows demo data
+/// until new ones are entered. Machines in the account are left alone.
+pub async fn forget_credentials(provider_id: String) -> RegaResult<ProviderInfo> {
+    let entry = registry::sign_out(&provider_id).await?;
+    Ok(info(&entry))
+}
+
 fn info(e: &registry::Entry) -> ProviderInfo {
+    let saved = |id: &str| {
+        e.saved
+            .as_ref()?
+            .iter()
+            .find(|(k, _)| k == id)
+            .map(|(_, v)| v.clone())
+    };
     ProviderInfo {
         id: e.provider().id().into(),
         name: e.provider().display_name().into(),
         demo: e.demo_reason().is_some(),
-        notice: e.demo_reason().map(String::from),
+        notice: e.demo_reason().map(String::from).or(e.warning.clone()),
+        credential_fields: e
+            .fields
+            .iter()
+            .map(|f| CredentialFieldInfo {
+                id: f.id.clone(),
+                label: f.label.clone(),
+                secret: f.secret,
+                value: if f.secret { None } else { saved(&f.id) },
+            })
+            .collect(),
+        has_credentials: e.saved.is_some(),
+        can_reconnect: e.can_reconnect,
+        signed_in_as: e.provider().signed_in_as(),
     }
 }
 
@@ -324,9 +386,11 @@ pub async fn start_machine(provider_id: String, machine_id: String) -> RegaResul
     view(entry.provider(), machine).await
 }
 
-/// Saves the game library and stops the machine.
+/// Saves the game library and stops the machine, closing Play's
+/// connection to it first.
 pub async fn stop_machine(provider_id: String, machine_id: String) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
+    stream::close_for(&provider_id, &machine_id).await;
     let machine = entry.provider().stop(&machine_id).await?;
     view(entry.provider(), machine).await
 }
@@ -347,6 +411,8 @@ pub async fn resize_machine(
     type_name: String,
 ) -> RegaResult<MachineSummary> {
     let entry = registry::entry(&provider_id)?;
+    // A running machine restarts with a new IP.
+    stream::close_for(&provider_id, &machine_id).await;
     let machine = entry.provider().resize(&machine_id, &type_name).await?;
     view(entry.provider(), machine).await
 }
@@ -361,6 +427,7 @@ pub async fn destroy_machine(
     even_if_unsaved: bool,
 ) -> RegaResult<()> {
     let entry = registry::entry(&provider_id)?;
+    stream::close_for(&provider_id, &machine_id).await;
     entry
         .provider()
         .destroy(&machine_id, even_if_unsaved)
@@ -491,23 +558,71 @@ fn summary(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Once;
 
     /// Every test runs on the same demo provider.
-    fn demo() {
+    pub(crate) fn demo() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| registry::set(vec![registry::Entry::demo("tests")]));
     }
 
     #[test]
     fn demo_entries_say_why() {
-        let p = info(&registry::Entry::demo("No AWS credentials found."));
+        let reason = "Enter your AWS credentials to use your account.";
+        let p = info(&registry::Entry::demo(reason));
         assert_eq!(p.id, "aws");
         assert_eq!(p.name, "AWS");
         assert!(p.demo);
-        assert_eq!(p.notice.as_deref(), Some("No AWS credentials found."));
+        assert_eq!(p.notice.as_deref(), Some(reason));
+        assert!(!p.has_credentials);
+        assert!(!p.can_reconnect);
+        assert_eq!(p.signed_in_as, None);
+        let fields: Vec<_> = p
+            .credential_fields
+            .iter()
+            .map(|f| (f.id.as_str(), f.secret, f.value.clone()))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                ("access_key_id", false, None),
+                ("secret_access_key", true, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_form_gets_saved_values_back_but_never_secrets() {
+        let mut entry = registry::Entry::demo("Couldn't sign in");
+        entry.saved = Some(vec![
+            ("access_key_id".into(), "typed-key-id".into()),
+            // Never in `saved`, but even if it were.
+            ("secret_access_key".into(), "typed-secret".into()),
+        ]);
+        entry.can_reconnect = true;
+        let p = info(&entry);
+        assert!(p.has_credentials);
+        assert!(p.can_reconnect);
+        assert_eq!(
+            p.credential_fields[0].value.as_deref(),
+            Some("typed-key-id")
+        );
+        assert_eq!(p.credential_fields[1].value, None);
+    }
+
+    #[test]
+    fn a_warning_shows_on_a_signed_in_provider() {
+        let mut entry = registry::Entry::demo("unused");
+        entry.state = registry::State::Live {
+            provider: Box::new(rega_core::mock::MockProvider::demo_aws()),
+            rtt: Default::default(),
+        };
+        entry.warning = Some("not saved".into());
+        let p = info(&entry);
+        assert!(!p.demo);
+        assert_eq!(p.notice.as_deref(), Some("not saved"));
     }
 
     #[tokio::test]

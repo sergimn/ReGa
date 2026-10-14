@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::provider::{ProviderError, ProviderResult};
-use crate::setup::{MachineAccess, MachineSetup};
+use crate::setup::{ConnectionDetails, MachineAccess, MachineSetup};
+use crate::stream::tunnel;
 use crate::terraform::{find_on_path, io_error};
 
 /// `infra/ansible` without its tests and examples, file by file. A test
@@ -92,6 +93,10 @@ pub const PLAYBOOK: &[(&str, &str)] = &[
     (
         "roles/sunshine/defaults/main.yml",
         include_str!("../../../infra/ansible/roles/sunshine/defaults/main.yml"),
+    ),
+    (
+        "roles/sunshine/files/cert-fingerprint.ps1",
+        include_str!("../../../infra/ansible/roles/sunshine/files/cert-fingerprint.ps1"),
     ),
     (
         "roles/sunshine/files/set-credentials.ps1",
@@ -380,6 +385,10 @@ pub fn inventory(machine: &MachineAccess, secrets_dir: &Path) -> ProviderResult<
     let host = machine.public_ip.as_deref().ok_or_else(|| {
         ProviderError::InvalidState("the machine has no public IP; is it running?".into())
     })?;
+    // The app's end of the tunnel; with it, the playbook makes no client
+    // key of its own.
+    let client_key = tunnel::public_key(&machine.secrets.wireguard_private_key)
+        .map_err(|e| ProviderError::Cloud(format!("the machine's WireGuard key: {e}")))?;
     let vars = json!({
         "ansible_host": host,
         "ansible_password": format!("{{{{ lookup('ansible.builtin.env', '{PASSWORD_ENV}') }}}}"),
@@ -388,10 +397,31 @@ pub fn inventory(machine: &MachineAccess, secrets_dir: &Path) -> ProviderResult<
         "rega_library_bucket": machine.library_bucket,
         "rega_library_bucket_region": machine.library_region,
         "rega_wireguard_port": WIREGUARD_PORT,
+        "rega_wireguard_client_public_key": client_key,
         "rega_idle_minutes": IDLE_MINUTES,
     });
     let inventory = json!({ "rega": { "hosts": { machine.machine_id.clone(): vars } } });
     Ok(serde_json::to_string_pretty(&inventory).expect("inventories always serialize"))
+}
+
+/// What a device needs from `connection.json`, which `site.yml` writes to
+/// the secrets folder: the tunnel's server key and Sunshine's certificate
+/// fingerprint. Anything that doesn't look like either is left out.
+pub fn parse_connection(json: &[u8]) -> ProviderResult<ConnectionDetails> {
+    let value: Value = serde_json::from_slice(json)
+        .map_err(|e| ProviderError::Cloud(format!("unreadable connection.json: {e}")))?;
+    let server_key = value["wireguard"]["server_public_key"]
+        .as_str()
+        .filter(|k| tunnel::public_key_is_valid(k))
+        .map(String::from);
+    let cert = value["sunshine"]["cert_sha256"]
+        .as_str()
+        .map(str::to_ascii_lowercase)
+        .filter(|c| c.len() == 64 && c.bytes().all(|b| b.is_ascii_hexdigit()));
+    Ok(ConnectionDetails {
+        wireguard_server_public_key: server_key,
+        sunshine_cert_sha256: cert,
+    })
 }
 
 /// Writes a private file, creating its folder (also private).
@@ -492,6 +522,17 @@ impl MachineSetup for AnsibleSetup {
             .await
             .map(|_| ())
             .map_err(|e| ProviderError::Cloud(format!("setting up the machine failed: {e}")))
+    }
+
+    async fn connection(
+        &self,
+        machine: &MachineAccess,
+    ) -> ProviderResult<Option<ConnectionDetails>> {
+        let path = machine.dir.join("secrets").join("connection.json");
+        let json = tokio::fs::read(&path)
+            .await
+            .map_err(|e| io_error("read the connection details the setup wrote", e))?;
+        parse_connection(&json).map(Some)
     }
 
     async fn wait_for_library(&self, machine: &MachineAccess) -> ProviderResult<()> {
@@ -605,6 +646,10 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert_eq!(summarize_failure("", ""), "Ansible failed");
     }
 
+    /// A stand-in for the server's public key: 32 zero bytes, written the
+    /// way WireGuard writes keys.
+    const SERVER_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
     fn machine(dir: &Path) -> MachineAccess {
         MachineAccess {
             machine_id: "gaming-abc123".into(),
@@ -620,6 +665,9 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
             secrets: MachineSecrets {
                 sunshine_password: "sun".into(),
                 desktop_password: "desk-Rg7".into(),
+                wireguard_private_key: tunnel::generate_private_key().unwrap(),
+                wireguard_server_public_key: None,
+                sunshine_cert_sha256: None,
             },
         }
     }
@@ -627,7 +675,8 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
     #[test]
     fn the_inventory_never_holds_the_password() {
         let dir = Path::new("/data/m");
-        let text = inventory(&machine(dir), &dir.join("secrets")).unwrap();
+        let m = machine(dir);
+        let text = inventory(&m, &dir.join("secrets")).unwrap();
         assert!(!text.contains("Pa55word!"));
         let json: Value = serde_json::from_str(&text).unwrap();
         let host = &json["rega"]["hosts"]["gaming-abc123"];
@@ -640,10 +689,79 @@ m                          : ok=1    changed=0    unreachable=0    failed=1
         assert_eq!(host["rega_library_bucket"], "rega-games-123456789012");
         assert_eq!(host["rega_library_bucket_region"], "eu-north-1");
         assert_eq!(host["rega_idle_minutes"], 15);
+        // Only the public half of the app's WireGuard key.
+        let key = &m.secrets.wireguard_private_key;
+        assert_eq!(
+            host["rega_wireguard_client_public_key"],
+            tunnel::public_key(key).unwrap()
+        );
+        assert!(!text.contains(key.as_str()));
 
         let mut stopped = machine(dir);
         stopped.public_ip = None;
         assert!(inventory(&stopped, dir).is_err());
+        let mut keyless = machine(dir);
+        keyless.secrets.wireguard_private_key = String::new();
+        assert!(inventory(&keyless, dir).is_err());
+    }
+
+    #[test]
+    fn connection_details_come_from_connection_json() {
+        // As site.yml writes it, with Jinja's strings for numbers.
+        let json = format!(
+            r#"{{
+    "desktop_user": "rega",
+    "machine_id": "gaming-abc123",
+    "secrets_dir": "/data/m/secrets",
+    "sunshine": {{
+        "cert_sha256": "{cert}",
+        "username": "rega",
+        "web_ui_port": 47990
+    }},
+    "wireguard": {{
+        "client_address": "10.213.37.2/32",
+        "mtu": "1400",
+        "port": "51820",
+        "server_address": "10.213.37.1",
+        "server_public_key": "{SERVER_PUBLIC_KEY}"
+    }}
+}}"#,
+            cert = "AB".repeat(32)
+        );
+        let details = parse_connection(json.as_bytes()).unwrap();
+        assert_eq!(
+            details,
+            ConnectionDetails {
+                wireguard_server_public_key: Some(SERVER_PUBLIC_KEY.into()),
+                sunshine_cert_sha256: Some("ab".repeat(32)),
+            }
+        );
+        // An older playbook's file, without the fingerprint; junk keys.
+        let older = r#"{"sunshine": {"username": "rega"},
+                        "wireguard": {"server_public_key": "not a key"}}"#;
+        assert_eq!(
+            parse_connection(older.as_bytes()).unwrap(),
+            ConnectionDetails::default()
+        );
+        assert!(parse_connection(b"{").is_err());
+    }
+
+    #[tokio::test]
+    async fn the_setup_reads_back_what_the_playbook_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let setup = AnsibleSetup::new(Arc::new(Recorder::default()));
+        let m = machine(tmp.path());
+        // Not written yet: that's an error, not "nothing learnt".
+        assert!(setup.connection(&m).await.is_err());
+        let secrets = tmp.path().join("secrets");
+        std::fs::create_dir_all(&secrets).unwrap();
+        let json = format!(r#"{{"wireguard": {{"server_public_key": "{SERVER_PUBLIC_KEY}"}}}}"#);
+        std::fs::write(secrets.join("connection.json"), json).unwrap();
+        let details = setup.connection(&m).await.unwrap().unwrap();
+        assert_eq!(
+            details.wireguard_server_public_key.as_deref(),
+            Some(SERVER_PUBLIC_KEY)
+        );
     }
 
     /// One `ansible-playbook` run: its folder, arguments and environment.

@@ -23,6 +23,9 @@ class MachineTile extends StatelessWidget {
     required this.onStop,
     required this.onSwitch,
     required this.onDestroy,
+    this.onPlay,
+    this.throughTunnel = false,
+    this.onDisconnect,
   });
 
   final MachineSummary machine;
@@ -39,12 +42,36 @@ class MachineTile extends StatelessWidget {
   final VoidCallback? onSwitch;
   final VoidCallback onDestroy;
 
+  /// Connects, pairs Moonlight and streams; offered on a running machine.
+  /// Null while Play runs for another machine.
+  final VoidCallback? onPlay;
+
+  /// ReGa's WireGuard tunnel to this machine is up.
+  final bool throughTunnel;
+
+  /// Closes that tunnel, ending the stream.
+  final VoidCallback? onDisconnect;
+
   @override
   Widget build(BuildContext context) {
     final m = machine;
     final id = m.id;
     final busy = this.busy ?? (m.busy ? 'Working…' : null);
+    final running = m.status == MachineStatus.running;
     final actions = <Widget>[
+      if (running)
+        FilledButton.tonalIcon(
+          key: ValueKey('play-$id'),
+          onPressed: onPlay,
+          icon: const Icon(Icons.play_arrow),
+          label: const Text('Play'),
+        ),
+      if (running && throughTunnel)
+        TextButton(
+          key: ValueKey('disconnect-$id'),
+          onPressed: onDisconnect,
+          child: const Text('Disconnect'),
+        ),
       if (m.status == MachineStatus.running && !m.spot)
         TextButton(
           key: ValueKey('stop-$id'),
@@ -85,6 +112,7 @@ class MachineTile extends StatelessWidget {
         '${m.offer.vcpus} vCPU · ${formatGb(m.offer.ramGib)} RAM · '
         '${m.offer.gpuModel ?? 'No GPU'} · ${m.regionName}'
         '${m.spot ? ' · Spot' : ''}'
+        '${throughTunnel ? '\nStreaming through WireGuard' : ''}'
         '${m.libraryKept ? '\n$libraryKeptNote' : ''}',
       ),
       trailing: Row(

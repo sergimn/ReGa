@@ -4,9 +4,11 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 
 import 'backend.dart';
+import 'widgets/credentials_dialog.dart';
 import 'widgets/format.dart';
 import 'widgets/machine_card.dart';
 import 'widgets/machine_tile.dart';
+import 'widgets/pair_dialog.dart';
 import 'widgets/region_picker.dart';
 
 /// One provider: purchase toggles, region picker, machine types, launch,
@@ -17,13 +19,17 @@ class ProviderPage extends StatefulWidget {
     required this.backend,
     required this.provider,
     this.onReconnect,
+    this.onProviderChanged,
   });
 
   final RegaBackend backend;
   final ProviderInfo provider;
 
-  /// Signs in again, for example after adding credentials.
+  /// Signs in again with the saved credentials, say after a network error.
   final VoidCallback? onReconnect;
+
+  /// The user signed in or out here; this is the provider now.
+  final ValueChanged<ProviderInfo>? onProviderChanged;
 
   @override
   State<ProviderPage> createState() => _ProviderPageState();
@@ -87,8 +93,20 @@ class _ProviderPageState extends State<ProviderPage> {
   /// finish, so a failing one isn't retried on every reload.
   final Set<String> _finishing = {};
 
+  /// What Play is connected to; the WireGuard tunnel, when it has one.
+  StreamStatus? _stream;
+
+  /// The machine Play is connecting to, while it does.
+  String? _playing;
+
   /// The last failed launch or machine action.
   Object? _actionError;
+
+  /// Why signing out failed.
+  Object? _accountError;
+
+  /// A sign-out is on its way, so the account can't change meanwhile.
+  bool _signingOut = false;
   List<OrphanSummary> _orphans = const [];
   bool _deletingOrphans = false;
 
@@ -118,17 +136,40 @@ class _ProviderPageState extends State<ProviderPage> {
     super.dispose();
   }
 
-  /// Quitting in the middle of a change can stop it halfway, so ask first.
+  /// Quitting in the middle of a change can stop it halfway, and quitting
+  /// with the tunnel up ends the stream, so ask first.
   Future<AppExitResponse> _confirmExit() async {
-    if (!_launching && _busy.isEmpty && !_deletingOrphans) {
+    final bool quit;
+    String name(String machineId) =>
+        _machines.where((m) => m.id == machineId).firstOrNull?.name ??
+        'the machine';
+    if (_launching ||
+        _busy.keys.any((id) => id != _playing) ||
+        _deletingOrphans) {
+      quit = await _confirm(
+        'Quit while a change is running?',
+        'Quitting can stop it halfway. ReGa picks up from there the next '
+            'time, and anything left behind shows under Leftover resources.',
+        'Quit',
+      );
+    } else if (_playing case final machineId?) {
+      quit = await _confirm(
+        'Quit while Play connects?',
+        'Play stops where it is. Press Play again to connect to '
+            '${name(machineId)}.',
+        'Quit',
+      );
+    } else if (_backend.streamStatus() case final stream?
+        when stream.wireguard) {
+      quit = await _confirm(
+        'Quit and end the stream?',
+        'The stream from ${name(stream.machineId)} goes through the WireGuard '
+            'tunnel ReGa runs, which closes when ReGa quits.',
+        'Quit',
+      );
+    } else {
       return AppExitResponse.exit;
     }
-    final quit = await _confirm(
-      'Quit while a change is running?',
-      'Quitting can stop it halfway. ReGa picks up from there the next time, '
-          'and anything left behind shows under Leftover resources.',
-      'Quit',
-    );
     return quit ? AppExitResponse.exit : AppExitResponse.cancel;
   }
 
@@ -136,6 +177,75 @@ class _ProviderPageState extends State<ProviderPage> {
   void _machinesChanged() {
     _schedulePoll();
     _finishSelfStops();
+    _checkStream();
+  }
+
+  /// Keeps the stream status current, and closes the tunnel to a machine
+  /// that is no longer running (say, it stopped itself when idle).
+  Future<void> _checkStream() async {
+    final stream = _backend.streamStatus();
+    final mine = stream != null && stream.providerId == _id;
+    final gone =
+        mine &&
+        !_machines.any(
+          (m) => m.id == stream.machineId && m.status == MachineStatus.running,
+        );
+    if (gone) await _backend.closeTunnel();
+    if (mounted) setState(() => _stream = _backend.streamStatus());
+  }
+
+  String _playLabel(PlayStep step) => switch (step) {
+    PlayStep.connecting || PlayStep.done => 'Connecting…',
+    PlayStep.pairing => 'Pairing…',
+    PlayStep.startingMoonlight => 'Starting Moonlight…',
+  };
+
+  /// Connects to the machine, pairs Moonlight and starts the stream,
+  /// showing each step on the machine. Where ReGa can't run Moonlight (as
+  /// in its Flatpak), it ends by asking for the PIN Moonlight shows.
+  Future<void> _play(MachineSummary m) async {
+    setState(() {
+      _busy[m.id] = _playLabel(PlayStep.connecting);
+      _playing = m.id;
+      _actionError = null;
+    });
+    PlayUpdate? done;
+    try {
+      await for (final update in _backend.play(_id, m.id)) {
+        if (!mounted) return;
+        if (update.step == PlayStep.done) {
+          done = update;
+        } else {
+          setState(() => _busy[m.id] = _playLabel(update.step));
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _actionError = e);
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy.remove(m.id);
+      _playing = null;
+      _stream = _backend.streamStatus();
+    });
+    if (done case PlayUpdate(moonlightHost: final host?, :final paired)) {
+      final throughTunnel = _stream?.wireguard ?? false;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => PairDialog(
+          machineName: m.name,
+          host: host,
+          throughTunnel: throughTunnel,
+          paired: paired,
+          onPair: (pin) => _backend.pairWithPin(_id, m.id, pin),
+        ),
+      );
+    }
+  }
+
+  Future<void> _disconnect() async {
+    await _backend.closeTunnel();
+    if (mounted) setState(() => _stream = _backend.streamStatus());
   }
 
   void _schedulePoll() {
@@ -255,6 +365,129 @@ class _ProviderPageState extends State<ProviderPage> {
     // don't come back in between. Quotas change with it, so regions too.
     await _reload();
     if (mounted) setState(() => _busy.remove(m.id));
+  }
+
+  /// Asks for credentials and signs in with them.
+  Future<void> _enterCredentials() async {
+    setState(() => _accountError = null);
+    // The core has signed in by the time the dialog closes, so the app
+    // hears about it even if this page has gone in the meantime.
+    final changed = widget.onProviderChanged;
+    final info = await showDialog<ProviderInfo>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          CredentialsDialog(backend: _backend, provider: widget.provider),
+    );
+    if (info != null) changed?.call(info);
+  }
+
+  Future<void> _signOut() async {
+    final name = widget.provider.name;
+    final ok = await _confirm(
+      'Sign out of $name?',
+      'ReGa forgets the saved credentials and shows sample data until you '
+          'enter them again. Your machines in $name stay as they are'
+          '${_stream != null ? ', but Play\'s connection closes' : ''}.',
+      'Sign out',
+    );
+    if (!ok || !mounted) return;
+    setState(() {
+      _accountError = null;
+      _signingOut = true;
+    });
+    final changed = widget.onProviderChanged;
+    try {
+      changed?.call(await _backend.forgetCredentials(_id));
+    } catch (e) {
+      if (mounted) setState(() => _accountError = e);
+    }
+    if (mounted) setState(() => _signingOut = false);
+  }
+
+  /// Who the page is signed in as, or why it shows sample data, and the
+  /// buttons to change that.
+  Widget _account(ThemeData theme) {
+    final p = widget.provider;
+    // Switching accounts in the middle of a change would lose track of it.
+    final idle =
+        !_changing && !_deletingOrphans && _playing == null && !_signingOut;
+    final saved = p.hasCredentials || !p.demo;
+    final title = p.demo
+        ? p.notice ?? 'Enter your ${p.name} credentials to use your account.'
+        : 'Signed in as ${p.signedInAs ?? 'your ${p.name} account'}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                p.demo ? Icons.key_outlined : Icons.verified_user_outlined,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 16),
+              // The buttons go under the text, so they wrap rather than
+              // run off a narrow window.
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, key: const ValueKey('account')),
+                    if (!p.demo && p.notice != null)
+                      Text(
+                        p.notice!,
+                        key: const ValueKey('account-warning'),
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        if (p.canReconnect && widget.onReconnect != null)
+                          TextButton(
+                            key: const ValueKey('reconnect'),
+                            onPressed: idle ? widget.onReconnect : null,
+                            child: const Text('Reconnect'),
+                          ),
+                        if (saved)
+                          TextButton(
+                            key: const ValueKey('change-credentials'),
+                            onPressed: idle ? _enterCredentials : null,
+                            child: const Text('Change credentials'),
+                          )
+                        else
+                          FilledButton(
+                            key: const ValueKey('enter-credentials'),
+                            onPressed: idle ? _enterCredentials : null,
+                            child: const Text('Enter credentials'),
+                          ),
+                        if (saved)
+                          TextButton(
+                            key: const ValueKey('sign-out'),
+                            onPressed: idle ? _signOut : null,
+                            child: const Text('Sign out'),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (_accountError case final e?)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.error,
+              ),
+              title: Text('$e'),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _confirm(String title, String body, String action) async {
@@ -440,7 +673,7 @@ class _ProviderPageState extends State<ProviderPage> {
       padding: const EdgeInsets.all(24),
       children: [
         Text(widget.provider.name, style: theme.textTheme.headlineMedium),
-        if (widget.provider.demo) ...[
+        if (widget.provider.demo)
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Align(
@@ -451,19 +684,7 @@ class _ProviderPageState extends State<ProviderPage> {
               ),
             ),
           ),
-          if (widget.provider.notice case final notice?)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(notice),
-              trailing: widget.onReconnect == null
-                  ? null
-                  : TextButton(
-                      key: const ValueKey('reconnect'),
-                      onPressed: widget.onReconnect,
-                      child: const Text('Reconnect'),
-                    ),
-            ),
-        ],
+        _account(theme),
         const SizedBox(height: 16),
         SwitchListTile(
           key: const ValueKey('spot-toggle'),
@@ -600,6 +821,13 @@ class _ProviderPageState extends State<ProviderPage> {
                 ),
                 onSwitch: _changing ? null : () => _switch(m),
                 onDestroy: () => _destroy(m),
+                onPlay: _launching || _busy.isNotEmpty ? null : () => _play(m),
+                throughTunnel:
+                    _stream != null &&
+                    _stream!.providerId == _id &&
+                    _stream!.machineId == m.id &&
+                    _stream!.wireguard,
+                onDisconnect: _disconnect,
               ),
           if (_orphans.isNotEmpty) ..._orphanSection(theme),
         ],

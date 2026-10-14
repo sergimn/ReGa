@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:rega/backend.dart';
 
 const gpuOffer = MachineOffer(
@@ -73,6 +75,51 @@ const leftoverVolume = OrphanSummary(
   name: 'rega-old-library',
 );
 
+const awsFields = [
+  CredentialFieldInfo(
+    id: 'access_key_id',
+    label: 'Access key ID',
+    secret: false,
+  ),
+  CredentialFieldInfo(
+    id: 'secret_access_key',
+    label: 'Secret access key',
+    secret: true,
+  ),
+];
+
+/// AWS with nothing saved, as on a first start.
+const notSignedIn = ProviderInfo(
+  id: 'aws',
+  name: 'AWS',
+  demo: true,
+  notice: 'Enter your AWS credentials to use your account.',
+  credentialFields: awsFields,
+  hasCredentials: false,
+  canReconnect: false,
+);
+
+/// AWS signed in with a saved access key.
+ProviderInfo signedIn({String keyId = 'typed-key-id', String? notice}) =>
+    ProviderInfo(
+      id: 'aws',
+      name: 'AWS',
+      demo: false,
+      notice: notice,
+      credentialFields: [
+        CredentialFieldInfo(
+          id: 'access_key_id',
+          label: 'Access key ID',
+          secret: false,
+          value: keyId,
+        ),
+        awsFields[1],
+      ],
+      hasCredentials: true,
+      canReconnect: false,
+      signedInAs: 'IAM user rega, account 123456789012',
+    );
+
 /// In-memory backend for widget tests; records what the UI asked for.
 class FakeBackend implements RegaBackend {
   FakeBackend({
@@ -83,12 +130,19 @@ class FakeBackend implements RegaBackend {
   final List<MachineSummary> machines;
   List<OrphanSummary> orphans = [];
 
-  ProviderInfo provider = const ProviderInfo(
-    id: 'aws',
-    name: 'AWS',
-    demo: true,
-    notice: 'No AWS credentials found.',
-  );
+  ProviderInfo provider = notSignedIn;
+
+  /// The secret access key AWS accepts; anything else is refused.
+  String acceptedSecret = 'typed-secret';
+
+  /// Signing in waits for this before answering, when set.
+  Future<void>? signInGate;
+
+  /// Signing out fails with this, when set.
+  Object? signOutError;
+
+  /// Signing out waits for this before answering, when set.
+  Future<void>? signOutGate;
 
   /// When set, machine actions and launches throw it.
   Object? actionError;
@@ -130,10 +184,71 @@ class FakeBackend implements RegaBackend {
 
   int get regionCalls => calls.where((c) => c.startsWith('regions')).length;
 
+  /// When set, Play's updates come from it, so a test can step through.
+  /// Otherwise Play goes through every step and ends done.
+  StreamController<PlayUpdate>? playUpdates;
+
+  /// Where Play ends when ReGa can't run Moonlight (manual pairing): the
+  /// host to add in Moonlight. Null means Moonlight streams.
+  String? moonlightHost;
+
+  /// Whether Sunshine already has this device paired.
+  bool paired = false;
+
+  /// Play fails with this, when set.
+  Object? playError;
+
+  /// The PIN Sunshine takes.
+  String acceptedPin = '1234';
+
+  /// Machines Play connects to have WireGuard on.
+  bool wireguard = true;
+
+  /// What Play is connected to.
+  StreamStatus? stream;
+
+  void _dropStream(String machineId) {
+    if (stream?.machineId == machineId) stream = null;
+  }
+
   @override
   Future<List<ProviderInfo>> connectProviders() async {
     calls.add('connect');
     return [provider];
+  }
+
+  @override
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  ) async {
+    calls.add('sign in ${values['access_key_id']}');
+    await signInGate;
+    if (values['secret_access_key'] != acceptedSecret) {
+      throw const RegaError(
+        message:
+            "Couldn't sign in to AWS: checking the AWS access key failed: "
+            'InvalidClientTokenId',
+        gamesNotSaved: false,
+      );
+    }
+    return provider = signedIn(keyId: values['access_key_id']!);
+  }
+
+  @override
+  Future<ProviderInfo> forgetCredentials(String providerId) async {
+    calls.add('sign out');
+    await signOutGate;
+    if (signOutError case final e?) throw e;
+    return provider = const ProviderInfo(
+      id: 'aws',
+      name: 'AWS',
+      demo: true,
+      notice: 'Signed out. Enter your AWS credentials to use your account.',
+      credentialFields: awsFields,
+      hasCredentials: false,
+      canReconnect: false,
+    );
   }
 
   @override
@@ -201,6 +316,9 @@ class FakeBackend implements RegaBackend {
     MachineSummary Function(MachineSummary) f,
   ) async {
     calls.add('$what $machineId');
+    // Like the core: a change that takes the machine down closes Play's
+    // connection to it first.
+    if (what != 'start' && what != 'finish') _dropStream(machineId);
     await actionGate;
     if (actionError case final e?) throw e;
     final i = machines.indexWhere((m) => m.id == machineId);
@@ -277,6 +395,7 @@ class FakeBackend implements RegaBackend {
     bool evenIfUnsaved = false,
   }) async {
     calls.add('destroy $machineId${evenIfUnsaved ? ' anyway' : ''}');
+    _dropStream(machineId);
     await actionGate;
     if (actionError case final e?) throw e;
     if (!evenIfUnsaved && unsaved.contains(machineId)) {
@@ -301,6 +420,64 @@ class FakeBackend implements RegaBackend {
   ) async {
     calls.add('delete ${orphans.map((o) => o.id).join(',')}');
     this.orphans = [];
+  }
+
+  @override
+  Stream<PlayUpdate> play(String providerId, String machineId) {
+    calls.add('play $machineId');
+    void connect() => stream = StreamStatus(
+      providerId: providerId,
+      machineId: machineId,
+      host: moonlightHost ?? '127.0.0.1',
+      wireguard: wireguard,
+    );
+    if (playUpdates case final updates?) {
+      return updates.stream.map((u) {
+        if (u.step == PlayStep.done) connect();
+        return u;
+      });
+    }
+    return _play(connect);
+  }
+
+  Stream<PlayUpdate> _play(void Function() connect) async* {
+    yield const PlayUpdate(step: PlayStep.connecting, paired: false);
+    if (playError case final e?) throw e;
+    connect();
+    if (moonlightHost == null) {
+      yield const PlayUpdate(step: PlayStep.pairing, paired: false);
+      yield const PlayUpdate(step: PlayStep.startingMoonlight, paired: false);
+    }
+    yield PlayUpdate(
+      step: PlayStep.done,
+      moonlightHost: moonlightHost,
+      paired: paired,
+    );
+  }
+
+  @override
+  Future<void> pairWithPin(
+    String providerId,
+    String machineId,
+    String pin,
+  ) async {
+    calls.add('pin $machineId $pin');
+    if (pin != acceptedPin) {
+      throw const RegaError(
+        message: "Sunshine didn't accept that PIN.",
+        gamesNotSaved: false,
+      );
+    }
+    paired = true;
+  }
+
+  @override
+  StreamStatus? streamStatus() => stream;
+
+  @override
+  Future<void> closeTunnel() async {
+    calls.add('close tunnel');
+    stream = null;
   }
 }
 

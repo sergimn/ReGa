@@ -224,6 +224,16 @@
       automerge: false,
       prBodyNotes: [
         'Flutter pins some Dart packages to exact versions and CI uses `app/pubspec.lock` read-only, so run `flutter pub get` in `app/` with this Flutter and commit the lock before merging.',
+        'The Flatpak builds with this Flutter too: run `python3 app/flatpak/sources.py update` and commit `app/flatpak/flutter.yml` before merging. Until then the "Flatpak pins and metadata" check fails.',
+      ],
+    },
+    // The Flatpak builds the app with CI's Rust, from app/flatpak/rust.yml,
+    // which sources.py generates with the release's hashes.
+    {
+      matchDatasources: ['rust-version'],
+      automerge: false,
+      prBodyNotes: [
+        'The Flatpak builds with this Rust too: run `python3 app/flatpak/sources.py update` and commit `app/flatpak/rust.yml` before merging. Until then the "Flatpak pins and metadata" check fails.',
       ],
     },
     {

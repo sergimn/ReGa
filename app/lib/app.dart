@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'backend.dart';
 import 'provider_page.dart';
 import 'theme.dart';
+import 'widgets/about.dart';
+import 'widgets/platform_icon.dart';
 
 class RegaApp extends StatelessWidget {
   const RegaApp({super.key, required this.backend});
@@ -39,6 +41,15 @@ class _HomeShellState extends State<HomeShell> {
     final providers = widget.backend.connectProviders();
     setState(() {
       _providers = providers;
+    });
+  }
+
+  /// A provider the user signed in to or out of.
+  void _changed(ProviderInfo info) {
+    setState(() {
+      _providers = _providers.then(
+        (providers) => [for (final p in providers) p.id == info.id ? info : p],
+      );
     });
   }
 
@@ -112,21 +123,35 @@ class _HomeShellState extends State<HomeShell> {
             destinations: [
               for (final p in providers)
                 NavigationRailDestination(
-                  icon: const Icon(Icons.cloud_outlined),
-                  selectedIcon: const Icon(Icons.cloud),
+                  icon: PlatformIcon(providerId: p.id),
+                  selectedIcon: PlatformIcon(providerId: p.id, selected: true),
                   label: Text(p.name),
                 ),
             ],
             onDestinationSelected: (i) => setState(() => _selected = i),
+            trailingAtBottom: true,
+            trailing: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: IconButton(
+                key: const ValueKey('about'),
+                icon: const Icon(Icons.info_outline),
+                tooltip: 'About ReGa',
+                onPressed: () => showRegaAbout(context),
+              ),
+            ),
           ),
           const VerticalDivider(width: 1),
           Expanded(
             child: ProviderPage(
-              // A reconnect can turn demo data into a real account.
-              key: ValueKey('${provider.id}-${provider.demo}'),
+              // Signing in, out or to another account changes what the
+              // page shows from the ground up.
+              key: ValueKey(
+                '${provider.id}-${provider.demo}-${provider.signedInAs}',
+              ),
               backend: widget.backend,
               provider: provider,
               onReconnect: _reconnect,
+              onProviderChanged: _changed,
             ),
           ),
         ],

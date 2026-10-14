@@ -22,13 +22,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::future::{join_all, try_join_all};
 
-use crate::ansible::AnsibleSetup;
+use crate::ansible::{self, AnsibleSetup};
+use crate::credentials::{CredentialField, Credentials};
+use crate::mock::MockProvider;
 use crate::model::{
     roomy_cpu_type, Gpu, LaunchRequest, Machine, MachineSpec, MachineState, MachineType, Orphan,
     Price, Region, ResourceKind, StorageLocation,
 };
-use crate::provider::{CloudProvider, ProviderError, ProviderResult};
+use crate::provider::{CloudProvider, Connector, ProviderError, ProviderResult};
 use crate::setup::{MachineAccess, MachineSecrets, MachineSetup, NoSetup};
+use crate::stream::{self, StreamTarget, WireGuardPeer};
 use crate::terraform::{self, io_error, Backend, LockInfo, RunMarker, Terraform};
 use api::{AwsApi, BucketInfo, Instance};
 use cache::TtlCache;
@@ -197,6 +200,62 @@ impl IpLookup for CheckIp {
     }
 }
 
+/// Settings Terraform runs with besides the access key, so its AWS provider
+/// uses that key and nothing it could find on the computer.
+pub const TERRAFORM_ISOLATION: &[(&str, &str)] = &[
+    ("AWS_CONFIG_FILE", "/dev/null"),
+    ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
+    ("AWS_EC2_METADATA_DISABLED", "true"),
+];
+
+/// What the user enters to sign in to AWS: an IAM user's access key.
+pub fn credential_fields() -> Vec<CredentialField> {
+    vec![
+        CredentialField::new("access_key_id", "Access key ID", false),
+        CredentialField::new("secret_access_key", "Secret access key", true),
+    ]
+}
+
+/// The access key in `credentials`, once every field is there.
+pub fn access_key(credentials: &Credentials) -> ProviderResult<sdk::AccessKey> {
+    credentials.check(&credential_fields())?;
+    let get = |id| credentials.get(id).unwrap_or_default().to_string();
+    Ok(sdk::AccessKey {
+        id: get("access_key_id"),
+        secret: get("secret_access_key"),
+    })
+}
+
+/// Signs in to AWS with the access key the user entered.
+pub struct AwsConnector {
+    pub options: ConnectOptions,
+}
+
+#[async_trait]
+impl Connector for AwsConnector {
+    fn id(&self) -> &str {
+        "aws"
+    }
+
+    fn display_name(&self) -> &str {
+        "AWS"
+    }
+
+    fn credential_fields(&self) -> Vec<CredentialField> {
+        credential_fields()
+    }
+
+    async fn connect(&self, credentials: &Credentials) -> ProviderResult<Box<dyn CloudProvider>> {
+        let key = access_key(credentials)?;
+        let provider = AwsProvider::connect(self.options.clone(), &key).await?;
+        Ok(Box::new(provider))
+    }
+
+    fn demo(&self) -> MockProvider {
+        MockProvider::demo_aws()
+    }
+}
+
 /// Where the app keeps its per-device files.
 #[derive(Debug, Clone)]
 pub struct ConnectOptions {
@@ -263,6 +322,8 @@ struct Snapshot {
 pub struct AwsProvider {
     api: Arc<dyn AwsApi>,
     account_id: String,
+    /// Who the access key belongs to, when signed in with one.
+    identity: Option<sdk::Identity>,
     terraform: Arc<dyn Terraform>,
     setup: Arc<dyn MachineSetup>,
     ip: Arc<dyn IpLookup>,
@@ -295,6 +356,7 @@ impl AwsProvider {
         Self {
             api,
             account_id,
+            identity: None,
             terraform,
             setup: Arc::new(NoSetup),
             ip: Arc::new(CheckIp),
@@ -309,17 +371,21 @@ impl AwsProvider {
         }
     }
 
-    /// Signs in with the default AWS credential chain (environment, then
-    /// `~/.aws` profiles). [`ProviderError::MissingCredentials`] when there
-    /// are none. Machines are set up with Ansible ([`AnsibleSetup`]).
-    pub async fn connect(options: ConnectOptions) -> ProviderResult<Self> {
-        let (api, account_id) = sdk::SdkApi::connect().await?;
+    /// Signs in with `key` and nothing else (see [`sdk::SdkApi::connect`]).
+    /// Machines are set up with Ansible ([`AnsibleSetup`]).
+    pub async fn connect(options: ConnectOptions, key: &sdk::AccessKey) -> ProviderResult<Self> {
+        let (api, identity) = sdk::SdkApi::connect(key).await?;
         let terraform = terraform::TerraformCli::find(options.cache_dir.join("terraform-plugins"));
-        let machines_dir = options.data_dir.join("aws").join(&account_id);
-        Ok(
-            Self::new(Arc::new(api), account_id, Arc::new(terraform), machines_dir)
-                .with_setup(Arc::new(AnsibleSetup::find())),
+        let machines_dir = options.data_dir.join("aws").join(&identity.account);
+        let mut provider = Self::new(
+            Arc::new(api),
+            identity.account.clone(),
+            Arc::new(terraform),
+            machines_dir,
         )
+        .with_setup(Arc::new(AnsibleSetup::find()));
+        provider.identity = Some(identity);
+        Ok(provider)
     }
 
     /// Runs `setup` after starts and before stops (Ansible).
@@ -624,21 +690,58 @@ impl AwsProvider {
         Ok(Some(key))
     }
 
-    /// The passwords the setup gives the machine, made the first time.
+    /// The passwords the setup gives the machine and its WireGuard key,
+    /// made the first time.
     async fn secrets(&self, machine_id: &str) -> ProviderResult<MachineSecrets> {
         let key = record::secrets_key(machine_id);
         if let Some(json) = self.api.get_object(&self.state_bucket(), &key).await? {
-            return MachineSecrets::from_json(&json);
+            let mut secrets = MachineSecrets::from_json(&json)?;
+            // Saved by an app from before the WireGuard client.
+            if secrets.add_missing_key()? {
+                self.save_secrets(machine_id, &secrets).await?;
+            }
+            return Ok(secrets);
         }
         let secrets = MachineSecrets::generate()?;
-        self.api
-            .put_object(&self.state_bucket(), &key, secrets.to_json().into_bytes())
-            .await?;
+        self.save_secrets(machine_id, &secrets).await?;
         Ok(secrets)
     }
 
+    async fn save_secrets(&self, machine_id: &str, secrets: &MachineSecrets) -> ProviderResult<()> {
+        self.api
+            .put_object(
+                &self.state_bucket(),
+                &record::secrets_key(machine_id),
+                secrets.to_json().into_bytes(),
+            )
+            .await
+    }
+
+    /// Keeps what the setup learnt about the machine (its WireGuard key and
+    /// Sunshine's certificate) with its secrets, so every device can connect,
+    /// not only the one that ran the setup. Saves only on a change.
+    async fn learn_connection(&self, access: &MachineAccess) -> ProviderResult<()> {
+        let Some(details) = self.setup.connection(access).await? else {
+            return Ok(());
+        };
+        let mut secrets = self.secrets(&access.machine_id).await?;
+        if secrets.learn(&details) {
+            self.save_secrets(&access.machine_id, &secrets).await?;
+        }
+        Ok(())
+    }
+
+    /// The access key, and settings that keep Terraform's AWS provider from
+    /// looking for credentials or settings anywhere else: no `~/.aws` files
+    /// (Terraform sees `$HOME`) and no instance metadata.
     async fn terraform_env(&self) -> ProviderResult<Vec<(String, String)>> {
-        self.api.credential_env().await
+        let mut env = self.api.credential_env().await?;
+        env.extend(
+            TERRAFORM_ISOLATION
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        Ok(env)
     }
 
     async fn backend(&self, machine_id: &str) -> ProviderResult<Backend> {
@@ -920,6 +1023,7 @@ impl AwsProvider {
                     self.save_record(record).await?;
                 }
                 self.setup.after_start(&access).await?;
+                self.learn_connection(&access).await?;
                 if wait_for_library {
                     self.setup.wait_for_library(&access).await?;
                 }
@@ -1206,6 +1310,10 @@ impl CloudProvider for AwsProvider {
 
     fn display_name(&self) -> &str {
         "AWS"
+    }
+
+    fn signed_in_as(&self) -> Option<String> {
+        self.identity.as_ref().map(sdk::Identity::describe)
     }
 
     async fn ensure_storage(&self) -> ProviderResult<StorageLocation> {
@@ -1600,6 +1708,68 @@ impl CloudProvider for AwsProvider {
             }
             _ => Ok(()),
         }
+    }
+
+    async fn stream_target(&self, machine_id: &str) -> ProviderResult<StreamTarget> {
+        // Before taking this device's own claim, which counts as busy.
+        let busy = self.snapshot().await?.busy.contains(machine_id);
+        let _acting = self.begin(machine_id)?;
+        let mut record = self.record(machine_id).await?;
+        let instance = self.instance_of(&record).await?;
+        let name = &record.name;
+        let Some(public_ip) = instance
+            .filter(|i| i.state == MachineState::Running)
+            .and_then(|i| i.public_ip)
+        else {
+            return Err(ProviderError::InvalidState(format!(
+                "{name} isn't running; start it first"
+            )));
+        };
+        if busy {
+            return Err(ProviderError::InvalidState(format!(
+                "{name} is busy with a change; wait for it to finish"
+            )));
+        }
+        let secrets = self.secrets(machine_id).await?;
+        let wireguard = record.vars.wireguard_enabled;
+        let set_up_first = || {
+            ProviderError::InvalidState(format!(
+                "{name} hasn't been set up for streaming yet. Start it again to set it up"
+            ))
+        };
+        let wireguard = if wireguard {
+            let server_public_key = secrets
+                .wireguard_server_public_key
+                .clone()
+                .ok_or_else(set_up_first)?;
+            let ip: std::net::IpAddr = public_ip.parse().map_err(|_| {
+                ProviderError::Cloud(format!("{name} has an odd public IP: {public_ip}"))
+            })?;
+            Some(WireGuardPeer {
+                endpoint: (ip, ansible::WIREGUARD_PORT).into(),
+                server_public_key,
+                client_private_key: secrets.wireguard_private_key.clone(),
+                client_address: stream::CLIENT_ADDRESS,
+                server_address: stream::SERVER_ADDRESS,
+                mtu: stream::TUNNEL_MTU,
+            })
+        } else {
+            // The password crosses the internet, so only to the certificate
+            // the setup saw.
+            if secrets.sunshine_cert_sha256.is_none() {
+                return Err(set_up_first());
+            }
+            self.open_to_me(&mut record).await?;
+            None
+        };
+        Ok(StreamTarget {
+            machine_id: machine_id.into(),
+            public_ip,
+            sunshine_user: stream::SUNSHINE_USER.into(),
+            sunshine_password: secrets.sunshine_password,
+            sunshine_cert_sha256: secrets.sunshine_cert_sha256,
+            wireguard,
+        })
     }
 
     async fn orphans(&self) -> ProviderResult<Vec<Orphan>> {

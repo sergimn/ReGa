@@ -5,9 +5,8 @@ import 'package:rega/app.dart';
 import 'package:rega/backend.dart';
 import 'package:rega/src/rust/frb_generated.dart';
 
-/// Runs the real app against the Rust core. Without AWS credentials (as in
-/// CI) the core falls back to the demo provider; run it with `REGA_DEMO=1`
-/// when you have credentials.
+/// Runs the real app against the Rust core, with `REGA_DEMO=1` (as in CI):
+/// demo data, and the keyring left alone.
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   // The page's own list; the name field has a Scrollable of its own.
@@ -31,6 +30,36 @@ void main() {
       scrollable: page,
     );
     expect(find.text('No machines yet'), findsOneWidget);
+  });
+
+  testWidgets('credentials reach the Rust core and a refusal shows', (
+    tester,
+  ) async {
+    await tester.pumpWidget(RegaApp(backend: RustBackend()));
+    await tester.pumpAndSettle();
+    expect(find.text('REGA_DEMO is set'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('enter-credentials')));
+    await tester.pumpAndSettle();
+    expect(find.text('Access key ID'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('credential-access_key_id')),
+      'typed-key-id',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('credential-secret_access_key')),
+      'typed-secret',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('credentials-save')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('REGA_DEMO is set, so ReGa only shows sample data'),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('credentials-cancel')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Demo data'), findsOneWidget);
   });
 
   testWidgets('launches, stops and destroys a demo machine', (tester) async {

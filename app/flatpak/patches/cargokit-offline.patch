@@ -1,0 +1,18 @@
+cargokit (app/rust_builder) fetches its build tool's Dart packages with
+`dart pub get`, which needs the network. Flatpak builds have none: these
+come offline from the pub cache that sources.py fills from build_tool's
+pubspec.lock and the app's. The tool runs without its lock, so pub takes the
+newest version there that its pubspec allows.
+
+--- a/run_build_tool.sh
++++ b/run_build_tool.sh
+@@ -74,3 +74,3 @@
+ if [ ! -f "$PACKAGE_HASH_FILE" ]; then
+-    "$DART" pub get --no-precompile
++    "$DART" pub get --no-precompile --offline
+     "$DART" compile kernel bin/build_tool_runner.dart
+@@ -92,3 +92,3 @@
+ if [ $exit_code == 253 ]; then
+-  "$DART" pub get --no-precompile
++  "$DART" pub get --no-precompile --offline
+   "$DART" compile kernel bin/build_tool_runner.dart

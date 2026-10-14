@@ -15,6 +15,10 @@ rega_library_prefix: steam-library
 rega_library_path: D:\SteamLibrary
 rega_restore_wait_minutes: 15
 
+# On a boot from one of the setup's reboots, the restore waits for the setup
+# to end, or at most this long after it started.
+rega_setup_hold_minutes: 120
+
 # Not worth keeping: partial downloads and the shader cache, which the GPU
 # driver rebuilds.
 rega_library_excludes:

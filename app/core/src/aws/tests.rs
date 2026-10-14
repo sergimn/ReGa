@@ -8,7 +8,7 @@ use super::api::BucketInfo;
 use super::fake::{Account, FakeAws, FakeTerraform, FixedIp, ACCOUNT, MY_IP};
 use super::record::{self, InstanceState, MachineRecord};
 use super::*;
-use crate::setup::{MachineAccess, MachineSecrets, MachineSetup};
+use crate::setup::{ConnectionDetails, MachineAccess, MachineSecrets, MachineSetup};
 
 struct Fixture {
     aws: FakeAws,
@@ -955,6 +955,8 @@ struct Recorder {
     other_device: std::sync::Mutex<Option<Arc<AwsProvider>>>,
     /// What it saw then: whether the machine was busy, and starting.
     seen_from_elsewhere: std::sync::Mutex<Vec<(bool, bool)>>,
+    /// What the setup learns about the machine's connection.
+    connection: std::sync::Mutex<Option<ConnectionDetails>>,
 }
 
 impl Recorder {
@@ -971,6 +973,7 @@ impl Recorder {
             fail_wait_for_library: false,
             other_device: Default::default(),
             seen_from_elsewhere: Default::default(),
+            connection: std::sync::Mutex::new(Some(learnt())),
         }
     }
 
@@ -1013,6 +1016,13 @@ impl MachineSetup for Recorder {
             ));
         }
         Ok(())
+    }
+
+    async fn connection(
+        &self,
+        _machine: &MachineAccess,
+    ) -> ProviderResult<Option<ConnectionDetails>> {
+        Ok(self.connection.lock().unwrap().clone())
     }
 
     async fn wait_for_library(&self, machine: &MachineAccess) -> ProviderResult<()> {
@@ -1135,11 +1145,20 @@ async fn setup_runs_once_windows_has_made_its_password() {
                 .cloned()
         })
         .unwrap();
-    assert_eq!(MachineSecrets::from_json(&saved).unwrap(), access.secrets);
+    // Plus what the setup learnt, which the setup was handed nothing of.
+    let saved = MachineSecrets::from_json(&saved).unwrap();
+    assert_eq!(
+        saved,
+        MachineSecrets {
+            wireguard_server_public_key: learnt().wireguard_server_public_key,
+            sunshine_cert_sha256: learnt().sunshine_cert_sha256,
+            ..access.secrets.clone()
+        }
+    );
     f.provider.stop(&m.id).await.unwrap();
     f.provider.start(&m.id).await.unwrap();
     let again = setup.accesses.lock().unwrap().last().unwrap().clone();
-    assert_eq!(again.secrets, access.secrets);
+    assert_eq!(again.secrets, saved);
     assert_eq!(
         setup.events(),
         [
@@ -1797,4 +1816,224 @@ async fn destroying_a_running_machine_saves_its_games_first() {
             .is_some()
     });
     assert!(!left);
+}
+
+/// The server key and certificate fingerprint a setup reads off the machine.
+fn learnt() -> ConnectionDetails {
+    ConnectionDetails {
+        // A stand-in: 32 zero bytes, written the way WireGuard writes keys.
+        wireguard_server_public_key: Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into()),
+        sunshine_cert_sha256: Some("ab".repeat(32)),
+    }
+}
+
+impl Fixture {
+    fn secrets(&self, machine_id: &str) -> MachineSecrets {
+        let body = self
+            .aws
+            .with(|a| {
+                a.object(&state_bucket_name(), &record::secrets_key(machine_id))
+                    .cloned()
+            })
+            .expect("secrets saved");
+        MachineSecrets::from_json(&body).unwrap()
+    }
+
+    fn secrets_saves(&self, machine_id: &str) -> usize {
+        let put = format!("put_object {}", record::secrets_key(machine_id));
+        self.calls().iter().filter(|c| **c == put).count()
+    }
+}
+
+#[tokio::test]
+async fn play_gets_the_tunnel_of_a_set_up_machine() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // The setup's findings are kept with the secrets, for every device.
+    let secrets = f.secrets(&m.id);
+    assert_eq!(
+        secrets.wireguard_server_public_key,
+        learnt().wireguard_server_public_key
+    );
+    assert_eq!(secrets.sunshine_cert_sha256, learnt().sunshine_cert_sha256);
+    // The setup was given this machine's own client key.
+    let access = setup.accesses.lock().unwrap()[0].clone();
+    assert_eq!(
+        access.secrets.wireguard_private_key,
+        secrets.wireguard_private_key
+    );
+
+    let target = f.provider.stream_target(&m.id).await.unwrap();
+    assert_eq!(target.machine_id, m.id);
+    assert_eq!(target.public_ip, "198.51.100.1");
+    assert_eq!(target.sunshine_user, "rega");
+    assert_eq!(target.sunshine_password, secrets.sunshine_password);
+    assert_eq!(target.sunshine_cert_sha256, secrets.sunshine_cert_sha256);
+    let peer = target.wireguard.clone().unwrap();
+    assert_eq!(peer.endpoint, "198.51.100.1:51820".parse().unwrap());
+    assert_eq!(
+        peer.server_public_key,
+        learnt().wireguard_server_public_key.unwrap()
+    );
+    assert_eq!(peer.client_private_key, secrets.wireguard_private_key);
+    assert_eq!(peer.client_address.to_string(), "10.213.37.2");
+    assert_eq!(peer.server_address.to_string(), "10.213.37.1");
+    assert_eq!(peer.mtu, 1400);
+    // Nothing to secret in what it prints.
+    let shown = format!("{target:?}");
+    assert!(!shown.contains(&secrets.sunshine_password), "{shown}");
+    assert!(!shown.contains(&secrets.wireguard_private_key), "{shown}");
+
+    // Another device, which never ran the setup, gets the same.
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = AwsProvider::new(
+        Arc::new(f.aws.clone()),
+        ACCOUNT.into(),
+        Arc::new(FakeTerraform::new(f.aws.clone())),
+        other_dir.path().to_path_buf(),
+    )
+    .with_ip_lookup(Arc::new(FixedIp(f.aws.clone())));
+    assert_eq!(other.stream_target(&m.id).await.unwrap(), target);
+
+    // With WireGuard on, Play changes nothing in AWS.
+    let applies = f.applies(&m.id);
+    f.provider.stream_target(&m.id).await.unwrap();
+    assert_eq!(f.applies(&m.id), applies);
+
+    f.provider.stop(&m.id).await.unwrap();
+    let err = f.provider.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("start it first"), "{err}");
+}
+
+#[tokio::test]
+async fn the_setups_findings_are_saved_only_when_they_change() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let saves = f.secrets_saves(&m.id);
+    f.provider.stop(&m.id).await.unwrap();
+    f.provider.start(&m.id).await.unwrap();
+    assert_eq!(f.secrets_saves(&m.id), saves);
+    // Sunshine made a new certificate, say after its files were reset.
+    *setup.connection.lock().unwrap() = Some(ConnectionDetails {
+        sunshine_cert_sha256: Some("cd".repeat(32)),
+        ..learnt()
+    });
+    f.provider.stop(&m.id).await.unwrap();
+    f.provider.start(&m.id).await.unwrap();
+    assert_eq!(f.secrets_saves(&m.id), saves + 1);
+    assert_eq!(f.secrets(&m.id).sunshine_cert_sha256, Some("cd".repeat(32)));
+}
+
+#[tokio::test]
+async fn play_needs_a_machine_the_setup_has_seen() {
+    let (f, setup) = with_setup(ready_account());
+    *setup.connection.lock().unwrap() = None;
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    let err = f.provider.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("set up for streaming"), "{err}");
+}
+
+#[tokio::test]
+async fn play_waits_for_a_busy_machine() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    // Another device is setting it up.
+    f.put(
+        record::setup_key(&m.id),
+        terraform::unix_now().to_string().into_bytes(),
+    );
+    let err = f.provider.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("busy"), "{err}");
+}
+
+#[tokio::test]
+async fn without_wireguard_play_follows_this_devices_ip() {
+    let (f, _setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&LaunchRequest {
+            wireguard: false,
+            ..request("t3.medium", false)
+        })
+        .await
+        .unwrap();
+    let applies = f.applies(&m.id);
+    let target = f.provider.stream_target(&m.id).await.unwrap();
+    assert_eq!(target.wireguard, None);
+    assert_eq!(target.sunshine_cert_sha256, Some("ab".repeat(32)));
+    // Same IP: nothing to apply.
+    assert_eq!(f.applies(&m.id), applies);
+
+    // This device moved to another network.
+    f.aws.with(|a| a.my_ip = Some("192.0.2.99".into()));
+    f.provider.stream_target(&m.id).await.unwrap();
+    assert_eq!(f.applies(&m.id), applies + 1);
+    let vars = f.record(&m.id).vars;
+    assert_eq!(vars.client_cidrs, ["192.0.2.99/32"]);
+    assert_eq!(vars.admin_cidrs, ["192.0.2.99/32"]);
+}
+
+#[tokio::test]
+async fn without_wireguard_play_needs_the_certificate() {
+    let (f, setup) = with_setup(ready_account());
+    *setup.connection.lock().unwrap() = Some(ConnectionDetails {
+        sunshine_cert_sha256: None,
+        ..learnt()
+    });
+    let m = f
+        .provider
+        .launch(&LaunchRequest {
+            wireguard: false,
+            ..request("t3.medium", false)
+        })
+        .await
+        .unwrap();
+    let err = f.provider.stream_target(&m.id).await.unwrap_err();
+    assert!(err.to_string().contains("set up for streaming"), "{err}");
+}
+
+#[tokio::test]
+async fn secrets_from_before_the_tunnel_get_a_key_once() {
+    let (f, setup) = with_setup(ready_account());
+    let m = f
+        .provider
+        .launch(&request("t3.medium", false))
+        .await
+        .unwrap();
+    f.provider.stop(&m.id).await.unwrap();
+    // As an app without the WireGuard client saved them.
+    let old = r#"{"sunshine_password": "sun", "desktop_password": "desk-Rg7"}"#;
+    f.put(record::secrets_key(&m.id), old.as_bytes().to_vec());
+    f.provider.start(&m.id).await.unwrap();
+    let secrets = f.secrets(&m.id);
+    assert_eq!(secrets.sunshine_password, "sun");
+    assert!(crate::stream::tunnel::public_key(&secrets.wireguard_private_key).is_ok());
+    let used = setup.accesses.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        used.secrets.wireguard_private_key,
+        secrets.wireguard_private_key
+    );
+    // And keeps it.
+    f.provider.stop(&m.id).await.unwrap();
+    f.provider.start(&m.id).await.unwrap();
+    assert_eq!(
+        f.secrets(&m.id).wireguard_private_key,
+        secrets.wireguard_private_key
+    );
 }

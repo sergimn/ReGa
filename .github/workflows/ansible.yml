@@ -1,16 +1,30 @@
 name: Ansible
 
+# The Windows job also checks the app's WireGuard tunnel and Sunshine client
+# against the machine the playbook sets up, so their code triggers it too.
 on:
   pull_request:
     paths:
       - "infra/ansible/**"
       - "infra/terraform/aws/templates/**"
+      - "app/core/src/stream/**"
+      - "app/core/src/ansible.rs"
+      - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
   push:
     branches: [main]
     paths:
       - "infra/ansible/**"
       - "infra/terraform/aws/templates/**"
+      - "app/core/src/stream/**"
+      - "app/core/src/ansible.rs"
+      - "app/core/examples/**"
+      # Crate updates too: rustls and reqwest meet the real Sunshine here.
+      - "app/core/Cargo.toml"
+      - "app/Cargo.lock"
       - ".github/workflows/ansible.yml"
 
 permissions:
@@ -21,6 +35,9 @@ env:
   PESTER_VERSION: 6.2.0
   # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
   PSSCRIPTANALYZER_VERSION: 1.25.0
+  # renovate: datasource=rust-version depName=rust
+  RUST_VERSION: 1.98.1
+  CARGO_TERM_COLOR: always
 
 jobs:
   lint:
@@ -72,17 +89,51 @@ jobs:
           $result = Invoke-Pester tests/pester -Output Detailed -PassThru
           if ($result.FailedCount -gt 0) { exit 1 }
 
+  stream-check:
+    name: Build the stream check
+    # app/core/examples/rega-stream-check.rs, which the Windows job runs to
+    # reach Sunshine through the app's own WireGuard tunnel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # rustup comes with the runner image.
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: app
+      - run: cargo build --locked -p rega_core --example rega-stream-check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rega-stream-check
+          path: app/target/debug/examples/rega-stream-check
+          if-no-files-found: error
+
   windows:
     name: Playbook on Windows Server 2022
     # Runs the real playbook against the runner itself, from Ansible inside
     # WSL, over WinRM HTTPS set up by Terraform's boot script. No AWS: the
     # NVIDIA driver and the S3 sync can't be exercised here.
+    needs: stream-check
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rega-stream-check
+          path: stream-check
 
       - name: Pester (Windows PowerShell 5.1)
         shell: powershell
@@ -132,6 +183,10 @@ jobs:
           python3 -m venv ~/venv
           ~/venv/bin/pip install --quiet -r ~/ansible/requirements.lock
           ~/venv/bin/ansible-galaxy collection install -r ~/ansible/requirements.yml
+          # The app's WireGuard key, as the app passes it to the playbook.
+          # Artifacts drop the executable bit.
+          install -m 755 stream-check/rega-stream-check ~/rega-stream-check
+          ~/rega-stream-check keygen ~/wireguard-client.key > ~/wireguard-client.pub
           cat > ~/ansible/inventory.yml <<INVENTORY
           rega:
             hosts:
@@ -149,7 +204,9 @@ jobs:
           set -euo pipefail
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
-            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1
+            -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
+            -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)"
 
       - name: Run it again; nothing should change
         shell: wsl-bash {0}
@@ -159,10 +216,28 @@ jobs:
           cd ~/ansible
           ~/venv/bin/ansible-playbook -i inventory.yml site.yml \
             -e rega_reboot_allowed=false -e rega_idle_stop_enabled=false -e rega_restore_wait_minutes=1 \
+            -e rega_setup_hold_minutes=1440 \
+            -e rega_wireguard_client_public_key="$(cat ~/wireguard-client.pub)" \
             --diff | tee second-run.log
           grep -Eq 'ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' second-run.log
+          # The setup wrote its note for the library restore and deleted it.
+          for task in 'Note on the machine that a setup has started' 'Let the library restore go ahead'; do
+            grep -A1 -F "TASK [$task]" second-run.log | grep -F 'ok: [ci]' > /dev/null ||
+              { echo "::error::'$task' wasn't ok on the second run"; exit 1; }
+          done
           # For the checks below, which run on the Windows side.
           cp ~/.local/share/rega/machines/ci/sunshine-password "$workspace/sunshine-password"
+
+      # WSL 1 shares the runner's network, so the machine's WireGuard port
+      # is 127.0.0.1:51820.
+      - name: Reach Sunshine through the app's WireGuard tunnel
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          secrets=~/.local/share/rega/machines/ci
+          # With the app's key, the playbook makes no client config.
+          test ! -e "$secrets/wireguard-client.conf"
+          ~/rega-stream-check check "$secrets" ~/wireguard-client.key 127.0.0.1:51820
 
       - name: Run the agent actions the app uses
         shell: wsl-bash {0}
@@ -180,6 +255,61 @@ jobs:
           fi
           cat wait-restore.log
           grep -q 'no game library disk' wait-restore.log
+
+      # The runner can't reboot, so act as if a setup that started before
+      # this boot had rebooted it: the boot task's restore must wait for that
+      # setup to end, so the setup's next reboot can't cut it short.
+      - name: Hold the restore while a setup reboots the machine
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert($condition, $message) { if (-not $condition) { throw $message } ; "ok: $message" }
+          $state = 'C:\ProgramData\ReGa\state'
+          # The agent replaces restore.json as it goes; a read can miss it.
+          function Get-RestoreStatus {
+            try { (Get-Content "$state\restore.json" -Raw | ConvertFrom-Json).status } catch { $null }
+          }
+          function Wait-RestoreStatus($statuses, $seconds) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while ((Get-RestoreStatus) -notin $statuses -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+            Get-RestoreStatus
+          }
+
+          Assert (-not (Test-Path "$state\setup.json")) 'the setup let the restore go ahead when it ended'
+
+          # The playbook ran with rega_setup_hold_minutes=1440, so the hold
+          # doesn't run out however long the runner has been up.
+          $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
+          $note = @{ started_utc = $boot.AddMinutes(-1).ToString('o') } | ConvertTo-Json
+          [IO.File]::WriteAllText("$state\setup.json", $note)
+          Start-ScheduledTask -TaskName ReGa-LibraryRestore
+          $status = Wait-RestoreStatus @('waiting') 60
+          Assert ($status -eq 'waiting') "the boot task's restore waits for the setup ($status)"
+          Start-Sleep -Seconds 20
+          Assert ((Get-RestoreStatus) -eq 'waiting') 'it keeps waiting while the setup runs'
+          $agent = 'C:\ProgramData\ReGa\agent\rega-agent.ps1'
+          # Windows PowerShell stops on a native command's stderr under 'Stop'.
+          $ErrorActionPreference = 'Continue'
+          $wait = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action WaitRestore -StartMinutes 0 -TimeoutMinutes 0 2>&1 |
+            ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $result = $wait | Where-Object { $_ -like '{*' } | Select-Object -First 1 | ConvertFrom-Json
+          Assert ($code -eq 1 -and $result.wait -eq 'running') "WaitRestore keeps waiting for a held restore ($($wait -join ' '))"
+          Assert (($wait -join ' ') -match 'waiting for the machine.s setup') 'WaitRestore says what the restore waits for'
+          $start = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agent -Action StartRestore | ConvertFrom-Json
+          Assert (-not $start.started) "StartRestore doesn't start a second restore"
+
+          # The waiting restore reads the note every 10 seconds; Windows won't
+          # delete it mid-read.
+          for ($i = 0; (Test-Path "$state\setup.json"); $i++) {
+            try { Remove-Item "$state\setup.json" } catch { if ($i -ge 5) { throw } ; Start-Sleep -Seconds 1 }
+          }
+          # With no library disk on the runner, the restore gives up after
+          # rega_restore_wait_minutes (1).
+          $status = Wait-RestoreStatus @('no-disk', 'done', 'failed', 'disk-full') 180
+          Assert ($status -eq 'no-disk') "the restore goes ahead once the setup ends ($status)"
+          Get-Content C:\ProgramData\ReGa\logs\agent.log | Select-Object -Last 5
 
       - name: Check the machine
         shell: powershell

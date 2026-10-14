@@ -12,12 +12,33 @@ you with Moonlight and Sunshine, and stops it when you stop playing.
 
 ![The ReGa desktop app](docs/screenshot.png)
 
+## Install
+
+ReGa is an early preview, not yet tried on a real GPU machine. Each
+[release](https://github.com/sergimn/ReGa/releases) has a Flatpak for x86_64
+Linux. On Ubuntu:
+
+```sh
+sudo apt install flatpak
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+wget -O rega-x86_64.flatpak https://github.com/sergimn/ReGa/releases/latest/download/rega-x86_64.flatpak
+flatpak install --user rega-x86_64.flatpak   # also pulls its runtime from Flathub
+flatpak install --user flathub com.moonlight_stream.Moonlight   # to play
+flatpak run io.github.sergimn.rega
+```
+
+The release notes say what your AWS account needs before you launch a
+machine. Until you enter an AWS access key in the app, it shows sample data.
+ReGa only ever uses the credentials entered in it, never ones it finds in
+`~/.aws` or the environment, and keeps them in your system keyring.
+
 ## Repository
 
 | Path | What |
 | --- | --- |
-| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak ([how to install it](app/flatpak/README.md#install)). See [app/README.md](app/README.md). |
-| `infra/` | Terraform (and later Ansible) that creates and configures the cloud machine. |
+| `app/` | Desktop app: Flutter UI on a Rust core, packaged as a Flatpak (see [app/flatpak/README.md](app/flatpak/README.md)). See [app/README.md](app/README.md). |
+| `infra/` | Terraform and Ansible that create and configure the cloud machine. |
+| `docs/releases/` | Release notes, one file per version. |
 
 Checks, pinned versions and dependency updates: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -41,4 +62,15 @@ The values live in [`app/lib/theme.dart`](app/lib/theme.dart).
 
 ReGa is released under the [MIT License](LICENSE). The vendored Cargokit
 build scripts in `app/rust_builder/cargokit/` keep their own copyright and
-licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE).
+licence, in [their LICENSE file](app/rust_builder/cargokit/LICENSE). The
+Flatpak ships the notices of the Rust crates and standard library built into
+the app, and Terraform's licence, in `/app/share/licenses/io.github.sergimn.rega/`
+(see [app/flatpak/README.md](app/flatpak/README.md#rust-crate-licences)).
+In the app, About (the info button at the bottom of the side menu), then
+View licenses, lists ReGa's licence and the notices the Flatpak ships, with
+those of Flutter and the Dart packages; `app/lib/licences.dart` reads them
+from that folder.
+The AWS logo in the app is a trademark of Amazon.com, Inc. or its affiliates
+and isn't under ReGa's licence; ReGa isn't affiliated with or endorsed by
+AWS. Where it comes from is in
+[app/assets/platforms/aws/README.md](app/assets/platforms/aws/README.md).

@@ -1,14 +1,24 @@
+import 'dart:async';
+
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart'
+    show AnyhowException;
+
 import 'src/rust/api/rega.dart' as rust;
 import 'src/rust/api/rega.dart'
     show
+        CredentialFieldInfo,
         MachineOffer,
         MachineSummary,
         OrphanSummary,
         ProviderInfo,
+        RegaError,
         RegionChoices;
+import 'src/rust/api/stream.dart' as stream;
+import 'src/rust/api/stream.dart' show PlayUpdate, StreamStatus;
 
 export 'src/rust/api/rega.dart'
     show
+        CredentialFieldInfo,
         MachineOffer,
         MachineStatus,
         MachineSummary,
@@ -18,13 +28,28 @@ export 'src/rust/api/rega.dart'
         RegaError,
         RegionChoices,
         RegionOption;
+export 'src/rust/api/stream.dart' show PlayStep, PlayUpdate, StreamStatus;
 
 /// Everything the UI needs from the core. Widgets depend on this interface
 /// so tests can swap in a fake without loading the Rust library.
 abstract class RegaBackend {
-  /// Signs in to every provider; one without credentials shows demo data
-  /// and says why. Calling it again reconnects.
+  /// Signs in to every provider with the credentials saved in ReGa; one
+  /// without working credentials shows demo data and says why. Calling it
+  /// again reconnects.
   Future<List<ProviderInfo>> connectProviders();
+
+  /// Signs in to the provider with what the user typed, by
+  /// [CredentialFieldInfo.id], and saves it in the system keyring once the
+  /// cloud accepts it. Throws a [RegaError], changing nothing, when the
+  /// cloud refuses it.
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  );
+
+  /// Forgets the provider's saved credentials; it shows demo data until
+  /// new ones are entered. Machines in the account are left alone.
+  Future<ProviderInfo> forgetCredentials(String providerId);
 
   /// Measures latency to every region; `true` when results changed.
   Future<bool> probeLatency(String providerId);
@@ -84,12 +109,37 @@ abstract class RegaBackend {
   Future<List<OrphanSummary>> listOrphans(String providerId);
 
   Future<void> deleteOrphans(String providerId, List<OrphanSummary> orphans);
+
+  /// Connects to a running machine (through its WireGuard tunnel when it
+  /// has one), pairs Moonlight if needed and starts the stream, reporting
+  /// each step. The last update is [PlayStep.done]; a failure ends the
+  /// stream with a [RegaError] instead.
+  Stream<PlayUpdate> play(String providerId, String machineId);
+
+  /// Hands the PIN Moonlight shows to the machine Play connected to.
+  Future<void> pairWithPin(String providerId, String machineId, String pin);
+
+  /// What Play is connected to, if anything.
+  StreamStatus? streamStatus();
+
+  /// Ends Play's connection, and with it a stream through the tunnel.
+  Future<void> closeTunnel();
 }
 
 /// Calls into the Rust core through flutter_rust_bridge.
 class RustBackend implements RegaBackend {
   @override
   Future<List<ProviderInfo>> connectProviders() => rust.connectProviders();
+
+  @override
+  Future<ProviderInfo> saveCredentials(
+    String providerId,
+    Map<String, String> values,
+  ) => rust.saveCredentials(providerId: providerId, values: values);
+
+  @override
+  Future<ProviderInfo> forgetCredentials(String providerId) =>
+      rust.forgetCredentials(providerId: providerId);
 
   @override
   Future<bool> probeLatency(String providerId) =>
@@ -181,6 +231,35 @@ class RustBackend implements RegaBackend {
   @override
   Future<void> deleteOrphans(String providerId, List<OrphanSummary> orphans) =>
       rust.deleteOrphans(providerId: providerId, orphans: orphans);
+
+  @override
+  Stream<PlayUpdate> play(String providerId, String machineId) => stream
+      .play(providerId: providerId, machineId: machineId)
+      .transform(
+        StreamTransformer.fromHandlers(
+          // The core sends its failures as plain messages.
+          handleError: (e, trace, sink) => sink.addError(
+            e is AnyhowException
+                ? RegaError(message: e.message, gamesNotSaved: false)
+                : e,
+            trace,
+          ),
+        ),
+      );
+
+  @override
+  Future<void> pairWithPin(String providerId, String machineId, String pin) =>
+      stream.pairWithPin(
+        providerId: providerId,
+        machineId: machineId,
+        pin: pin,
+      );
+
+  @override
+  StreamStatus? streamStatus() => stream.streamStatus();
+
+  @override
+  Future<void> closeTunnel() => stream.closeTunnel();
 }
 
 extension MachineOfferX on MachineOffer {
