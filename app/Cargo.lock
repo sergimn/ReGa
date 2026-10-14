@@ -2939,7 +2939,7 @@ dependencies = [
  "aws-sdk-servicequotas",
  "aws-sdk-sts",
  "aws-types",
- "base64 0.22.1",
+ "base64 0.23.1",
  "boringtun",
  "futures",
  "oo7",

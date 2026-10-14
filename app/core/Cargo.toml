@@ -19,7 +19,7 @@ aws-sdk-sts = "1.119.0"
 # SdkConfig without aws-config, so the app doesn't even carry the code that
 # reads AWS credentials from the environment or ~/.aws.
 aws-types = "1.6.0"
-base64 = "0.22"
+base64 = "0.23"
 # The WireGuard protocol for the tunnel; no device or socket code.
 boringtun = { version = "0.7.1", default-features = false }
 futures = "0.3"
