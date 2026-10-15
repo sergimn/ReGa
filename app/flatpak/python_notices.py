@@ -18,8 +18,9 @@ reads.
 It fails, saying what to do, when what is installed isn't exactly what the
 lock and requirements.yml pin for the runtime (so the list can't go stale
 after a Renovate update), when a package or collection ships no licence
-text or leaves out one its metadata names, or when a collection names no licence and isn't in LICENSE_FILE_ONLY.
-The Flatpak build runs it after installing Ansible. Only stdlib.
+text or leaves out one its metadata names, or when a collection names no
+licence and isn't in LICENSE_FILE_ONLY. The Flatpak build runs it after
+installing Ansible. Only stdlib.
 """
 
 from __future__ import annotations
