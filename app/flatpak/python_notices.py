@@ -71,29 +71,33 @@ def licence_of(metadata) -> str:
     if expression := (metadata.get("License-Expression") or "").strip():
         return expression
     field = (metadata.get("License") or "").strip()
-    if field and "\n" not in field and len(field) <= 40 and not field.lower().startswith("copyright"):
+    if (field and "\n" not in field and len(field) <= 40
+            and not field.lower().startswith(("copyright", "see ", "unknown"))):
         return field
     classifiers = [c.rsplit(" :: ", 1)[-1] for c in metadata.get_all("Classifier") or []
                    if c.startswith(CLASSIFIER) and c != f"{CLASSIFIER}OSI Approved"]
     return " OR ".join(classifiers) or "unknown"
 
 
-def dist_texts(dist_info: Path, metadata) -> list[Text]:
+def dist_texts(dist_info: Path, metadata) -> tuple[list[Text], list[str]]:
     """The licence files a .dist-info folder has: those its License-File
     lines name (in licenses/ since metadata 2.4, at the top before), else
-    any with a licence's name."""
+    any with a licence's name; then the named ones it doesn't have."""
     texts = []
+    missing = []
     for name in metadata.get_all("License-File") or []:
         for path in (dist_info / "licenses" / name, dist_info / name):
             if path.is_file():
                 texts.append(Text(path.relative_to(dist_info).as_posix(), normalize_text(path.read_bytes())))
                 break
+        else:
+            missing.append(name)
     if not texts:
         for path in sorted(dist_info.rglob("*")):
             relative = path.relative_to(dist_info)
             if path.is_file() and (relative.parts[0] == "licenses" or LICENSE_NAME.fullmatch(path.name)):
                 texts.append(Text(relative.as_posix(), normalize_text(path.read_bytes())))
-    return texts
+    return texts, missing
 
 
 def installed(site_packages: Path) -> tuple[list[Package], list[str]]:
@@ -103,8 +107,11 @@ def installed(site_packages: Path) -> tuple[list[Package], list[str]]:
     errors = []
     for dist_info in sorted(site_packages.glob("*.dist-info")):
         metadata = BytesHeaderParser().parsebytes((dist_info / "METADATA").read_bytes())
-        package = Package(metadata["Name"], metadata["Version"], licence_of(metadata),
-                          tuple(dist_texts(dist_info, metadata)))
+        texts, missing = dist_texts(dist_info, metadata)
+        package = Package(metadata["Name"], metadata["Version"], licence_of(metadata), tuple(texts))
+        for name in missing:
+            errors.append(f"{package}'s metadata names the licence file {name}, which isn't in "
+                          f"{dist_info.name}. Find out where it is and how to ship it, and teach {WHERE} to.")
         if not package.texts:
             errors.append(f"{package} ships no licence text in {dist_info.name}. Find out where its "
                           f"licence is and how to ship it, and teach {WHERE} to.")
@@ -123,7 +130,8 @@ def installed(site_packages: Path) -> tuple[list[Package], list[str]]:
         if not license:
             sha256 = hashlib.sha256(license_file.read_bytes()).hexdigest() if license_file and license_file.is_file() else None
             if name not in LICENSE_FILE_ONLY:
-                errors.append(f"{at} names no licence in its MANIFEST.json, only the file {info.get('license_file')}. "
+                only = f"only the file {info['license_file']}" if info.get("license_file") else "nor a licence file"
+                errors.append(f"{at} names no licence in its MANIFEST.json, {only}. "
                               f"Read it, and add the collection to LICENSE_FILE_ONLY in {WHERE}, with its "
                               f"licence and the file's sha256 ({sha256}).")
             elif LICENSE_FILE_ONLY[name][1] != sha256:

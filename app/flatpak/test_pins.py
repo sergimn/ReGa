@@ -167,6 +167,10 @@ class CheckTest(unittest.TestCase):
         self.edit(pins.MANIFEST, r"^\s*- ansible\.yml\n", "")
         self.assertDrift("doesn't include ansible.yml")
 
+    def test_licence_notices_from_another_python(self):
+        self.edit(pins.MANIFEST, r"/app/lib/python3\.13/site-packages", "/app/lib/python3.12/site-packages")
+        self.assertDrift("doesn't run python_notices.py on the runtime's /app/lib/python3.13/site-packages")
+
 
 class BestWheelTest(unittest.TestCase):
     runtime = pins.Runtime("3.13", (2, 42))

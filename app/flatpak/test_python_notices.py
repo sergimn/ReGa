@@ -62,6 +62,12 @@ class LicenceOfTest(unittest.TestCase):
             Classifier=["License :: OSI Approved :: MIT License", "License :: OSI Approved :: ISC License (ISCL)"])),
             "MIT License OR ISC License (ISCL)")
 
+    def test_placeholders_in_the_licence_field(self):
+        for field in ("UNKNOWN", "see LICENSE"):
+            with self.subTest(field):
+                self.assertEqual(python_notices.licence_of(metadata(
+                    License=field, Classifier="License :: OSI Approved :: MIT License")), "MIT License")
+
     def test_nothing(self):
         self.assertEqual(python_notices.licence_of(metadata(Name="x")), "unknown")
 
@@ -153,6 +159,15 @@ class WriteTest(unittest.TestCase):
         errors = self.write()
         self.assertTrue(any("PyYAML 6.0.3 ships no licence text" in e for e in errors), errors)
         self.assertFalse(self.out.exists())
+
+    def test_a_named_licence_file_missing_fails(self):
+        self.dist("pyyaml", "PyYAML", "6.0.3", "License: MIT\n", {"licenses/LICENSE": MIT})
+        (self.site / "pyyaml-6.0.3.dist-info" / "METADATA").write_text(
+            "Metadata-Version: 2.4\nName: PyYAML\nVersion: 6.0.3\nLicense: MIT\n"
+            "License-File: LICENSE\nLicense-File: NOTICE\n\n")
+        errors = self.write()
+        self.assertTrue(any(e.startswith("PyYAML 6.0.3's metadata names the licence file NOTICE") for e in errors),
+                        errors)
 
     def test_installed_has_to_match_the_lock(self):
         self.dist("pyyaml", "PyYAML", "6.0.2", "License: MIT\n", {"licenses/LICENSE": MIT})

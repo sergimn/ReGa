@@ -83,8 +83,9 @@ Stream<LicenseEntry> regaLicencesInBackground(String folder) =>
 /// ReGa's licence, then those of everything in [folder]: each Rust crate's
 /// texts under its own name, the standard library's notices, each bundled
 /// Python package's and Ansible collection's texts under its own name, and
-/// any other file under its name or path. A folder without the Rust notices (a build
-/// nobody wrote them for) gets a note saying so in their place.
+/// any other file under its name or path. A folder without the Rust
+/// notices (a build nobody wrote them for) gets a note saying so in their
+/// place.
 Stream<LicenseEntry> regaLicences(String folder) async* {
   yield const LicenseEntryWithLineBreaks(['ReGa'], regaLicence);
   final files = <String, File>{};
