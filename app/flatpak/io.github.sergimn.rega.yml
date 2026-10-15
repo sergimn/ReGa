@@ -68,6 +68,9 @@ modules:
       - install -Dm644 LICENSE -t /app/share/licenses/io.github.sergimn.rega
       - install -Dm644 app/build/linux/x64/release/licenses/rust-crates.txt app/build/linux/x64/release/licenses/rust-std.html
         -t /app/share/licenses/io.github.sergimn.rega
+      # So do the Python packages and Ansible collections the ansible module
+      # installed. This fails if they aren't the ones infra/ansible pins.
+      - cd app && python3 flatpak/python_notices.py write /app/lib/python3.13/site-packages /app/share/licenses/io.github.sergimn.rega
       # The AWS logo is AWS's trademark, not under ReGa's licence.
       - install -Dm644 app/assets/platforms/aws/README.md /app/share/licenses/io.github.sergimn.rega/aws-logo.md
       - install -Dm644 app/flatpak/io.github.sergimn.rega.desktop -t /app/share/applications

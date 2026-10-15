@@ -33,7 +33,7 @@ page, `unzip rega-flatpak.zip`, and install `rega.flatpak` as above.
 | `/app/bin/terraform` | Terraform, the version `.github/workflows/terraform.yml` tests with |
 | `/app/bin/ansible-playbook` and friends | Ansible with pywinrm, at the versions in `infra/ansible/requirements.lock`; the app runs the playbook it carries with it |
 | `/app/lib/python3.13/site-packages/ansible_collections` | The collections in `infra/ansible/requirements.yml`, found without any config |
-| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), Terraform's (BUSL-1.1) in `terraform/`, the licence notices of the Rust crates in the app and of Rust's standard library, in `rust-crates.txt` and `rust-std.html`, and where the AWS logo in the app comes from, in `aws-logo.md`. Flutter keeps those of the Dart packages and its engine in `/app/lib/rega/data/flutter_assets/NOTICES.Z` |
+| `/app/share/licenses/io.github.sergimn.rega` | ReGa's licence (MIT), Terraform's (BUSL-1.1) in `terraform/`, the licence notices of the Rust crates in the app and of Rust's standard library, in `rust-crates.txt` and `rust-std.html`, those of the Python packages and Ansible collections it runs Ansible with, in `python-packages.txt`, and where the AWS logo in the app comes from, in `aws-logo.md`. Flutter keeps those of the Dart packages and its engine in `/app/lib/rega/data/flutter_assets/NOTICES.Z` |
 
 Permissions: network, display (Wayland, or X11 as a fallback) and GPU.
 Nothing in your home folder, `~/.aws` included: ReGa only uses the cloud
@@ -84,7 +84,8 @@ tool and then the whole Rust core; flatpak-builder caches each module, so a
 rebuild after a change to the app only redoes the app.
 
 The smoke test checks the installed app: the licences are there (the Rust
-crates' for the `Cargo.lock` you built from), Terraform and Ansible run in
+crates' for the `Cargo.lock` you built from, the Python packages' for
+`infra/ansible/requirements.lock`), Terraform and Ansible run in
 the sandbox, the Windows collections are there, the playbooks in
 `infra/ansible` pass a syntax check, and the app draws its window (on demo
 data, on a private Xvfb display over X11, whatever your desktop runs). It
@@ -202,6 +203,35 @@ and update the entry.
 It doesn't check that a crate's files cover every licence in an AND: a crate
 under `MIT AND Unicode-3.0` that ships only the MIT text would pass. The
 crates in the build today ship all of theirs.
+
+## Python package licences
+
+Ansible, its WinRM client and their dependencies (the wheels `ansible.yml`
+installs), and the Windows collections, ask for their notices and licence
+texts to go with every copy too: GPL for Ansible and the collections, MIT,
+BSD, Apache-2.0, MPL-2.0 and the like for the rest. After installing them,
+the Flatpak build runs `python_notices.py write SITE_PACKAGES DIR`, which
+writes `python-packages.txt` in `DIR`: the packages and collections with
+their versions and licences (from their metadata), then the licence texts
+each ships in its `.dist-info` (or at a collection's top level), each text
+once under all those that ship it. It uses `rust-crates.txt`'s layout, and
+the app's licence page reads both the same way.
+
+It fails the build, saying what to do, when:
+
+- What's installed isn't exactly what `requirements.lock` and
+  `requirements.yml` pin for the runtime: run `pins.py update`. So a
+  Renovate update can't leave the list stale.
+- A package or collection ships no licence text.
+- A package's metadata names a licence file (`License-File`) that its
+  `.dist-info` doesn't have.
+- A collection names no licence in its `MANIFEST.json`, only a file, and
+  isn't in `LICENSE_FILE_ONLY` (the licence someone read in that file, and
+  its sha256), or that file changed.
+
+It lists what the wheels ship and no more: the native code some compiled
+wheels build in (OpenSSL and Rust crates in `cryptography`, say) is covered
+only as far as their own licence files cover it.
 
 ## Not done yet
 

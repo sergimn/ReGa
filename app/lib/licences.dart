@@ -33,6 +33,9 @@ SOFTWARE.
 const rustCratesFile = 'rust-crates.txt';
 const rustStdFile = 'rust-std.html';
 
+/// What `flatpak/python_notices.py write` names its file.
+const pythonPackagesFile = 'python-packages.txt';
+
 /// The AWS logo's README, where it comes from and on what terms.
 const _awsLogoFile = 'aws-logo.md';
 
@@ -78,9 +81,11 @@ Stream<LicenseEntry> regaLicencesInBackground(String folder) =>
         .expand((entries) => entries);
 
 /// ReGa's licence, then those of everything in [folder]: each Rust crate's
-/// texts under its own name, the standard library's notices, and any other
-/// file under its name or path. A folder without the Rust notices (a build
-/// nobody wrote them for) gets a note saying so in their place.
+/// texts under its own name, the standard library's notices, each bundled
+/// Python package's and Ansible collection's texts under its own name, and
+/// any other file under its name or path. A folder without the Rust
+/// notices (a build nobody wrote them for) gets a note saying so in their
+/// place.
 Stream<LicenseEntry> regaLicences(String folder) async* {
   yield const LicenseEntryWithLineBreaks(['ReGa'], regaLicence);
   final files = <String, File>{};
@@ -107,7 +112,12 @@ Stream<LicenseEntry> regaLicences(String folder) async* {
   // also copies each module's licence files into a folder of the module's
   // name (rega/LICENSE, terraform/LICENSE_1), so a file that is word for
   // word one listed already is left out.
-  final known = [rustCratesFile, rustStdFile, ..._names.keys];
+  final known = [
+    rustCratesFile,
+    rustStdFile,
+    pythonPackagesFile,
+    ..._names.keys,
+  ];
   final listed = {regaLicence};
   for (final name in [
     ...known.where(files.containsKey),
@@ -133,6 +143,8 @@ Stream<LicenseEntry> regaLicences(String folder) async* {
         for (final section in htmlSections(text)) {
           yield LicenseEntryWithLineBreaks([rustStdPackage], section);
         }
+      case pythonPackagesFile:
+        yield* Stream.fromIterable(pythonPackageLicences(text));
       case _awsLogoFile:
         yield LicenseEntryWithLineBreaks([_names[name]!], _markdownIntro(text));
       default:
@@ -154,21 +166,21 @@ String _markdownIntro(String text) {
   return intro.isEmpty ? text : intro;
 }
 
-/// A licence text that a crate ships, under the files it ships it in.
+/// A licence text that a package ships, under the files it ships it in.
 class _ShippedText extends LicenseEntry {
-  const _ShippedText(this.crate, this.files, this.text);
+  const _ShippedText(this.package, this.files, this.text);
 
-  final String crate;
+  final String package;
 
-  /// `serde 1.0.228: LICENSE-MIT`, one for each version of the crate that
+  /// `serde 1.0.228: LICENSE-MIT`, one for each version of the package that
   /// ships the text.
   final List<String> files;
 
-  /// The text, shared by every crate that ships it word for word.
+  /// The text, shared by every package that ships it word for word.
   final LicenseEntryWithLineBreaks text;
 
   @override
-  Iterable<String> get packages => [crate];
+  Iterable<String> get packages => [package];
 
   @override
   Iterable<LicenseParagraph> get paragraphs => [
@@ -179,36 +191,70 @@ class _ShippedText extends LicenseEntry {
 
 final _rule = '=' * 78;
 final _thinRule = '-' * 78;
-// A crate in the list: `serde 1.0.228    MIT OR Apache-2.0`.
+// A package in a list: `serde 1.0.228    MIT OR Apache-2.0`.
 final _listed = RegExp(r'^(\S+) (\S+) {2,}(\S.*)$');
-// A crate that ships a text: `serde 1.0.228: LICENSE-MIT`.
+// A package that ships a text: `serde 1.0.228: LICENSE-MIT`.
 final _shipper = RegExp(r'^(\S+) (\S+): \S');
+
+/// What the licence list says a package is: `serde 1.0.228, a Rust crate
+/// in ReGa's core, is under MIT OR Apache-2.0.`
+typedef _Describe = String Function(
+  String name,
+  String version,
+  String licence,
+);
 
 /// The entries for the crates in a `rust-crates.txt`: one per crate with
 /// its version and licence, then the licence texts it ships, each under
 /// the file it came from (vendored code's say whose they are). A file that
 /// doesn't read the way rust_notices.py writes it is listed whole, under
 /// "Rust crates", so no notice is ever lost.
-List<LicenseEntry> rustCrateLicences(String text) {
+List<LicenseEntry> rustCrateLicences(String text) => _noticeLicences(text, {
+  'Crates': (name, version, licence) =>
+      '$name $version, a Rust crate in ReGa\'s core, is under $licence.',
+}, 'Rust crates');
+
+/// The entries for the Python packages and Ansible collections in a
+/// `python-packages.txt`, which python_notices.py writes in
+/// rust-crates.txt's layout: as [rustCrateLicences] does for crates. One
+/// that doesn't read that way is listed whole, under "Python packages".
+List<LicenseEntry> pythonPackageLicences(String text) => _noticeLicences(text, {
+  'Python packages': (name, version, licence) =>
+      '$name $version, a Python package that ReGa runs Ansible with, is '
+      'under $licence.',
+  'Ansible collections': (name, version, licence) =>
+      '$name $version, an Ansible collection that ReGa\'s playbooks use, '
+      'is under $licence.',
+}, 'Python packages');
+
+/// The entries for a file of notices in rust_notices.py's layout: the
+/// packages under each of the [lists] headings, described by its function,
+/// then under "Licence texts" each text, with the packages that ship it.
+/// Unless every package listed ships a text, the whole file under [whole].
+List<LicenseEntry> _noticeLicences(
+  String text,
+  Map<String, _Describe> lists,
+  String whole,
+) {
   final lines = const LineSplitter().convert(text);
-  final crates = lines.indexOf('Crates');
   final texts = lines.indexOf('Licence texts');
   final entries = <LicenseEntry>[];
   final listed = <String>{};
-  if (crates >= 0 && texts > crates) {
-    for (final line in lines.sublist(crates + 1, texts)) {
-      final m = _listed.firstMatch(line);
-      if (m == null) continue;
-      listed.add(m[1]!);
-      entries.add(
-        LicenseEntryWithLineBreaks([
-          m[1]!,
-        ], '${m[1]} ${m[2]}, a Rust crate in ReGa\'s core, is under ${m[3]}.'),
-      );
+  _Describe? describe;
+  for (final line in lines.take(texts < 0 ? 0 : texts)) {
+    if (lists.containsKey(line)) {
+      describe = lists[line];
+      continue;
     }
+    final m = describe == null ? null : _listed.firstMatch(line);
+    if (m == null) continue;
+    listed.add(m[1]!);
+    entries.add(
+      LicenseEntryWithLineBreaks([m[1]!], describe!(m[1]!, m[2]!, m[3]!)),
+    );
   }
 
-  // Each text: a blank line and a rule, the crates that ship it, a thin
+  // Each text: a blank line and a rule, the packages that ship it, a thin
   // rule and a blank line, then the text, up to the next one's blank line.
   final starts = <int>[];
   if (texts >= 0) {
@@ -227,24 +273,24 @@ List<LicenseEntry> rustCrateLicences(String text) {
   for (final (n, start) in starts.indexed) {
     final stop = n + 1 < starts.length ? starts[n + 1] - 1 : lines.length;
     var line = start + 1;
-    // The lines naming each crate's files, by crate.
+    // The lines naming each package's files, by package.
     final files = <String, List<String>>{};
     for (; lines[line] != _thinRule; line++) {
-      final crate = _shipper.firstMatch(lines[line])![1]!;
-      (files[crate] ??= []).add(lines[line]);
+      final package = _shipper.firstMatch(lines[line])![1]!;
+      (files[package] ??= []).add(lines[line]);
     }
     final body = _withoutBlankEnds(lines.sublist(line + 1, stop));
     if (body.isEmpty) continue;
     shipping.addAll(files.keys);
     final shared = LicenseEntryWithLineBreaks(const [], body);
-    for (final MapEntry(key: crate, value: from) in files.entries) {
-      entries.add(_ShippedText(crate, from, shared));
+    for (final MapEntry(key: package, value: from) in files.entries) {
+      entries.add(_ShippedText(package, from, shared));
     }
   }
 
   if (listed.isEmpty || !shipping.containsAll(listed)) {
     return [
-      LicenseEntryWithLineBreaks(const ['Rust crates'], text),
+      LicenseEntryWithLineBreaks([whole], text),
     ];
   }
   return entries;

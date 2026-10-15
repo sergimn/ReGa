@@ -394,6 +394,11 @@ def check(root: Path) -> list[str]:
     if runtime:
         if f"-p ${{FLATPAK_DEST}}/lib/python{runtime.python}/site-packages " not in text:
             errors.append(f"{ANSIBLE_MODULE} installs for another Python than the runtime's {runtime.python}.")
+        # python_notices.py reads what ansible.yml installed, from there.
+        if not re.search(rf"python_notices\.py write /app/lib/python{re.escape(runtime.python)}/site-packages ",
+                         read(root, MANIFEST)):
+            errors.append(f"{MANIFEST} doesn't run python_notices.py on the runtime's "
+                          f"/app/lib/python{runtime.python}/site-packages.")
         wheels: dict[str, tuple[str, Source]] = {}
         for source in (s for s in sources if s.filename.endswith(".whl")):
             name, version, _ = wheel_tags(source.filename)

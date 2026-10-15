@@ -21,13 +21,18 @@ flatpak info "$app" >/dev/null || fail "$app isn't installed"
 
 # ReGa's licence, Terraform's, which asks to ship with every copy of it, the
 # Rust crates' and standard library's, the crates' written for the
-# Cargo.lock the app was built from, and the AWS logo's notice.
-for file in LICENSE terraform/LICENSE.txt rust-crates.txt rust-std.html aws-logo.md; do
+# Cargo.lock the app was built from, the bundled Python packages' and
+# Ansible collections', written for the Ansible lock, and the AWS logo's
+# notice.
+for file in LICENSE terraform/LICENSE.txt rust-crates.txt rust-std.html python-packages.txt aws-logo.md; do
   in_app test -s "/app/share/licenses/$app/$file" || fail "$file isn't in /app/share/licenses/$app"
 done
 lock=$(sha256sum "$repo/app/Cargo.lock" | cut -d' ' -f1)
 in_app grep -qF "app/Cargo.lock, sha256 $lock," "/app/share/licenses/$app/rust-crates.txt" \
   || fail "rust-crates.txt isn't for this app/Cargo.lock; write it again with flatpak/rust_notices.py"
+lock=$(sha256sum "$repo/infra/ansible/requirements.lock" | cut -d' ' -f1)
+in_app grep -qF "infra/ansible/requirements.lock, sha256 $lock," "/app/share/licenses/$app/python-packages.txt" \
+  || fail "python-packages.txt isn't for this infra/ansible/requirements.lock"
 ok "licences installed"
 
 # Terraform, at the version the manifest pins.

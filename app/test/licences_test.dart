@@ -39,6 +39,34 @@ sys.stdout.write(render("0" * 64, "rustc 1.98.1 (made up)", entries))
   return result.stdout as String;
 }
 
+/// A python-packages.txt with made-up packages, written by
+/// python_notices.py's own render(), as for [_renderCrates].
+String _renderPython() {
+  const script = r'''
+import sys
+sys.path.insert(0, "flatpak")
+from python_notices import Package, render
+from rust_notices import Text
+
+MIT = "MIT License\n\nCopyright (c) 2024 Someone\n\nPermission is hereby granted...\n"
+GPL = "                    GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n"
+
+packages = [
+    Package("ansible-core", "2.21.4", "GPL-3.0-or-later",
+            (Text("licenses/COPYING", GPL), Text("licenses/licenses/MIT-license.txt", MIT))),
+    Package("PyYAML", "6.0.3", "MIT", (Text("licenses/LICENSE", MIT),)),
+    Package("pywinrm", "0.5.0", "MIT License", (Text("LICENSE", MIT),)),
+    Package("ansible.windows", "3.8.0", "GPL-3.0-or-later", (Text("COPYING", GPL),), collection=True),
+]
+sys.stdout.write(render("0" * 64, packages))
+''';
+  final result = Process.runSync('python3', ['-c', script]);
+  if (result.exitCode != 0) {
+    fail('python_notices.py render failed: ${result.stderr}');
+  }
+  return result.stdout as String;
+}
+
 /// The standard library's notices in the Rust toolchain on PATH, if any.
 File? _toolchainStdNotices() {
   try {
@@ -167,6 +195,44 @@ void main() {
     expect(whole.single.packages, ['Rust crates']);
   });
 
+  test('each Python package and collection gets its licence and texts', () {
+    final entries = _read(pythonPackageLicences(_renderPython()));
+
+    expect(entries.where((e) => e.$1.contains('PyYAML')).map((e) => e.$2), [
+      'PyYAML 6.0.3, a Python package that ReGa runs Ansible with, is under '
+          'MIT.',
+      startsWith('PyYAML 6.0.3: licenses/LICENSE\nMIT License'),
+    ]);
+    expect(
+      entries.where((e) => e.$1.contains('ansible.windows')).map((e) => e.$2),
+      [
+        'ansible.windows 3.8.0, an Ansible collection that ReGa\'s playbooks '
+            'use, is under GPL-3.0-or-later.',
+        startsWith(
+          'ansible.windows 3.8.0: COPYING\nGNU GENERAL PUBLIC LICENSE',
+        ),
+      ],
+    );
+    expect(
+      entries.firstWhere((e) => e.$1.contains('pywinrm')).$2,
+      'pywinrm 0.5.0, a Python package that ReGa runs Ansible with, is under '
+      'MIT License.',
+    );
+    expect(
+      {for (final (p, _) in entries) ...p},
+      {'ansible-core', 'ansible.windows', 'PyYAML', 'pywinrm'},
+    );
+    for (final (_, text) in entries) {
+      expect(text, isNot(contains('=====')));
+      expect(text, isNot(contains('python_notices.py')));
+    }
+    // A file it can't read, listed whole.
+    final rendered = _renderPython();
+    final cut = rendered.substring(0, rendered.indexOf('\n\n\nLicence texts'));
+    final whole = pythonPackageLicences('$cut\n\n\nLicence texts\n');
+    expect(whole.single.packages, ['Python packages']);
+  });
+
   test('HTML notices become plain sections', () {
     final sections = htmlSections(_stdHtml);
     expect(sections, [
@@ -217,6 +283,7 @@ void main() {
       write('LICENSE', regaLicence);
       write(rustCratesFile, _renderCrates());
       write(rustStdFile, _stdHtml);
+      write(pythonPackagesFile, _renderPython());
       write('terraform/LICENSE.txt', 'Business Source License 1.1\n');
       write(
         'aws-logo.md',
@@ -243,6 +310,10 @@ void main() {
         rustStdPackage,
         'serde',
         'Terraform',
+        'ansible-core',
+        'ansible.windows',
+        'PyYAML',
+        'pywinrm',
       });
       expect(entries.where((e) => e.$1.contains(rustStdPackage)), hasLength(4));
       expect(
