@@ -223,6 +223,8 @@ It fails the build, saying what to do, when:
   `requirements.yml` pin for the runtime: run `pins.py update`. So a
   Renovate update can't leave the list stale.
 - A package or collection ships no licence text.
+- A package's metadata names a licence file (`License-File`) that its
+  `.dist-info` doesn't have.
 - A collection names no licence in its `MANIFEST.json`, only a file, and
   isn't in `LICENSE_FILE_ONLY` (the licence someone read in that file, and
   its sha256), or that file changed.
