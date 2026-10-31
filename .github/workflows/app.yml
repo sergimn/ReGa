@@ -42,7 +42,7 @@ env:
   # renovate: datasource=flutter-version depName=flutter
   FLUTTER_VERSION: 3.47.7
   # renovate: datasource=rust-version depName=rust
-  RUST_VERSION: 1.98.1
+  RUST_VERSION: 1.99.0
   CARGO_TERM_COLOR: always
 
 jobs:

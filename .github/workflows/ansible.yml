@@ -36,7 +36,7 @@ env:
   # renovate: datasource=nuget depName=PSScriptAnalyzer registryUrl=https://www.powershellgallery.com/api/v2/
   PSSCRIPTANALYZER_VERSION: 1.25.0
   # renovate: datasource=rust-version depName=rust
-  RUST_VERSION: 1.98.1
+  RUST_VERSION: 1.99.0
   CARGO_TERM_COLOR: always
 
 jobs:
