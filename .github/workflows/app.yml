@@ -48,7 +48,7 @@ env:
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,7 +103,7 @@ jobs:
 
   flutter:
     name: Flutter (analyze, test, Linux build)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The AWS SDK crates make a cold Rust build slow; it's built twice here
     # (release, then debug for the integration test).
     timeout-minutes: 60
@@ -151,7 +151,7 @@ jobs:
 
   flatpak:
     name: Flatpak
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Builds the app from source, as Flathub would: the Flutter SDK, the Rust
     # toolchain and every crate and Dart package, with no network.
     timeout-minutes: 60
@@ -184,7 +184,7 @@ jobs:
 
   flatpak-metadata:
     name: Flatpak pins and metadata
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -210,7 +210,7 @@ jobs:
     # Installs the bundle the way a user would, runtime from Flathub, and
     # checks the bundled tools and the app inside the sandbox.
     needs: flatpak
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
