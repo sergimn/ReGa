@@ -169,7 +169,7 @@ jobs:
 
       # Hosted runners have no nested virtualisation, so WSL 1, which shares
       # the host's network: 127.0.0.1:5986 is the runner's WinRM listener.
-      - uses: Vampire/setup-wsl@614202866847d986a4f737ae6020b760283d3f5a # v7.1.1
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Ubuntu-24.04
           wsl-version: 1
