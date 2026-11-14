@@ -289,9 +289,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-ec2"
-version = "1.267.0"
+version = "1.268.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c55586175b6f18392168f9a669398c81ceb8df42e19989e1575a6a3dd7b6b4"
+checksum = "55ec5072fae0a0411219c8033f01b862e7c992a5e9d2fcdddfa0adb271686ce6"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -2763,7 +2763,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.46",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror",
  "tokio",
  "tracing",
@@ -2802,7 +2802,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
