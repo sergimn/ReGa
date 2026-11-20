@@ -60,7 +60,7 @@ jobs:
           rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy --no-self-update
           rustup default "$RUST_VERSION"
       # No caches on a release, like the Flutter job below.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !inputs.release }}
         with:
           workspaces: app
@@ -127,7 +127,7 @@ jobs:
           rustup run stable rustc --version | grep -F "rustc $RUST_VERSION "
       # cargokit builds the Rust core inside Flutter's build folder. A
       # release runs without caches, as the Flatpak job always does.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !inputs.release }}
         with:
           workspaces: |
